@@ -149,28 +149,69 @@ module private Grammar =
         | Some index -> tokens |> List.take index, tokens |> List.skip index
         | None -> tokens, []
 
-    let private optionValues names tokens =
-        let rec collect remaining values positional =
+    let private scan (values: Set<string>) (flags: Set<string>) (tokens: string list) =
+        let rec collect
+            (remaining: string list)
+            (collected: Map<string, string>)
+            (positional: string list)
+            (unknown: string list)
+            =
             match remaining with
-            | [] -> List.rev values, List.rev positional
-            | "--" :: _ -> List.rev values, List.rev positional
+            | [] -> collected, List.rev positional, List.rev unknown
+            | ("--help" | "-h" | "-?") :: tail -> collect tail collected positional unknown
             | token :: tail when
                 token.StartsWith("--", StringComparison.Ordinal)
                 && token.Contains("=", StringComparison.Ordinal)
                 ->
                 let name, value = token.Split('=', 2) |> fun parts -> parts[0], parts[1]
 
-                if names |> Set.contains name then
-                    collect tail (value :: values) positional
+                if values |> Set.contains name then
+                    collect tail (Map.add name value collected) positional unknown
+                elif flags |> Set.contains name then
+                    collect tail collected positional unknown
                 else
-                    collect tail values positional
-            | token :: value :: tail when names |> Set.contains token -> collect tail (value :: values) positional
-            | token :: tail when token.StartsWith("-", StringComparison.Ordinal) -> collect tail values positional
-            | token :: tail -> collect tail values (token :: positional)
+                    collect tail collected positional (name :: unknown)
+            | token :: value :: tail when values |> Set.contains token ->
+                collect tail (Map.add token value collected) positional unknown
+            | token :: tail when flags |> Set.contains token -> collect tail collected positional unknown
+            | token :: tail when token.StartsWith("-", StringComparison.Ordinal) ->
+                collect tail collected positional (token :: unknown)
+            | token :: tail -> collect tail collected (token :: positional) unknown
 
-        collect tokens [] []
+        collect tokens Map.empty [] []
 
-    let private operation values token = values |> List.tryFindIndex ((=) token)
+    let private scanSolution =
+        scan (Set.ofList [ "--solution-folder"; "-s" ]) (Set.ofList [ "--in-root"; "--include-references" ])
+
+    let private scanPackage =
+        scan
+            (Set.ofList
+                [ "--project"
+                  "--file"
+                  "--version"
+                  "--framework"
+                  "--source"
+                  "--configfile"
+                  "--package-directory"
+                  "--verbosity" ])
+            (Set.ofList [ "--prerelease"; "--no-restore"; "--interactive" ])
+
+    let private scanReference =
+        scan (Set.ofList [ "--project"; "--framework" ]) (Set.ofList [ "--interactive" ])
+
+    let private scanNew =
+        scan
+            (Set.ofList
+                [ "--output"
+                  "-o"
+                  "--name"
+                  "-n"
+                  "--project"
+                  "--verbosity"
+                  "-v"
+                  "--add-source"
+                  "--nuget-source" ])
+            (Set.ofList [ "--dry-run"; "--force"; "--no-update-check"; "--diagnostics" ])
 
     let parse (arguments: string array) =
         let json, child =
@@ -178,7 +219,12 @@ module private Grammar =
             | "--json" :: tail -> true, tail
             | tail -> false, tail
 
-        let beforeSentinel, _ = splitSentinel child
+        let beforeSentinel, sentinel = splitSentinel child
+
+        let sentinelOperands =
+            match sentinel with
+            | [] -> []
+            | _ :: tail -> tail
 
         let parsed =
             match child with
@@ -187,9 +233,7 @@ module private Grammar =
                 match command with
                 | "solution"
                 | "sln" ->
-                    let positions =
-                        optionValues (Set.ofList [ "--solution-folder"; "-s" ]) beforeSentinel.Tail
-                        |> snd
+                    let _, positions, unknown = scanSolution beforeSentinel.Tail
 
                     let operationIndex =
                         positions
@@ -211,25 +255,21 @@ module private Grammar =
                                                                    | "remove" -> 2
                                                                    | _ -> 3]
 
-                            target, Some operation, after
+                            target, Some operation, after @ sentinelOperands
                         | None ->
                             match positions with
                             | [ target ] -> Some target, None, []
                             | _ -> None, None, []
 
-                    Ok(Solution(target, operation, operands, help beforeSentinel))
+                    if
+                        not (List.isEmpty unknown)
+                        && operation |> Option.exists (fun value -> value <> List)
+                    then
+                        Error(Failure.invalid "Unknown solution option prevents verification.")
+                    else
+                        Ok(Solution(target, operation, operands, help beforeSentinel))
                 | "package" ->
-                    let projectValues, positions =
-                        optionValues
-                            (Set.ofList
-                                [ "--project"
-                                  "--framework"
-                                  "--version"
-                                  "--source"
-                                  "--configfile"
-                                  "--package-directory"
-                                  "--output" ])
-                            beforeSentinel.Tail
+                    let options, positions, unknown = scanPackage beforeSentinel.Tail
 
                     let operation, operands =
                         match positions with
@@ -244,13 +284,29 @@ module private Grammar =
                                 | "download" -> Some PackageDownload
                                 | _ -> None
 
-                            parsed, tail
+                            parsed, tail @ sentinelOperands
                         | [] -> None, []
 
-                    Ok(Package(operation, projectValues |> List.tryHead, operands, help beforeSentinel))
+                    if
+                        not (List.isEmpty unknown)
+                        && operation
+                           |> Option.exists (fun value ->
+                               value = PackageAdd || value = PackageRemove || value = PackageUpdate)
+                    then
+                        Error(Failure.invalid "Unknown package option prevents verification.")
+                    else
+                        Ok(
+                            Package(
+                                operation,
+                                options
+                                |> Map.tryFind "--project"
+                                |> Option.orElseWith (fun () -> options |> Map.tryFind "--file"),
+                                operands,
+                                help beforeSentinel
+                            )
+                        )
                 | "reference" ->
-                    let projectValues, positions =
-                        optionValues (Set.ofList [ "--project"; "--framework" ]) beforeSentinel.Tail
+                    let options, positions, unknown = scanReference beforeSentinel.Tail
 
                     let operation, operands =
                         match positions with
@@ -262,15 +318,19 @@ module private Grammar =
                                 | "remove" -> Some ReferenceRemove
                                 | _ -> None
 
-                            parsed, tail
+                            parsed, tail @ sentinelOperands
                         | [] -> None, []
 
-                    Ok(Reference(operation, projectValues |> List.tryHead, operands, help beforeSentinel))
+                    if
+                        not (List.isEmpty unknown)
+                        && operation
+                           |> Option.exists (fun value -> value = ReferenceAdd || value = ReferenceRemove)
+                    then
+                        Error(Failure.invalid "Unknown reference option prevents verification.")
+                    else
+                        Ok(Reference(operation, options |> Map.tryFind "--project", operands, help beforeSentinel))
                 | "new" ->
-                    let outputValues, positions =
-                        optionValues
-                            (Set.ofList [ "--output"; "-o"; "--name"; "-n"; "--project"; "--verbosity"; "-v" ])
-                            beforeSentinel.Tail
+                    let options, positions, unknown = scanNew beforeSentinel.Tail
 
                     let operation, operands =
                         match positions with
@@ -281,12 +341,14 @@ module private Grammar =
                         | "uninstall" :: tail -> TemplateUninstall, tail
                         | "update" :: tail -> TemplateUpdate, tail
                         | "create" :: tail -> TemplateCreate, tail
-                        | tail -> TemplateCreate, tail
+                        | tail -> TemplateCreate, tail @ sentinelOperands
 
                     Ok(
                         New(
                             operation,
-                            outputValues |> List.tryHead,
+                            options
+                            |> Map.tryFind "--output"
+                            |> Option.orElseWith (fun () -> options |> Map.tryFind "-o"),
                             beforeSentinel |> List.contains "--dry-run",
                             operands,
                             help beforeSentinel
