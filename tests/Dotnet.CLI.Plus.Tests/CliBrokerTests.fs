@@ -54,6 +54,11 @@ module private Helpers =
                 Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MODE", prior))
 
 type CliBrokerTests() =
+    [<Fact>]
+    member _.``unconfirmed tree termination requires partial recovery``() =
+        Assert.Equal("cancelled", BrokerTestHooks.CancellationFailureCode true)
+        Assert.Equal("partial_recovery_required", BrokerTestHooks.CancellationFailureCode false)
+
     [<Theory>]
     [<InlineData("package", "add")>]
     [<InlineData("package", "remove")>]

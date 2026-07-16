@@ -1033,9 +1033,9 @@ module private ProcessExecution =
                         with
                         | :? InvalidOperationException
                         | :? System.ComponentModel.Win32Exception ->
-                            if not childProcess.HasExited then
-                                treeTerminationIncomplete <- true
+                            treeTerminationIncomplete <- true
 
+                            if not childProcess.HasExited then
                                 try
                                     childProcess.Kill()
                                 with
@@ -1526,6 +1526,15 @@ module internal Broker =
             result.ExternalExitCode |> Option.filter ((<>) 0) |> Option.defaultValue 1
 
 module internal BrokerTestHooks =
+    let CancellationFailureCode treeTerminationConfirmed =
+        let failure =
+            if treeTerminationConfirmed then
+                Failure.cancelled ()
+            else
+                Failure.terminationIncomplete ()
+
+        failure.Code.Value
+
     let ExecuteWithHostAsync
         (arguments: string array, fileName: string, prefix: string, cancellationToken: CancellationToken)
         =
