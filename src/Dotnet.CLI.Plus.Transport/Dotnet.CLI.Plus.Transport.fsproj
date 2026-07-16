@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <AssemblyName>Dotnet.CLI.Plus.Transport</AssemblyName>
+        <RootNamespace>Dotnet.CLI.Plus.Transport</RootNamespace>
+    </PropertyGroup>
+    <ItemGroup>
+        <ProjectReference Include="../Dotnet.CLI.Plus.Core/Dotnet.CLI.Plus.Core.fsproj" />
+        <PackageReference Include="FSharp.Core" />
+        <PackageReference Include="MessagePack" />
+    </ItemGroup>
+    <ItemGroup>
+        <Compile Include="Protocol.fs" />
+        <Compile Include="Codec.fs" />
+        <Compile Include="Session.fs" />
+    </ItemGroup>
+</Project>

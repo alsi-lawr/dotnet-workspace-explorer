@@ -7,6 +7,7 @@
     <ItemGroup>
         <Compile Include="AssemblyInfo.fs" />
         <Compile Include="CliBrokerTests.fs" />
+        <Compile Include="PipeTests.fs" />
     </ItemGroup>
 
     <ItemGroup>
@@ -22,6 +23,7 @@
     <ItemGroup>
         <ProjectReference Include="../../src/Dotnet.CLI.Plus/Dotnet.CLI.Plus.fsproj" />
         <ProjectReference Include="../../src/Dotnet.CLI.Plus.Solution/Dotnet.CLI.Plus.Solution.fsproj" />
+        <ProjectReference Include="../../src/Dotnet.CLI.Plus.Transport/Dotnet.CLI.Plus.Transport.fsproj" />
         <ProjectReference Include="../Dotnet.CLI.Plus.FakeHost/Dotnet.CLI.Plus.FakeHost.fsproj" />
     </ItemGroup>
 </Project>

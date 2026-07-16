@@ -13,12 +13,14 @@
     <ItemGroup>
         <ProjectReference Include="../Dotnet.CLI.Plus.Core/Dotnet.CLI.Plus.Core.fsproj" />
         <ProjectReference Include="../Dotnet.CLI.Plus.Solution/Dotnet.CLI.Plus.Solution.fsproj" />
+        <ProjectReference Include="../Dotnet.CLI.Plus.Transport/Dotnet.CLI.Plus.Transport.fsproj" />
         <PackageReference Include="FSharp.Core" />
     </ItemGroup>
 
     <ItemGroup>
         <Compile Include="AssemblyInfo.fs" />
         <Compile Include="Compatibility.fs" />
+        <Compile Include="Pipe.fs" />
         <Compile Include="Program.fs" />
     </ItemGroup>
 

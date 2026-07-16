@@ -14,27 +14,38 @@ module Program =
             event.Cancel <- true
             cancellation.Cancel())
 
-        let jsonMode = arguments |> Array.tryHead = Some "--json"
+        match Pipe.isPipeInvocation arguments with
+        | Some target ->
+            Pipe.runAsync
+                target
+                (Console.OpenStandardInput())
+                (Console.OpenStandardOutput())
+                Console.Error
+                cancellation.Token
+            |> _.GetAwaiter()
+            |> _.GetResult()
+        | None ->
+            let jsonMode = arguments |> Array.tryHead = Some "--json"
 
-        let result =
-            try
-                Broker
-                    .ExecuteAsync(
-                        arguments,
-                        (if jsonMode then
-                             Json
-                         else
-                             Human(
-                                 Console.Out,
-                                 Console.Error,
-                                 not Console.IsOutputRedirected,
-                                 not Console.IsErrorRedirected
-                             )),
-                        cancellation.Token
-                    )
-                    .GetAwaiter()
-                    .GetResult()
-            with _ ->
-                Broker.InternalFailure()
+            let result =
+                try
+                    Broker
+                        .ExecuteAsync(
+                            arguments,
+                            (if jsonMode then
+                                 Json
+                             else
+                                 Human(
+                                     Console.Out,
+                                     Console.Error,
+                                     not Console.IsOutputRedirected,
+                                     not Console.IsErrorRedirected
+                                 )),
+                            cancellation.Token
+                        )
+                        .GetAwaiter()
+                        .GetResult()
+                with _ ->
+                    Broker.InternalFailure()
 
-        Broker.Render result jsonMode Console.Out Console.Error
+            Broker.Render result jsonMode Console.Out Console.Error
