@@ -1,46 +1,63 @@
-﻿using System.ComponentModel;
-using Dotnet.CLI.Plus.CommandContextAccessor;
+using System.ComponentModel;
 using Dotnet.CLI.Plus.Solution;
-using Microsoft.Build.Construction;
-using Microsoft.Build.Shared;
-using Microsoft.DotNet.Cli.Sln.Internal;
 using Spectre.Console;
 using Spectre.Console.Cli;
+
 namespace Dotnet.CLI.Plus.Commands.Sln;
 
-public class SlnAddDirectoryCommand : Command<SlnAddDirectoryCommand.Settings>
+public sealed class SlnAddDirectoryCommand : AsyncCommand<SlnAddDirectoryCommand.Settings>
 {
-    private static readonly CommandHierarchy Hierarchy = new("add", "sln");
-    
-    public class Settings : SlnRootCommand.Settings
+    public sealed class Settings : SlnRootCommand.Settings
     {
         [CommandArgument(0, "[path]")]
-        [Description("""
-                     Path to add to the solution. Can be one of the following:
-                        - Directory, like "dir1"
-                        - Directory hierarchy, like "dir1/dir2", which will nest dir2 in dir1.
-                     """)]
-        public string PathToAdd { get; set; }
+        [Description(
+            """
+                Directory to add to the solution. Nested paths create nested solution folders.
+                """
+        )]
+        public string PathToAdd { get; init; } = string.Empty;
+
+        public override ValidationResult Validate()
+        {
+            if (string.IsNullOrWhiteSpace(PathToAdd))
+            {
+                return ValidationResult.Error("Please specify a directory to add to the solution.");
+            }
+
+            return base.Validate();
+        }
     }
 
-    public override int Execute(CommandContext ctx, Settings settings) =>
-        ProcessSettings(settings);
-
-    private static int ProcessSettings(Settings settings)
+    protected override async Task<int> ExecuteAsync(
+        CommandContext context,
+        Settings settings,
+        CancellationToken cancellationToken
+    )
     {
-        var parseResult = SlnParser.Parse(settings.SlnPath);
-        return parseResult.Match<int>(
-            Succ: slnFile => AddDirectoryToSolution(slnFile, settings),
-            Fail: exception => exception.PrintErrors<SolutionParseError>()
+        var parseResult = await SolutionParser.ParseAsync(settings.SolutionPath, cancellationToken);
+
+        return await parseResult.Match(
+            solution => AddDirectoryAsync(solution, settings.PathToAdd, cancellationToken),
+            error => Task.FromResult(error.DisplayCliInfo())
         );
     }
 
-    private static int AddDirectoryToSolution(SlnFile file, Settings settings)
-    { 
-        var directories = SlnActionValidator.GetDirectoryTree(settings.PathToAdd).ToList();
+    private static async Task<int> AddDirectoryAsync(
+        SolutionDocument solution,
+        string targetPath,
+        CancellationToken cancellationToken
+    )
+    {
+        var folderPathResult = SolutionFolderPath.FromDirectory(solution.FilePath, targetPath);
 
-        file.AddDirectoriesAsProjects(directories);
-        file.Write();
-        return 0;
+        return await folderPathResult.Match(
+            async folderPath =>
+            {
+                solution.Model.AddFolder(folderPath.Value);
+                var saveResult = await solution.SaveAsync(cancellationToken);
+                return saveResult.Match(_ => 0, error => error.DisplayCliInfo());
+            },
+            error => Task.FromResult(error.DisplayCliInfo())
+        );
     }
 }

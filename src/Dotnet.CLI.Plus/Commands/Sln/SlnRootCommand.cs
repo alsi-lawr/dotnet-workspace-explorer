@@ -1,4 +1,4 @@
-﻿using System.ComponentModel;
+using System.ComponentModel;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -9,20 +9,23 @@ public class SlnRootCommand : Command<SlnRootCommand.Settings>
     public class Settings : CommandSettings
     {
         [CommandArgument(0, "<PATH>")]
-        [Description("Path to the sln file. Supports directory paths.")]
-        public string SlnPath { get; set; } = string.Empty;
+        [Description("Path to a .sln or .slnx file. Directory paths are also supported.")]
+        public string SolutionPath { get; init; } = string.Empty;
 
         public override ValidationResult Validate()
         {
-            if(!Path.Exists(SlnPath))
-                return ValidationResult.Error("Sln path is invalid.");
-            
+            if (!Path.Exists(SolutionPath))
+            {
+                return ValidationResult.Error("Solution path is invalid.");
+            }
+
             return base.Validate();
         }
     }
 
-    public override int Execute(CommandContext ctx, Settings settings)
-    {
-        return 0;
-    }
+    protected override int Execute(
+        CommandContext context,
+        Settings settings,
+        CancellationToken cancellationToken
+    ) => 0;
 }
