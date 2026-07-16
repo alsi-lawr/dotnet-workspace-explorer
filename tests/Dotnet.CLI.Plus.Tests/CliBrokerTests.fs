@@ -54,6 +54,67 @@ module private Helpers =
                 Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MODE", prior))
 
 type CliBrokerTests() =
+    [<Theory>]
+    [<InlineData("package", "add")>]
+    [<InlineData("package", "remove")>]
+    [<InlineData("reference", "add")>]
+    member _.``existing solution targets are rejected before project mutations``(command: string, operation: string) =
+        let directory = Helpers.temporaryDirectory ()
+        let marker = Path.Combine(directory, "launched")
+        let previous = Environment.GetEnvironmentVariable "DOTNET_PLUS_FAKE_HOST_MARKER"
+
+        try
+            let solution = Path.Combine(directory, "Demo.slnx")
+            Helpers.saveSolution solution
+            Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MARKER", marker)
+
+            let arguments =
+                if command = "package" then
+                    [| command; operation; "Example.Package"; "--project"; solution |]
+                else
+                    [| command; operation; "Other.fsproj"; "--project"; solution |]
+
+            let result = Helpers.fake "marker" arguments
+            Assert.False(result.Success)
+            Assert.Equal("invalid_input", result.Diagnostics.Head.DiagnosticCode.Value)
+            Assert.False(File.Exists marker)
+        finally
+            Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MARKER", previous)
+            Helpers.delete directory
+
+    [<Fact>]
+    member _.``dry run boolean value remains read only``() =
+        Assert.True((Helpers.fake "capture" [| "new"; "console"; "--dry-run=true" |]).Success)
+
+    [<Theory>]
+    [<InlineData("package")>]
+    [<InlineData("reference")>]
+    member _.``unknown option values cannot bypass mutation verification``(command: string) =
+        let directory = Helpers.temporaryDirectory ()
+        let marker = Path.Combine(directory, "launched")
+        let previous = Environment.GetEnvironmentVariable "DOTNET_PLUS_FAKE_HOST_MARKER"
+
+        try
+            let project = Path.Combine(directory, "App.fsproj")
+            File.WriteAllText(project, "<Project />")
+            Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MARKER", marker)
+
+            let operand =
+                if command = "package" then
+                    "Example.Package"
+                else
+                    "Other.fsproj"
+
+            let result =
+                Helpers.fake "marker" [| command; "--mystery"; "value"; "add"; operand; "--project"; project |]
+
+            Assert.False(result.Success)
+            Assert.Equal("invalid_input", result.Diagnostics.Head.DiagnosticCode.Value)
+            Assert.False(File.Exists marker)
+        finally
+            Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MARKER", previous)
+            Helpers.delete directory
+
     [<Fact>]
     member _.``solution optional boolean cannot bypass slnf preflight``() =
         let directory = Helpers.temporaryDirectory ()

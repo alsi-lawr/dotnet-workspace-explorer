@@ -211,6 +211,15 @@ module private Failure =
             diagnostic WorkspaceErrorCode.Cancelled.Value "The dotnet command was cancelled." true
         )
 
+    let terminationIncomplete () =
+        PartialRecoveryRequired(
+            "Terminate remaining descendant processes manually.",
+            diagnostic
+                WorkspaceErrorCode.PartialRecoveryRequired.Value
+                "The command process exited, but the full descendant process tree could not be confirmed terminated."
+                false
+        )
+
     let internalFailure message =
         Internal(diagnostic WorkspaceErrorCode.InternalError.Value message false)
 
@@ -301,14 +310,8 @@ module private Grammar =
                   "-v"
                   "--add-source"
                   "--nuget-source" ])
-            (Set.ofList
-                [ "--dry-run"
-                  "--check-only"
-                  "--force"
-                  "--no-update-check"
-                  "--diagnostics"
-                  "-d" ])
-            Set.empty
+            (Set.ofList [ "--force"; "--no-update-check"; "--diagnostics"; "-d" ])
+            (Set.ofList [ "--dry-run"; "--check-only" ])
 
     let parse (arguments: string array) =
         let json, child =
@@ -384,12 +387,11 @@ module private Grammar =
                             parsed, tail @ sentinelOperands
                         | [] -> None, []
 
-                    if
-                        not (List.isEmpty unknown)
-                        && operation
-                           |> Option.exists (fun value ->
-                               value = PackageAdd || value = PackageRemove || value = PackageUpdate)
-                    then
+                    let mutatingTokenPresent =
+                        beforeSentinel.Tail
+                        |> List.exists (fun value -> value = "add" || value = "remove" || value = "update")
+
+                    if not (List.isEmpty unknown) && mutatingTokenPresent && not (help beforeSentinel) then
                         Error(Failure.invalid "Unknown package option prevents verification.")
                     else
                         Ok(
@@ -420,16 +422,22 @@ module private Grammar =
                             parsed, tail @ sentinelOperands
                         | [] -> None, []
 
-                    if
-                        not (List.isEmpty unknown)
-                        && operation
-                           |> Option.exists (fun value -> value = ReferenceAdd || value = ReferenceRemove)
-                    then
+                    let mutatingTokenPresent =
+                        beforeSentinel.Tail
+                        |> List.exists (fun value -> value = "add" || value = "remove")
+
+                    if not (List.isEmpty unknown) && mutatingTokenPresent && not (help beforeSentinel) then
                         Error(Failure.invalid "Unknown reference option prevents verification.")
                     else
                         Ok(Reference(operation, options |> Map.tryFind "--project", operands, help beforeSentinel))
                 | "new" ->
                     let options, positions, unknown = scanNew beforeSentinel.Tail
+
+                    let optionEnabled name =
+                        options
+                        |> Map.tryFind name
+                        |> Option.exists (fun value ->
+                            not (String.Equals(value, "false", StringComparison.OrdinalIgnoreCase)))
 
                     let operation, operands =
                         match positions with
@@ -449,8 +457,7 @@ module private Grammar =
                             options
                             |> Map.tryFind "--output"
                             |> Option.orElseWith (fun () -> options |> Map.tryFind "-o"),
-                            beforeSentinel
-                            |> List.exists (fun value -> value = "--dry-run" || value = "--check-only"),
+                            optionEnabled "--dry-run" || optionEnabled "--check-only",
                             operands,
                             help beforeSentinel
                         )
@@ -480,9 +487,19 @@ module private Grammar =
         | _ -> false
 
 module private Paths =
+    let isProjectFile (path: string) =
+        match Path.GetExtension(path).ToLowerInvariant() with
+        | ".csproj"
+        | ".fsproj"
+        | ".vbproj" -> true
+        | _ -> false
+
+    let isFileBasedApp (path: string) =
+        String.Equals(Path.GetExtension path, ".cs", StringComparison.OrdinalIgnoreCase)
+
     let projects (directory: string) =
         Directory.EnumerateFiles(directory, "*.*proj", SearchOption.TopDirectoryOnly)
-        |> Seq.filter (fun path -> [ ".csproj"; ".fsproj"; ".vbproj" ] |> List.contains (Path.GetExtension path))
+        |> Seq.filter isProjectFile
         |> Seq.sort
         |> Seq.toList
 
@@ -1008,23 +1025,34 @@ module private ProcessExecution =
                         }
 
                     if wasCancelled then
+                        let mutable treeTerminationIncomplete = false
+
                         try
                             if not childProcess.HasExited then
                                 childProcess.Kill(true)
                         with
                         | :? InvalidOperationException
                         | :? System.ComponentModel.Win32Exception ->
-                            try
-                                if not childProcess.HasExited then
+                            if not childProcess.HasExited then
+                                treeTerminationIncomplete <- true
+
+                                try
                                     childProcess.Kill()
-                            with
-                            | :? InvalidOperationException
-                            | :? System.ComponentModel.Win32Exception -> ()
+                                with
+                                | :? InvalidOperationException
+                                | :? System.ComponentModel.Win32Exception -> ()
 
                         do! childProcess.WaitForExitAsync CancellationToken.None
                         let! output = outputTask
                         let! error = errorTask
-                        return Error(Failure.cancelled ())
+
+                        return
+                            Error(
+                                if treeTerminationIncomplete then
+                                    Failure.terminationIncomplete ()
+                                else
+                                    Failure.cancelled ()
+                            )
                     else
                         let! output = outputTask
                         let! error = errorTask
@@ -1209,7 +1237,14 @@ module internal Broker =
                                     |> Option.map Ok
                                     |> Option.defaultWith Paths.defaultProject
                                 with
-                                | Ok target when File.Exists target -> return Ok NoPreparedState
+                                | Ok target when
+                                    File.Exists target
+                                    && ((file.IsSome && Paths.isFileBasedApp target)
+                                        || (file.IsNone && Paths.isProjectFile target))
+                                    ->
+                                    return Ok NoPreparedState
+                                | Ok target when File.Exists target ->
+                                    return Error(Failure.invalid "The package target type is not supported.")
                                 | Ok _ -> return Error(Failure.invalid "The package target does not exist.")
                                 | Error message -> return Error(Failure.invalid message)
                         | Package(Some PackageRemove, project, file, _, operands, false) ->
@@ -1222,7 +1257,14 @@ module internal Broker =
                                     |> Option.map Ok
                                     |> Option.defaultWith Paths.defaultProject
                                 with
-                                | Ok target when File.Exists target -> return Ok NoPreparedState
+                                | Ok target when
+                                    File.Exists target
+                                    && ((file.IsSome && Paths.isFileBasedApp target)
+                                        || (file.IsNone && Paths.isProjectFile target))
+                                    ->
+                                    return Ok NoPreparedState
+                                | Ok target when File.Exists target ->
+                                    return Error(Failure.invalid "The package target type is not supported.")
                                 | Ok _ -> return Error(Failure.invalid "The package target does not exist.")
                                 | Error message -> return Error(Failure.invalid message)
                         | Package(Some PackageUpdate, project, file, _, _, false) ->
@@ -1236,7 +1278,10 @@ module internal Broker =
                                 return Error(Failure.invalid "Reference mutation requires operands.")
                             else
                                 match project |> Option.map Ok |> Option.defaultWith Paths.defaultProject with
-                                | Ok target when File.Exists target -> return Ok NoPreparedState
+                                | Ok target when File.Exists target && Paths.isProjectFile target ->
+                                    return Ok NoPreparedState
+                                | Ok target when File.Exists target ->
+                                    return Error(Failure.invalid "The reference target must be a project file.")
                                 | Ok _ -> return Error(Failure.invalid "The reference target does not exist.")
                                 | Error message -> return Error(Failure.invalid message)
                         | New(TemplateInstall, _, false, subjects, false) when List.isEmpty subjects ->
