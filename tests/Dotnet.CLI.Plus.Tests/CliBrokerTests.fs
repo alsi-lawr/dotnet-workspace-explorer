@@ -8,6 +8,7 @@ open System.Text.Json
 open System.Threading
 open Dotnet.CLI.Plus
 open Dotnet.CLI.Plus.Core
+open Dotnet.CLI.Plus.Solution
 open Microsoft.VisualStudio.SolutionPersistence.Model
 open Microsoft.VisualStudio.SolutionPersistence.Serializer
 open Xunit
@@ -53,6 +54,142 @@ module private Helpers =
                 Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MODE", prior))
 
 type CliBrokerTests() =
+    [<Fact>]
+    member _.``solution optional boolean cannot bypass slnf preflight``() =
+        let directory = Helpers.temporaryDirectory ()
+        let marker = Path.Combine(directory, "launched")
+        let previous = Environment.GetEnvironmentVariable "DOTNET_PLUS_FAKE_HOST_MARKER"
+
+        try
+            Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MARKER", marker)
+
+            let result =
+                Helpers.fake
+                    "marker"
+                    [| "solution"
+                       "--include-references"
+                       "false"
+                       Path.Combine(directory, "read-only.slnf")
+                       "add"
+                       "App.fsproj" |]
+
+            Assert.False(result.Success)
+            Assert.Equal("unsupported_capability", result.Diagnostics.Head.DiagnosticCode.Value)
+            Assert.False(File.Exists marker)
+        finally
+            Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MARKER", previous)
+            Helpers.delete directory
+
+    [<Fact>]
+    member _.``new install accepts subjects after sentinel``() =
+        let home = Helpers.temporaryDirectory ()
+        let previous = Environment.GetEnvironmentVariable "DOTNET_CLI_HOME"
+
+        try
+            Environment.SetEnvironmentVariable("DOTNET_CLI_HOME", home)
+
+            let cache =
+                Path.Combine(home, ".templateengine", "dotnetcli", "test", "templatecache.json")
+
+            Directory.CreateDirectory(Path.GetDirectoryName cache) |> ignore
+            File.WriteAllText(cache, "\uFEFF{\"MountPointsInfo\":{\"Example.Template\":{}}}")
+            Assert.True((Helpers.fake "capture" [| "new"; "install"; "--"; "Example.Template" |]).Success)
+        finally
+            Environment.SetEnvironmentVariable("DOTNET_CLI_HOME", previous)
+            Helpers.delete home
+
+    [<Fact>]
+    member _.``package short version option remains independent of project``() =
+        let directory = Helpers.temporaryDirectory ()
+
+        try
+            let project = Path.Combine(directory, "App.fsproj")
+
+            File.WriteAllText(
+                project,
+                "<Project><ItemGroup><PackageReference Include=\"Example.Package\" Version=\"2.0.0\" /></ItemGroup></Project>"
+            )
+
+            Assert.True(
+                (Helpers.fake "capture" [| "package"; "add"; "Example.Package"; "-v"; "2.0.0"; "--project"; project |])
+                    .Success
+            )
+        finally
+            Helpers.delete directory
+
+    [<Fact>]
+    member _.``package update refreshes project file and solution targets``() =
+        let directory = Helpers.temporaryDirectory ()
+
+        try
+            let project = Path.Combine(directory, "App.fsproj")
+            let solution = Path.Combine(directory, "App.slnx")
+
+            File.WriteAllText(
+                project,
+                "<Project><ItemGroup><PackageReference Include=\"Example.Package\" Version=\"2.0.0\" /></ItemGroup></Project>"
+            )
+
+            Helpers.saveSolutionWithProject solution "App.fsproj"
+
+            Assert.True(
+                (Helpers.fake "capture" [| "package"; "update"; "Example.Package@2.0.0"; "--project"; project |])
+                    .Success
+            )
+
+            Assert.True(
+                (Helpers.fake "capture" [| "package"; "update"; "Example.Package@2.0.0"; "--project"; solution |])
+                    .Success
+            )
+
+            Assert.True((Helpers.fake "capture" [| "package"; "update"; "--project"; project |]).Success)
+        finally
+            Helpers.delete directory
+
+    [<Fact>]
+    member _.``package update refreshes file based app state``() =
+        let directory = Helpers.temporaryDirectory ()
+
+        try
+            let source = Path.Combine(directory, "app.cs")
+            File.WriteAllText(source, "#:package Example.Package@2.0.0\nConsole.WriteLine(1);\n")
+
+            Assert.True(
+                (Helpers.fake "capture" [| "package"; "update"; "Example.Package@2.0.0"; "--file"; source |]).Success
+            )
+
+            Assert.True((Helpers.fake "capture" [| "package"; "update"; "--file"; source |]).Success)
+        finally
+            Helpers.delete directory
+
+    [<Fact>]
+    member _.``invalid package update target is rejected before launch``() =
+        let directory = Helpers.temporaryDirectory ()
+        let marker = Path.Combine(directory, "launched")
+        let previous = Environment.GetEnvironmentVariable "DOTNET_PLUS_FAKE_HOST_MARKER"
+
+        try
+            Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MARKER", marker)
+
+            let result =
+                Helpers.fake
+                    "marker"
+                    [| "package"
+                       "update"
+                       "Example.Package"
+                       "--project"
+                       Path.Combine(directory, "missing.fsproj") |]
+
+            Assert.False(result.Success)
+            Assert.False(File.Exists marker)
+        finally
+            Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MARKER", previous)
+            Helpers.delete directory
+
+    [<Fact>]
+    member _.``bare new is forwarded as a read only template list``() =
+        Assert.True((Helpers.fake "capture" [| "new" |]).Success)
+
     [<Fact>]
     member _.``package update resolver identifies project and file targets``() =
         let directory = Helpers.temporaryDirectory ()
@@ -189,6 +326,19 @@ type CliBrokerTests() =
             Assert.False(result.Success)
             Assert.Equal("cancelled", result.Diagnostics.Head.DiagnosticCode.Value)
             Assert.Equal(1, Broker.Render result true (new StringWriter()) (new StringWriter()))
+            Assert.True(File.Exists pidFile, "The managed fake host did not record its child process.")
+
+            let childExited =
+                try
+                    use child =
+                        System.Diagnostics.Process.GetProcessById(int (File.ReadAllText(pidFile).Trim()))
+
+                    child.WaitForExit 3000 |> ignore
+                    child.HasExited
+                with :? ArgumentException ->
+                    true
+
+            Assert.True(childExited, "The owned fake-host child process was not reaped.")
         finally
             Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MODE", mode)
             Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_CHILD_PID", marker)
@@ -914,6 +1064,13 @@ type CliBrokerTests() =
 
             Assert.True(result.Success)
             Assert.Equal("solution", result.CommandId)
+
+            let reopened = SolutionStore.OpenAsync(solution).Result
+
+            match reopened with
+            | Success workspace ->
+                Assert.Contains(workspace.RootProjection.Folders, fun item -> item.Path = "/src/nested/")
+            | Failure _ -> failwith "Expected the legacy solution folder to be persisted."
         finally
             Helpers.delete directory
 
