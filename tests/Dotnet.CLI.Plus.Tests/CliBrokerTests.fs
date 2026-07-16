@@ -53,6 +53,36 @@ module private Helpers =
                 Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MODE", prior))
 
 type CliBrokerTests() =
+    [<Theory>]
+    [<InlineData("#:package Example.Package", "Example.Package", "")>]
+    [<InlineData("  #:package Example.Package@1.2.3", "Example.Package", "1.2.3")>]
+    member _.``file package directive parser accepts exact directive forms``
+        (source: string, id: string, version: string)
+        =
+        match FileBasedPackageDirectives.Parse source with
+        | Ok directives ->
+            let requestedVersion = if version = "" then None else Some version
+            Assert.True(FileBasedPackageDirectives.Contains(id.ToLowerInvariant(), requestedVersion, directives))
+        | Error failure -> failwith failure.Diagnostic.Message
+
+    [<Fact>]
+    member _.``file package directive parser ignores comments code and substrings``() =
+        let source =
+            "// #:package Wrong\nlet value = \"#:package Wrong\"\n#:packages Wrong\n#:package Actual"
+
+        match FileBasedPackageDirectives.Parse source with
+        | Ok directives ->
+            Assert.Single directives |> ignore
+            Assert.True(FileBasedPackageDirectives.Contains("actual", None, directives))
+            Assert.False(FileBasedPackageDirectives.Contains("act", None, directives))
+        | Error failure -> failwith failure.Diagnostic.Message
+
+    [<Fact>]
+    member _.``file package directive parser returns invalid input for malformed directive``() =
+        match FileBasedPackageDirectives.Parse "#:package " with
+        | Ok _ -> failwith "Expected malformed directive failure."
+        | Error failure -> Assert.Equal("invalid_input", failure.Code.Value)
+
     [<Fact>]
     member _.``package version before project selects the project``() =
         let directory = Helpers.temporaryDirectory ()
