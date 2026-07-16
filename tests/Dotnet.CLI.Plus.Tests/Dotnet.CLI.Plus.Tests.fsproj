@@ -5,10 +5,12 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="coverlet.collector">
-            <PrivateAssets>all</PrivateAssets>
-            <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-        </PackageReference>
+        <Compile Include="AssemblyInfo.fs" />
+        <Compile Include="CliBrokerTests.fs" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="FSharp.Core" />
         <PackageReference Include="Microsoft.NET.Test.Sdk" />
         <PackageReference Include="xunit" />
         <PackageReference Include="xunit.runner.visualstudio">
@@ -18,10 +20,8 @@
     </ItemGroup>
 
     <ItemGroup>
-        <ProjectReference Include="../../src/Dotnet.CLI.Plus/Dotnet.CLI.Plus.csproj" />
-    </ItemGroup>
-
-    <ItemGroup>
-        <Using Include="Xunit" />
+        <ProjectReference Include="../../src/Dotnet.CLI.Plus/Dotnet.CLI.Plus.fsproj" />
+        <ProjectReference Include="../../src/Dotnet.CLI.Plus.Solution/Dotnet.CLI.Plus.Solution.fsproj" />
+        <ProjectReference Include="../Dotnet.CLI.Plus.FakeHost/Dotnet.CLI.Plus.FakeHost.fsproj" />
     </ItemGroup>
 </Project>

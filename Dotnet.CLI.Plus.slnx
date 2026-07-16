@@ -11,11 +11,12 @@
     <Folder Name="/src/">
         <Project Path="src/Dotnet.CLI.Plus.Core/Dotnet.CLI.Plus.Core.fsproj" />
         <Project Path="src/Dotnet.CLI.Plus.Solution/Dotnet.CLI.Plus.Solution.fsproj" />
-        <Project Path="src/Dotnet.CLI.Plus/Dotnet.CLI.Plus.csproj" />
+        <Project Path="src/Dotnet.CLI.Plus/Dotnet.CLI.Plus.fsproj" />
     </Folder>
     <Folder Name="/tests/">
+        <Project Path="tests/Dotnet.CLI.Plus.FakeHost/Dotnet.CLI.Plus.FakeHost.fsproj" />
         <Project Path="tests/Dotnet.CLI.Plus.Core.Tests/Dotnet.CLI.Plus.Core.Tests.fsproj" />
         <Project Path="tests/Dotnet.CLI.Plus.Solution.Tests/Dotnet.CLI.Plus.Solution.Tests.fsproj" />
-        <Project Path="tests/Dotnet.CLI.Plus.Tests/Dotnet.CLI.Plus.Tests.csproj" />
+        <Project Path="tests/Dotnet.CLI.Plus.Tests/Dotnet.CLI.Plus.Tests.fsproj" />
     </Folder>
 </Solution>

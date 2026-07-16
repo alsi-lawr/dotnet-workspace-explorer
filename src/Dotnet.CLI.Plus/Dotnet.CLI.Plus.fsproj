@@ -1,6 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
         <OutputType>Exe</OutputType>
+        <AssemblyName>Dotnet.CLI.Plus</AssemblyName>
+        <RootNamespace>Dotnet.CLI.Plus</RootNamespace>
         <PackAsTool>true</PackAsTool>
         <ToolCommandName>dotnet-plus</ToolCommandName>
         <PackageOutputPath>../../build</PackageOutputPath>
@@ -9,10 +11,14 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <ProjectReference Include="../Dotnet.CLI.Plus.Core/Dotnet.CLI.Plus.Core.fsproj" />
         <ProjectReference Include="../Dotnet.CLI.Plus.Solution/Dotnet.CLI.Plus.Solution.fsproj" />
-        <PackageReference Include="Microsoft.VisualStudio.SolutionPersistence" />
-        <PackageReference Include="Spectre.Console" />
-        <PackageReference Include="Spectre.Console.Cli" />
+        <PackageReference Include="FSharp.Core" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Compile Include="Compatibility.fs" />
+        <Compile Include="Program.fs" />
     </ItemGroup>
 
     <ItemGroup>
