@@ -44,6 +44,77 @@ module private Helpers =
 
 type CliBrokerTests() =
     [<Fact>]
+    member _.``unknown command is invalid input``() =
+        let result = Helpers.fake "capture" [| "publish" |]
+        Assert.False(result.Success)
+        Assert.Equal("invalid_input", result.Diagnostics.Head.DiagnosticCode.Value)
+
+    [<Fact>]
+    member _.``package help is forwarded without mutation verification``() =
+        let result = Helpers.fake "capture" [| "package"; "add"; "--help" |]
+        Assert.True(result.Success)
+
+    [<Fact>]
+    member _.``new dry run is read only``() =
+        let result = Helpers.fake "capture" [| "new"; "console"; "--dry-run" |]
+        Assert.True(result.Success)
+
+    [<Fact>]
+    member _.``nonzero child exit remains external failure``() =
+        let result = Helpers.fake "failure" [| "build" |]
+        Assert.False(result.Success)
+        Assert.Equal(Some 23, result.ExternalExitCode)
+        Assert.Equal("external_tool_failed", result.Diagnostics.Head.DiagnosticCode.Value)
+
+    [<Fact>]
+    member _.``package default project ambiguity is invalid input``() =
+        let directory = Helpers.temporaryDirectory ()
+        let current = Directory.GetCurrentDirectory()
+
+        try
+            File.WriteAllText(Path.Combine(directory, "One.fsproj"), "<Project />")
+            File.WriteAllText(Path.Combine(directory, "Two.fsproj"), "<Project />")
+            Directory.SetCurrentDirectory directory
+            let result = Helpers.fake "capture" [| "package"; "add"; "Example.Package" |]
+            Assert.False(result.Success)
+            Assert.Equal("invalid_input", result.Diagnostics.Head.DiagnosticCode.Value)
+        finally
+            Directory.SetCurrentDirectory current
+            Helpers.delete directory
+
+    [<Fact>]
+    member _.``reference verification uses exact project reference paths``() =
+        let directory = Helpers.temporaryDirectory ()
+
+        try
+            let project = Path.Combine(directory, "App.fsproj")
+            let reference = Path.Combine(directory, "Lib.fsproj")
+
+            File.WriteAllText(
+                project,
+                "<Project><ItemGroup><ProjectReference Include=\"Lib.fsproj\" /></ItemGroup></Project>"
+            )
+
+            let result =
+                Helpers.fake "capture" [| "reference"; "add"; reference; "--project"; project |]
+
+            Assert.True(result.Success)
+        finally
+            Helpers.delete directory
+
+    [<Fact>]
+    member _.``json envelope contains captured child arguments``() =
+        let result = Helpers.fake "capture" [| "build"; "--no-restore" |]
+        let output = new StringWriter()
+        Broker.Render result true output (new StringWriter()) |> ignore
+        use document = JsonDocument.Parse(output.ToString())
+
+        let argument =
+            document.RootElement.GetProperty("result").GetProperty("childArguments")[0]
+
+        Assert.Equal("build", argument.GetString())
+
+    [<Fact>]
     member _.``preserves sln argv and a sentinel json literal``() =
         let directory = Helpers.temporaryDirectory ()
 
