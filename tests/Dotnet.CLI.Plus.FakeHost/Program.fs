@@ -33,6 +33,19 @@ module Program =
             | None -> ()
 
             0
+        | _, Some "create-output" ->
+            let output =
+                arguments
+                |> Array.pairwise
+                |> Array.tryPick (function
+                    | "--output", value
+                    | "-o", value -> Some value
+                    | _ -> None)
+                |> Option.defaultValue (Directory.GetCurrentDirectory())
+
+            Directory.CreateDirectory output |> ignore
+            File.WriteAllText(Path.Combine(output, "created-by-fake.txt"), "created")
+            0
         | _, Some "tree" ->
             let startInfo = ProcessStartInfo()
 

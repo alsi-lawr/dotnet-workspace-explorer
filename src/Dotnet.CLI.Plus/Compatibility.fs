@@ -769,14 +769,17 @@ module private Verify =
     let snapshot (directory: string) =
         if Directory.Exists directory then
             Directory.EnumerateFileSystemEntries(directory, "*", SearchOption.AllDirectories)
-            |> Set.ofSeq
+            |> Seq.map (fun path ->
+                let info = FileInfo path
+                path, (info.Length, info.LastWriteTimeUtc.Ticks))
+            |> Map.ofSeq
         else
-            Set.empty
+            Map.empty
 
     let verifyNew (output: string) before =
         let after = snapshot output
 
-        if after <> before || not (Set.isEmpty after) then
+        if after <> before then
             Ok None
         else
             Error(Failure.verification "The template command did not create a verifiable output state.")
@@ -942,7 +945,7 @@ module internal Broker =
                         | New(TemplateCreate, output, false, _, false) ->
                             let target = output |> Option.defaultValue (Directory.GetCurrentDirectory()) in
                             target, Verify.snapshot target
-                        | _ -> "", Set.empty
+                        | _ -> "", Map.empty
 
                     let! executed = ProcessExecution.run host child mode cancellationToken
 

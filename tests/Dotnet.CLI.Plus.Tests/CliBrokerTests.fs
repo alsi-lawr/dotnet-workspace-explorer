@@ -54,6 +54,34 @@ module private Helpers =
 
 type CliBrokerTests() =
     [<Fact>]
+    member _.``new name before output verifies output state``() =
+        let directory = Helpers.temporaryDirectory ()
+
+        try
+            let output = Path.Combine(directory, "created")
+
+            Assert.True(
+                (Helpers.fake "create-output" [| "new"; "console"; "--name"; "Wrong"; "--output"; output |]).Success
+            )
+        finally
+            Helpers.delete directory
+
+    [<Fact>]
+    member _.``new no op fails for unchanged preexisting output``() =
+        let directory = Helpers.temporaryDirectory ()
+
+        try
+            File.WriteAllText(Path.Combine(directory, "existing.txt"), "unchanged")
+            Assert.False((Helpers.fake "capture" [| "new"; "console"; "--output"; directory |]).Success)
+        finally
+            Helpers.delete directory
+
+    [<Fact>]
+    member _.``new dry run and help bypass output verification``() =
+        Assert.True((Helpers.fake "capture" [| "new"; "console"; "--dry-run" |]).Success)
+        Assert.True((Helpers.fake "capture" [| "new"; "--help" |]).Success)
+
+    [<Fact>]
     member _.``template state reads bom cache and exact package boundaries``() =
         let root = Helpers.temporaryDirectory ()
 
