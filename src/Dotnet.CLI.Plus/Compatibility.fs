@@ -633,6 +633,12 @@ module private Verify =
         | [] -> Error(Failure.invalid "Package mutations require a package ID.")
         | subjects ->
             let document = XDocument.Load project
+
+            let comparer =
+                match HostFileSystemCaseDetector.DetectFromExistingPath project with
+                | HostFileSystemCaseSemantics.Insensitive -> StringComparer.OrdinalIgnoreCase
+                | _ -> StringComparer.Ordinal
+
             let references = descendants "PackageReference" document |> Seq.toList
 
             let present subject =
@@ -681,19 +687,32 @@ module private Verify =
 
             let document = XDocument.Load project
 
+            let comparer =
+                match HostFileSystemCaseDetector.DetectFromExistingPath project with
+                | HostFileSystemCaseSemantics.Insensitive -> StringComparer.OrdinalIgnoreCase
+                | _ -> StringComparer.Ordinal
+
             let references =
                 descendants "ProjectReference" document
                 |> Seq.choose (attribute "Include")
                 |> Seq.map (fun value -> Path.GetFullPath(value, projectDirectory))
-                |> Set.ofSeq
+                |> Seq.toList
 
             let requested =
                 operands |> List.map (fun value -> Path.GetFullPath(value, projectDirectory))
 
             let correct =
                 match operation with
-                | ReferenceAdd -> requested |> List.forall references.Contains
-                | ReferenceRemove -> requested |> List.forall (references.Contains >> not)
+                | ReferenceAdd ->
+                    requested
+                    |> List.forall (fun value ->
+                        references |> List.exists (fun reference -> comparer.Equals(reference, value)))
+                | ReferenceRemove ->
+                    requested
+                    |> List.forall (fun value ->
+                        references
+                        |> List.exists (fun reference -> comparer.Equals(reference, value))
+                        |> not)
                 | _ -> true
 
             if correct then

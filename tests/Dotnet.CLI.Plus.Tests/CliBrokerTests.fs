@@ -53,6 +53,51 @@ module private Helpers =
                 Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MODE", prior))
 
 type CliBrokerTests() =
+    [<Theory>]
+    [<InlineData(false)>]
+    [<InlineData(true)>]
+    member _.``reference framework and project option forms resolve exact project``(equals: bool) =
+        let directory = Helpers.temporaryDirectory ()
+
+        try
+            let project = Path.Combine(directory, "App.fsproj")
+
+            File.WriteAllText(
+                project,
+                "<Project><ItemGroup><ProjectReference Include=\"Lib.fsproj\" /></ItemGroup></Project>"
+            )
+
+            let arguments =
+                if equals then
+                    [| "reference"; "add"; "Lib.fsproj"; $"--project={project}" |]
+                else
+                    [| "reference"
+                       "--framework"
+                       "net10.0"
+                       "--project"
+                       project
+                       "add"
+                       "Lib.fsproj" |]
+
+            Assert.True((Helpers.fake "capture" arguments).Success)
+        finally
+            Helpers.delete directory
+
+    [<Fact>]
+    member _.``reference multiple remove verifies exact absence``() =
+        let directory = Helpers.temporaryDirectory ()
+
+        try
+            let project = Path.Combine(directory, "App.fsproj")
+            File.WriteAllText(project, "<Project />")
+
+            Assert.True(
+                (Helpers.fake "capture" [| "reference"; "remove"; "One.fsproj"; "Two.fsproj"; "--project"; project |])
+                    .Success
+            )
+        finally
+            Helpers.delete directory
+
     [<Fact>]
     member _.``file based package add verifies directive with explicit version``() =
         let directory = Helpers.temporaryDirectory ()
