@@ -158,6 +158,11 @@ module RpcSession =
             | _ -> return Error RpcErrors.internalError
         }
 
+    let private isCallableMethod (profile: RpcProfile) methodName =
+        match profile.Methods.TryGetValue methodName with
+        | true, descriptor -> descriptor.Classification <> NotificationMethod
+        | _ -> methodName = "initialize"
+
     let runAsync
         (configuration: RpcSessionConfiguration)
         (input: Stream)
@@ -268,10 +273,7 @@ module RpcSession =
                                     if methodName <> "initialize" && not initialized then
                                         let! _ = writeError id RpcErrors.preInitialize
                                         ()
-                                    elif
-                                        methodName <> "initialize"
-                                        && not (configuration.Profile.Methods.ContainsKey methodName)
-                                    then
+                                    elif not (isCallableMethod configuration.Profile methodName) then
                                         let! _ = writeError id (RpcErrors.unknownMethod methodName)
                                         ()
                                     elif methodName = "initialize" then

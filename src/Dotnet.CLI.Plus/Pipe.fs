@@ -114,13 +114,21 @@ module private ProjectionFingerprint =
         writer.Flush()
         stream.ToArray()
 
-type private ExportOperationState(sessionToken: CancellationToken) =
+type internal ExportOperationState(sessionToken: CancellationToken) =
     let cancellation = CancellationTokenSource.CreateLinkedTokenSource sessionToken
 
     let cancellationResponseFlushed =
         TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
 
     let mutable state = 0 // 0 running, 1 cancellation reserved, 2 success reserved, 3 complete
+    let mutable cancellationCommitted = 0
+
+    let cancelAndRelease () =
+        if Interlocked.CompareExchange(&cancellationCommitted, 1, 0) = 0 then
+            try
+                cancellation.Cancel()
+            finally
+                cancellationResponseFlushed.TrySetResult() |> ignore
 
     member _.Token = cancellation.Token
     member _.IsCancellationReserved = Volatile.Read(&state) = 1
@@ -133,14 +141,11 @@ type private ExportOperationState(sessionToken: CancellationToken) =
 
     member _.WaitForCancellationResponseAsync() = cancellationResponseFlushed.Task
 
-    member _.CommitCancellationAfterResponse() =
-        cancellationResponseFlushed.TrySetResult() |> ignore
-        cancellation.Cancel()
+    member _.CommitCancellationAfterResponse() = cancelAndRelease ()
 
     member _.CancelForShutdown() =
         if Interlocked.CompareExchange(&state, 1, 0) = 0 || Volatile.Read(&state) = 1 then
-            cancellationResponseFlushed.TrySetResult() |> ignore
-            cancellation.Cancel()
+            cancelAndRelease ()
 
     member _.Complete() =
         Volatile.Write(&state, 3)

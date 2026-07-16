@@ -6,6 +6,7 @@ open System
 open System.Diagnostics
 open System.IO
 open System.Threading
+open System.Threading.Tasks
 open Dotnet.CLI.Plus
 open Dotnet.CLI.Plus.Transport
 open Microsoft.VisualStudio.SolutionPersistence.Model
@@ -160,6 +161,61 @@ module private PipeTest =
         child.Dispose()
 
 type PipeTests() =
+    [<Fact>]
+    member _.``cancellation barriers release only after operation cancellation``() =
+        let verify cancel =
+            for _ in 1..100 do
+                let operation = ExportOperationState(CancellationToken.None)
+                let token = operation.Token
+                use cancellationEntered = new ManualResetEventSlim(false)
+                use allowCancellationToReturn = new ManualResetEventSlim(false)
+
+                use registration =
+                    token.Register(fun () ->
+                        cancellationEntered.Set()
+                        allowCancellationToReturn.Wait())
+
+                let cancellationReserved =
+                    if cancel then operation.TryReserveCancellation() else true
+
+                let completion =
+                    task {
+                        do! operation.WaitForCancellationResponseAsync()
+                        let cancellationObserved = token.IsCancellationRequested
+                        let completionReserved = operation.TryReserveCompletion()
+                        operation.Complete()
+                        return cancellationObserved, completionReserved
+                    }
+
+                let committing =
+                    Task.Run(
+                        Action(fun () ->
+                            if cancel then
+                                operation.CommitCancellationAfterResponse()
+                            else
+                                operation.CancelForShutdown())
+                    )
+
+                let mutable cancellationStarted = false
+                let mutable barrierReleasedEarly = false
+
+                try
+                    cancellationStarted <- cancellationEntered.Wait(TimeSpan.FromSeconds 5.0)
+                    barrierReleasedEarly <- operation.WaitForCancellationResponseAsync().IsCompleted
+                finally
+                    allowCancellationToReturn.Set()
+
+                committing.GetAwaiter().GetResult()
+                let cancellationObserved, completionReserved = completion.GetAwaiter().GetResult()
+                Assert.True(cancellationReserved)
+                Assert.True(cancellationStarted)
+                Assert.False(barrierReleasedEarly)
+                Assert.True(cancellationObserved)
+                Assert.False(completionReserved)
+
+        verify true
+        verify false
+
     [<Theory>]
     [<InlineData("solution")>]
     [<InlineData("sln")>]
@@ -258,6 +314,31 @@ type PipeTests() =
                 let workerError, _ = PipeTest.readFrame child |> PipeTest.response 7u
                 Assert.Equal("unknown_method", workerError.Value.Code)
                 PipeTest.shutdown child 8u
+            finally
+                PipeTest.disposeProcess child
+        finally
+            if Directory.Exists directory then
+                Directory.Delete(directory, true)
+
+    [<Fact>]
+    member _.``built apphost rejects reserved notification methods as requests``() =
+        let directory = PipeTest.temporaryDirectory "pipe-notification-requests"
+
+        try
+            let solution = Path.Combine(directory, "Demo.slnx")
+            PipeTest.save solution (SolutionModel())
+            use child = PipeTest.startPipe "solution" solution
+
+            try
+                PipeTest.send child false (PipeTest.request 1u "initialize" PipeTest.initialize)
+                PipeTest.readFrame child |> PipeTest.response 1u |> ignore
+
+                for id, methodName in [ 2u, "workspace/exportChunk"; 3u, "operation/completed" ] do
+                    PipeTest.send child false (PipeTest.request id methodName RpcValue.emptyMap)
+                    let rpcError, _ = PipeTest.readFrame child |> PipeTest.response id
+                    Assert.Equal("unknown_method", rpcError.Value.Code)
+
+                PipeTest.shutdown child 4u
             finally
                 PipeTest.disposeProcess child
         finally

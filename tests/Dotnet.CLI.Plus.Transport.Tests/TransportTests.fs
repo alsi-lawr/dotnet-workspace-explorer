@@ -437,6 +437,38 @@ type TransportTests() =
             | _ -> false
         )
 
+    [<Theory>]
+    [<InlineData("workspace/exportChunk")>]
+    [<InlineData("operation/completed")>]
+    member _.``notification descriptors are not callable requests``(methodName: string) =
+        let profile =
+            RpcProfile.create
+                "generic-notifications"
+                1
+                0
+                [ { Name = methodName
+                    Classification = NotificationMethod }
+                  { Name = "shutdown"
+                    Classification = Control } ]
+
+        let input =
+            Array.concat
+                [ Test.request 1u "initialize" Test.empty
+                  Test.request 2u methodName Test.empty
+                  Test.request 3u "shutdown" Test.empty ]
+
+        let exitCode, stdout, stderr = Test.run (Test.defaultConfiguration profile) input
+
+        Assert.Equal(0, exitCode)
+        Assert.Equal(String.Empty, stderr)
+
+        Assert.Contains(
+            Test.decodeAll stdout,
+            function
+            | Response(2u, Some error, _) when error.Code = "unknown_method" -> true
+            | _ -> false
+        )
+
     [<Fact>]
     member _.``shutdown cancels background work and emits no frames after its response``() =
         let profile =
