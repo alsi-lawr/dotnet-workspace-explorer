@@ -53,6 +53,36 @@ module private Helpers =
                 Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MODE", prior))
 
 type CliBrokerTests() =
+    [<Fact>]
+    member _.``template state reads bom cache and exact package boundaries``() =
+        let root = Helpers.temporaryDirectory ()
+
+        try
+            let cache = Path.Combine(root, "dotnetcli", "v1", "templatecache.json")
+            Directory.CreateDirectory(Path.GetDirectoryName cache) |> ignore
+            File.WriteAllText(cache, "\uFEFF{\"MountPointsInfo\":{\"Example.Template.1.2.3.nupkg\":{}}}")
+
+            match TemplateEngineStateReader.Read root with
+            | Ok state ->
+                Assert.True(TemplateEngineStateReader.Contains("Example.Template::1.2.3", state))
+                Assert.False(TemplateEngineStateReader.Contains("Example.Other", state))
+            | Error failure -> failwith failure.Diagnostic.Message
+        finally
+            Helpers.delete root
+
+    [<Fact>]
+    member _.``template state malformed cache is typed failure``() =
+        let root = Helpers.temporaryDirectory ()
+
+        try
+            File.WriteAllText(Path.Combine(root, "templatecache.json"), "{")
+
+            match TemplateEngineStateReader.Read root with
+            | Ok _ -> failwith "Expected malformed cache failure."
+            | Error failure -> Assert.Equal("invalid_input", failure.Code.Value)
+        finally
+            Helpers.delete root
+
     [<Theory>]
     [<InlineData(false)>]
     [<InlineData(true)>]

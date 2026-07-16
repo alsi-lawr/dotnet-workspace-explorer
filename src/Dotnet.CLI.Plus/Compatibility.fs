@@ -480,6 +480,52 @@ module internal FileBasedPackageDirectives =
             String.Equals(directive.Id, id, StringComparison.OrdinalIgnoreCase)
             && (version |> Option.forall (fun expected -> directive.Version = Some expected)))
 
+type internal TemplateEngineState =
+    { Packages: string list
+      Mounts: string list }
+
+module internal TemplateEngineStateReader =
+    let Root () =
+        Environment.GetEnvironmentVariable "DOTNET_CLI_HOME"
+        |> Option.ofObj
+        |> Option.defaultValue (Environment.GetFolderPath Environment.SpecialFolder.UserProfile)
+        |> fun home -> Path.Combine(home, ".templateengine")
+
+    let Read (root: string) =
+        try
+            let caches =
+                if Directory.Exists root then
+                    Directory.EnumerateFiles(root, "templatecache.json", SearchOption.AllDirectories)
+                    |> Seq.toList
+                else
+                    []
+
+            let values =
+                caches
+                |> List.collect (fun cache ->
+                    use document = JsonDocument.Parse(File.ReadAllText cache)
+                    let mutable mounts = Unchecked.defaultof<JsonElement>
+
+                    if document.RootElement.TryGetProperty("MountPointsInfo", &mounts) then
+                        mounts.EnumerateObject() |> Seq.map _.Name |> Seq.toList
+                    else
+                        [])
+
+            Ok { Packages = values; Mounts = values }
+        with
+        | :? JsonException -> Error(Failure.invalid "The template cache is malformed.")
+        | :? IOException -> Error(Failure.internalFailure "The template cache could not be read.")
+
+    let Contains (subject: string, state: TemplateEngineState) =
+        let id = subject.Split("::", 2)[0]
+
+        state.Packages
+        |> List.exists (fun value ->
+            let name = Path.GetFileNameWithoutExtension value in
+
+            String.Equals(name, id, StringComparison.OrdinalIgnoreCase)
+            || name.StartsWith(id + ".", StringComparison.OrdinalIgnoreCase))
+
 module private Verify =
     let private openSolution target cancellationToken =
         task {
