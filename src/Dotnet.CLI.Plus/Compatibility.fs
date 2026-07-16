@@ -75,7 +75,12 @@ type private NewOperation =
 
 type private ParsedCommand =
     | Solution of target: string option * operation: SolutionOperation option * operands: string list * help: bool
-    | Package of operation: PackageOperation option * project: string option * operands: string list * help: bool
+    | Package of
+        operation: PackageOperation option *
+        project: string option *
+        version: string option *
+        operands: string list *
+        help: bool
     | Reference of operation: ReferenceOperation option * project: string option * operands: string list * help: bool
     | New of operation: NewOperation * output: string option * dryRun: bool * operands: string list * help: bool
     | Lifecycle of command: string * help: bool
@@ -302,6 +307,7 @@ module private Grammar =
                                 options
                                 |> Map.tryFind "--project"
                                 |> Option.orElseWith (fun () -> options |> Map.tryFind "--file"),
+                                options |> Map.tryFind "--version",
                                 operands,
                                 help beforeSentinel
                             )
@@ -374,7 +380,7 @@ module private Grammar =
     let mutates =
         function
         | Solution(_, Some(Add | Remove | Migrate), _, false) -> true
-        | Package(Some(PackageAdd | PackageRemove | PackageUpdate), _, _, false) -> true
+        | Package(Some(PackageAdd | PackageRemove | PackageUpdate), _, _, _, false) -> true
         | Reference(Some(ReferenceAdd | ReferenceRemove), _, _, false) -> true
         | New(TemplateCreate, _, false, _, false) -> true
         | _ -> false
@@ -841,6 +847,7 @@ module internal Broker =
                                 Verify.verifySolution target operation operands cancellationToken
                             | Package(Some((PackageAdd | PackageRemove | PackageUpdate) as operation),
                                       project,
+                                      version,
                                       operands,
                                       false) ->
                                 let target =
@@ -849,7 +856,29 @@ module internal Broker =
                                     |> Option.defaultWith (fun () -> Paths.defaultProject ())
 
                                 match target with
-                                | Ok target -> Task.FromResult(Verify.verifyPackage operation target operands)
+                                | Ok target ->
+                                    let effectiveOperands =
+                                        match operation, version, operands with
+                                        | PackageAdd, Some requested, [ package ] when
+                                            not (package.Contains("@", StringComparison.Ordinal))
+                                            ->
+                                            [ $"{package}@{requested}" ]
+                                        | PackageAdd, _, _ :: _ :: _ -> []
+                                        | _ -> operands
+
+                                    if List.isEmpty effectiveOperands then
+                                        Task.FromResult(
+                                            Error(Failure.invalid "Package add accepts exactly one package ID.")
+                                        )
+                                    elif
+                                        Path.GetExtension(target).Equals(".sln", StringComparison.OrdinalIgnoreCase)
+                                        || Path.GetExtension(target).Equals(".slnx", StringComparison.OrdinalIgnoreCase)
+                                    then
+                                        Task.FromResult(
+                                            Error(Failure.invalid "Solution-wide package mutation is not supported.")
+                                        )
+                                    else
+                                        Task.FromResult(Verify.verifyPackage operation target effectiveOperands)
                                 | Error message -> Task.FromResult(Error(Failure.invalid message))
                             | Reference(Some((ReferenceAdd | ReferenceRemove) as operation), project, operands, false) ->
                                 let target =
