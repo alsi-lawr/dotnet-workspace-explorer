@@ -54,6 +54,48 @@ module private Helpers =
 
 type CliBrokerTests() =
     [<Fact>]
+    member _.``json render sanitizes arguments streams and diagnostics``() =
+        let diagnostic =
+            WorkspaceDiagnostic.CreateSimple(
+                WorkspaceDiagnosticSeverity.Error,
+                WorkspaceDiagnosticCode.Create "bad\u001b[31mcode",
+                "safe\u001b[31m message\u0000\u007f\t\n",
+                false,
+                CorrelationId.New()
+            )
+
+        let result: BrokerResult =
+            { CommandId = "build\u001b[31m"
+              Success = false
+              Revision = None
+              Payload =
+                { Summary = Some "summary\u001b[0m"
+                  ChildArguments = [ "arg\u001b[31m\u0000\u007f\t\n" ]
+                  StandardOutput = "out\u001b[31m\u0000\u007f\t\n"
+                  StandardError = "err\u001b[0m\u0000\u007f\t\n" }
+              Diagnostics = [ diagnostic ]
+              ExternalExitCode = Some 0 }
+
+        let output = new StringWriter()
+        let error = new StringWriter()
+        Assert.Equal(1, Broker.Render result true output error)
+        let text = output.ToString()
+        Assert.False(text.Contains("\u001b", StringComparison.Ordinal))
+        Assert.False(text.Contains("\u0000", StringComparison.Ordinal))
+        Assert.False(text.Contains("\u007f", StringComparison.Ordinal))
+        Assert.Equal("", error.ToString())
+        use document = JsonDocument.Parse(text)
+        let payload = document.RootElement.GetProperty("result")
+        let arguments = payload.GetProperty("childArguments")
+        let argument = arguments[0].GetString()
+        let stdout = payload.GetProperty("standardOutput").GetString()
+        let diagnostics = document.RootElement.GetProperty("diagnostics")
+        let message = diagnostics[0].GetProperty("safeMessage").GetString()
+        Assert.Equal("arg\t\n", argument)
+        Assert.Equal("out\t\n", stdout)
+        Assert.Equal("safe message\t\n", message)
+
+    [<Fact>]
     member _.``incremental terminal sanitizer buffers split csi and reset``() =
         let sanitizer = IncrementalTerminalSanitizer()
         Assert.Equal("", sanitizer.Push("\u001b"))
