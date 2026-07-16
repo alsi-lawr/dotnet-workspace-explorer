@@ -878,3 +878,28 @@ type TransportTests() =
             match PublicProtocol.parseInitialize parameters with
             | Error error -> Assert.Equal("invalid_params", error.Code)
             | Ok value -> failwithf "Expected invalid initialize, got %A" value
+
+    [<Fact>]
+    member _.``workspace pages default to 256 and reject values above 4096``() =
+        let initialize =
+            Test.map
+                [ "protocolVersion", Test.map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 0L ]
+                  "clientInfo", Test.map [ "name", RpcValue.String "test" ]
+                  "capabilities", RpcValue.array [] ]
+
+        let request =
+            PublicProtocol.parseInitialize initialize
+            |> Result.defaultWith (fun error -> failwith error.Message)
+
+        Assert.Equal(256, request.MaximumPageSize)
+
+        let children size =
+            PublicProtocol.parseRequest
+                "workspace/children"
+                (Test.map [ "parentId", RpcValue.String "parent"; "pageSize", RpcValue.Integer size ])
+
+        Assert.True(children 4096L |> Result.isOk)
+
+        match children 4097L with
+        | Error error -> Assert.Equal("invalid_params", error.Code)
+        | Ok value -> failwithf "Expected invalid page size, got %A" value

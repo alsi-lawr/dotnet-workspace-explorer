@@ -47,8 +47,11 @@ module PublicProtocol =
         ImmutableHashSet.CreateRange<string>(
             StringComparer.Ordinal,
             [ "workspace.root"
+              "workspace.children"
               "workspace.export"
               "workspace.refresh"
+              "workspace.delta"
+              "workspace.reset"
               "operation.cancel" ]
         )
 
@@ -241,7 +244,7 @@ module PublicProtocol =
 
             let maximumFrameBytes, maximumPageSize =
                 match RpcValue.optionalField "limits" fields with
-                | None -> RpcCodec.secureLimits.MaximumValueBytes, 1000
+                | None -> RpcCodec.secureLimits.MaximumValueBytes, 256
                 | Some value ->
                     let limits = RpcValue.requireMap "limits" value
                     RpcValue.ensureOnly "limits" [ "maxFrameBytes"; "maxPageSize" ] limits
@@ -253,8 +256,8 @@ module PublicProtocol =
 
                     let page =
                         match RpcValue.optionalField "maxPageSize" limits with
-                        | Some requested -> positiveInt 1 1000 "limits.maxPageSize" requested
-                        | None -> 1000
+                        | Some requested -> positiveInt 1 4096 "limits.maxPageSize" requested
+                        | None -> 256
 
                     min frame RpcCodec.secureLimits.MaximumValueBytes, page
 
@@ -293,7 +296,7 @@ module PublicProtocol =
                     PublicRequest.Children(
                         requiredString "parentId" fields,
                         RpcValue.optionalField "pageSize" fields
-                        |> Option.map (positiveInt 1 1000 "pageSize"),
+                        |> Option.map (positiveInt 1 4096 "pageSize"),
                         optionalString "continuationToken" fields
                     )
                 | "command/list" ->
@@ -383,6 +386,25 @@ module PublicProtocol =
             [ "revision", integer revision
               "nodes", nodes |> Seq.map (node descriptor.WorkspaceId revision) |> RpcValue.array ]
 
+    let childrenResult
+        (descriptor: WorkspaceDescriptor)
+        revision
+        (parentId: NodeId)
+        nodes
+        (nextToken: ContinuationToken option)
+        =
+        let values =
+            ResizeArray<string * RpcValue>(
+                [ "revision", integer revision
+                  "parentId", text parentId.Value
+                  "nodes", nodes |> Seq.map (node descriptor.WorkspaceId revision) |> RpcValue.array ]
+            )
+
+        nextToken
+        |> Option.iter (fun token -> values.Add("nextToken", text token.Value))
+
+        map values
+
     let refreshResult revision reset =
         map
             [ "revision", integer revision
@@ -394,6 +416,75 @@ module PublicProtocol =
 
     let cancelResult accepted = map [ "accepted", boolean accepted ]
     let shutdownResult = map [ "accepted", boolean true ]
+
+    let private optionalNodeId (value: NodeId option) =
+        match value with
+        | Some value -> text value.Value
+        | None -> RpcValue.Nil
+
+    let private change (workspaceId: WorkspaceId) revision =
+        function
+        | WorkspaceChange.Added(nodeValue, parentId, placementKey) ->
+            map
+                [ "kind", text "add"
+                  "parentId", optionalNodeId parentId
+                  "placementKey", text placementKey
+                  "node", node workspaceId revision nodeValue ]
+        | WorkspaceChange.Removed(nodeId, parentId, placementKey) ->
+            map
+                [ "kind", text "remove"
+                  "id", text nodeId.Value
+                  "parentId", optionalNodeId parentId
+                  "placementKey", text placementKey ]
+        | WorkspaceChange.Updated(nodeValue, parentId, placementKey) ->
+            map
+                [ "kind", text "update"
+                  "parentId", optionalNodeId parentId
+                  "placementKey", text placementKey
+                  "node", node workspaceId revision nodeValue ]
+        | WorkspaceChange.Moved(nodeId, fromParentId, toParentId, placementKey) ->
+            map
+                [ "kind", text "move"
+                  "id", text nodeId.Value
+                  "fromParentId", optionalNodeId fromParentId
+                  "toParentId", optionalNodeId toParentId
+                  "placementKey", text placementKey ]
+        | WorkspaceChange.Replaced(replacement, parentId, placementKey) ->
+            map
+                [ "kind", text "replace"
+                  "oldId", text replacement.OldId.Value
+                  "newId", text replacement.NewId.Value
+                  "parentId", optionalNodeId parentId
+                  "placementKey", text placementKey ]
+
+    let workspaceDelta (delta: WorkspaceDelta) =
+        Notification(
+            "workspace/delta",
+            map
+                [ "workspaceId", text delta.WorkspaceId.Value
+                  "baseRevision", integer delta.BaseRevision.Value
+                  "newRevision", integer delta.NewRevision.Value
+                  "changes",
+                  delta.Changes
+                  |> Seq.map (change delta.WorkspaceId delta.NewRevision.Value)
+                  |> RpcValue.array
+                  "diagnostics",
+                  delta.Diagnostics
+                  |> Seq.map (diagnostic delta.WorkspaceId delta.NewRevision.Value)
+                  |> RpcValue.array ]
+        )
+
+    let workspaceReset (reset: WorkspaceReset) =
+        Notification(
+            "workspace/reset",
+            map
+                [ "workspaceId", text reset.WorkspaceId.Value
+                  "revision", integer reset.Revision.Value
+                  "diagnostics",
+                  reset.Diagnostics
+                  |> Seq.map (diagnostic reset.WorkspaceId reset.Revision.Value)
+                  |> RpcValue.array ]
+        )
 
     let exportChunk (descriptor: WorkspaceDescriptor) operationId sequence revision (nodes: seq<WorkspaceNode>) last =
         Notification(

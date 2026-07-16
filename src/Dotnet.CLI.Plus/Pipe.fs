@@ -5,130 +5,19 @@ namespace Dotnet.CLI.Plus
 open System
 open System.Collections.Concurrent
 open System.IO
-open System.Text
 open System.Threading
 open System.Threading.Tasks
 open Dotnet.CLI.Plus.Core
 open Dotnet.CLI.Plus.Solution
 open Dotnet.CLI.Plus.Transport
 
-module private ProjectionFingerprint =
-    let private writeString (writer: BinaryWriter) (value: string) =
-        let bytes = Encoding.UTF8.GetBytes value
-        writer.Write bytes.Length
-        writer.Write bytes
-
-    let private writeOption (writer: BinaryWriter) value =
-        match value with
-        | Some text ->
-            writer.Write true
-            writeString writer text
-        | None -> writer.Write false
-
-    let private writeNode (writer: BinaryWriter) (node: WorkspaceNode) =
-        writeString writer node.NodeId.Value
-        writer.Write(int node.NodeKind)
-        writeString writer node.Identity.Value
-        writeString writer node.Name
-        writer.Write(int node.NodeLoadState)
-        writer.Write node.AvailableCapabilities.Length
-
-        for capability in node.AvailableCapabilities do
-            writeString writer capability.Value
-
-    let create (workspace: SolutionWorkspace) =
-        use stream = new MemoryStream()
-        use writer = new BinaryWriter(stream, Encoding.UTF8, true)
-        let root = workspace.RootProjection
-        writer.Write root.Nodes.Length
-
-        for node in root.Nodes do
-            writeNode writer node
-
-        writer.Write root.Folders.Length
-
-        for folder in root.Folders do
-            writeNode writer folder.Node
-            writeString writer folder.Path
-            writeOption writer folder.ParentPath
-
-        writer.Write root.Items.Length
-
-        for item in root.Items do
-            writeNode writer item.Node
-            writeOption writer item.FolderPath
-            writeString writer item.RelativePath
-
-        writer.Write root.Projects.Length
-
-        for project in root.Projects do
-            writeNode writer project.Node
-            writeString writer project.Path.AbsolutePath.Value
-            writeString writer project.Path.SolutionRelativePath
-            writer.Write project.Path.IsExternal
-            writeOption writer project.ParentFolderPath
-            writer.Write project.IsFilteredOut
-            writer.Write project.ConfigurationRules.Length
-
-            for rule in project.ConfigurationRules do
-                writeString writer rule.SolutionBuildType
-                writeString writer rule.SolutionPlatform
-                writeString writer rule.Dimension
-                writeString writer rule.ProjectValue
-
-            writer.Write project.ConfigurationMappings.Length
-
-            for mapping in project.ConfigurationMappings do
-                writeString writer mapping.SolutionBuildType
-                writeString writer mapping.SolutionPlatform
-                writeString writer mapping.ProjectBuildType
-                writeString writer mapping.ProjectPlatform
-                writer.Write mapping.Builds
-                writer.Write mapping.Deploys
-
-        writer.Write root.Dependencies.Length
-
-        for dependency in root.Dependencies do
-            writeNode writer dependency.Node
-            writeString writer dependency.ProjectId.Value
-            writeString writer dependency.DependsOnProjectId.Value
-
-        writer.Flush()
-        stream.ToArray()
-
-    let changed (left: byte array) (right: byte array) =
-        not (left.AsSpan().SequenceEqual(right))
-
-    let canonicalStrings (groups: seq<seq<string>>) =
-        use stream = new MemoryStream()
-        use writer = new BinaryWriter(stream, Encoding.UTF8, true)
-        let values = groups |> Seq.map Seq.toArray |> Seq.toArray
-        writer.Write values.Length
-
-        for group in values do
-            writer.Write group.Length
-
-            for value in group do
-                writeString writer value
-
-        writer.Flush()
-        stream.ToArray()
-
 type internal ExportOperationState(sessionToken: CancellationToken) =
     let cancellation = CancellationTokenSource.CreateLinkedTokenSource sessionToken
 
-    let cancellationResponseFlushed =
+    let responseFlushed =
         TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
 
-    let mutable state = 0 // 0 running, 1 cancellation reserved, 2 success reserved, 3 complete
-    let mutable cancellationCommitted = 0
-
-    let cancelAndRelease () =
-        if Interlocked.CompareExchange(&cancellationCommitted, 1, 0) = 0 then
-            try
-                cancellation.Cancel()
-            finally
-                cancellationResponseFlushed.TrySetResult() |> ignore
+    let mutable state = 0 // 0 running, 1 cancelled, 2 completed
 
     member _.Token = cancellation.Token
     member _.IsCancellationReserved = Volatile.Read(&state) = 1
@@ -139,27 +28,123 @@ type internal ExportOperationState(sessionToken: CancellationToken) =
     member _.TryReserveCompletion() =
         Interlocked.CompareExchange(&state, 2, 0) = 0
 
-    member _.WaitForCancellationResponseAsync() = cancellationResponseFlushed.Task
+    member _.WaitForCancellationResponseAsync() = responseFlushed.Task
 
-    member _.CommitCancellationAfterResponse() = cancelAndRelease ()
+    member _.CommitCancellationAfterResponse() =
+        if Volatile.Read(&state) = 1 then
+            try
+                cancellation.Cancel()
+            finally
+                responseFlushed.TrySetResult() |> ignore
 
-    member _.CancelForShutdown() =
-        if Interlocked.CompareExchange(&state, 1, 0) = 0 || Volatile.Read(&state) = 1 then
-            cancelAndRelease ()
+    member this.CancelForShutdown() =
+        if this.TryReserveCancellation() || this.IsCancellationReserved then
+            this.CommitCancellationAfterResponse()
 
-    member _.Complete() =
-        Volatile.Write(&state, 3)
-        cancellation.Dispose()
+    member _.Complete() = cancellation.Dispose()
 
 module internal PipeTestHooks =
-    let canonicalSignature groups =
-        ProjectionFingerprint.canonicalStrings groups
+    let canonicalSignature (groups: seq<seq<string>>) : byte array =
+        groups
+        |> Seq.collect (fun group ->
+            seq {
+                yield string (Seq.length group)
+                yield! group
+            })
+        |> WorkspaceStateSupport.canonicalBytes
 
-    let nextRevision revision before after =
-        if ProjectionFingerprint.changed before after then
-            revision + 1L
-        else
+    let nextRevision (revision: int64) (before: byte array) (after: byte array) =
+        if before.AsSpan().SequenceEqual after then
             revision
+        else
+            revision + 1L
+
+type private WorkspaceWatcher(state: WorkspaceState) =
+    let pending = ConcurrentDictionary<string, byte>(StringComparer.Ordinal)
+    let mutable overflowed = 0
+    let mutable started = 0
+    let mutable watchers: FileSystemWatcher array = Array.empty
+
+    let reset () =
+        Interlocked.Exchange(&overflowed, 1) |> ignore
+
+    let enqueue path =
+        if not (String.IsNullOrWhiteSpace path) then
+            pending[path] <- 0uy
+
+    let disposeWatchers () =
+        for watcher in watchers do
+            watcher.Dispose()
+
+        watchers <- Array.empty
+
+    member _.Rebuild() =
+        disposeWatchers ()
+
+        watchers <-
+            state.WatchDirectories()
+            |> Array.map (fun directory ->
+                let watcher = new FileSystemWatcher(directory, "*")
+                watcher.IncludeSubdirectories <- true
+
+                watcher.NotifyFilter <-
+                    NotifyFilters.FileName
+                    ||| NotifyFilters.LastWrite
+                    ||| NotifyFilters.DirectoryName
+
+                watcher.Changed.Add(fun args -> enqueue args.FullPath)
+                watcher.Created.Add(fun args -> enqueue args.FullPath)
+                watcher.Deleted.Add(fun args -> enqueue args.FullPath)
+                watcher.Renamed.Add(fun args -> enqueue args.FullPath)
+                watcher.Error.Add(fun _ -> reset ())
+                watcher.EnableRaisingEvents <- true
+                watcher)
+
+    member this.StartAsync(sink: RpcNotificationSink, sessionToken: CancellationToken) =
+        task {
+            if Interlocked.CompareExchange(&started, 1, 0) = 0 then
+                this.Rebuild()
+
+                try
+                    try
+                        while not sessionToken.IsCancellationRequested do
+                            do! Task.Delay(75, sessionToken)
+
+                            if Interlocked.Exchange(&overflowed, 0) <> 0 then
+                                let reset =
+                                    { WorkspaceId = state.Descriptor.WorkspaceId
+                                      Revision = WorkspaceRevision.Create state.Revision
+                                      Diagnostics =
+                                        [ WorkspaceDiagnostic.CreateSimple(
+                                              WorkspaceDiagnosticSeverity.Warning,
+                                              WorkspaceDiagnosticCode.Create "workspace.watch_overflow",
+                                              "File watching overflowed; request a fresh workspace graph.",
+                                              true,
+                                              CorrelationId.New()
+                                          ) ]
+                                        |> System.Collections.Immutable.ImmutableArray.CreateRange }
+
+                                do! sink.WriteAsync(PublicProtocol.workspaceReset reset)
+                            elif not pending.IsEmpty then
+                                let paths = ResizeArray<WorkspaceArtifactPath>()
+
+                                for KeyValue(path, _) in pending do
+                                    if pending.TryRemove path |> fst then
+                                        paths.Add(WorkspaceArtifactPath.Create path)
+
+                                let! outcome = state.InvalidateAsync(paths, sessionToken)
+
+                                match outcome with
+                                | WorkspaceWatchOutcome.Delta delta ->
+                                    do! sink.WriteAsync(PublicProtocol.workspaceDelta delta)
+                                | WorkspaceWatchOutcome.Reset reset ->
+                                    do! sink.WriteAsync(PublicProtocol.workspaceReset reset)
+                                | WorkspaceWatchOutcome.None -> ()
+                    with :? OperationCanceledException ->
+                        ()
+                finally
+                    disposeWatchers ()
+        }
 
 module internal Pipe =
     let private openWorkspace target cancellationToken =
@@ -172,13 +157,7 @@ module internal Pipe =
                 | WorkspaceOutcome.Failure failure -> Error(PublicProtocol.failureError failure)
         }
 
-    let private chunkNodes
-        maximumFrameBytes
-        (descriptor: WorkspaceDescriptor)
-        operationId
-        revision
-        (nodes: WorkspaceNode array)
-        =
+    let private chunkNodes maximumFrameBytes descriptor operationId revision (nodes: WorkspaceNode array) =
         let chunks = ResizeArray<WorkspaceNode array>()
         let current = ResizeArray<WorkspaceNode>()
 
@@ -200,10 +179,8 @@ module internal Pipe =
             else
                 flush ()
 
-                let actual = encodedSize [| node |]
-
-                if actual > maximumFrameBytes then
-                    raise (RpcOutboundFrameTooLargeException(maximumFrameBytes, actual))
+                if encodedSize [| node |] > maximumFrameBytes then
+                    raise (RpcOutboundFrameTooLargeException(maximumFrameBytes, encodedSize [| node |]))
 
                 current.Add node
 
@@ -234,14 +211,22 @@ module internal Pipe =
                 do! error.WriteLineAsync($"dotnet-plus pipe startup failure: {rpcError.Message}")
                 do! error.FlushAsync()
                 return 64
-            | Ok initialWorkspace ->
-                let mutable workspace = initialWorkspace
-                let mutable fingerprint = ProjectionFingerprint.create initialWorkspace
-                let mutable revision = workspace.WorkspaceDescriptor.WorkspaceRevision.Value
+            | Ok workspace ->
+                let! state = WorkspaceState.CreateAsync(target, workspace, cancellationToken)
+                let watcher = WorkspaceWatcher(state)
+                let mutable watcherStarted = false
                 let mutable maximumFrameBytes = RpcCodec.secureLimits.MaximumValueBytes
+                let mutable maximumPageSize = 256
 
                 let activeExports =
                     ConcurrentDictionary<string, ExportOperationState>(StringComparer.Ordinal)
+
+                let startWatcher () =
+                    if watcherStarted then
+                        None
+                    else
+                        watcherStarted <- true
+                        Some(fun sink token -> watcher.StartAsync(sink, token))
 
                 let initialize parameters _ =
                     task {
@@ -249,7 +234,8 @@ module internal Pipe =
                         | Error rpcError -> return Error rpcError
                         | Ok request ->
                             maximumFrameBytes <- request.MaximumFrameBytes
-                            return Ok(PublicProtocol.initializeResult workspace.WorkspaceDescriptor revision request)
+                            maximumPageSize <- request.MaximumPageSize
+                            return Ok(PublicProtocol.initializeResult state.Descriptor state.Revision request)
                     }
 
                 let dispatch (_: RpcSessionContext) methodName parameters requestCancellationToken =
@@ -259,72 +245,82 @@ module internal Pipe =
                         | Ok request ->
                             match request with
                             | PublicRequest.Root ->
+                                let! revision, nodes = state.RootAsync requestCancellationToken
+
                                 return
                                     Ok
-                                        { Result =
-                                            PublicProtocol.rootResult
-                                                workspace.WorkspaceDescriptor
-                                                revision
-                                                workspace.RootProjection.Nodes
+                                        { Result = PublicProtocol.rootResult state.Descriptor revision nodes
                                           Notifications = []
-                                          BackgroundWork = None
+                                          BackgroundWork = startWatcher ()
                                           AfterResponse = None
                                           StopAfterResponse = false }
+                            | PublicRequest.Children(parentId, pageSize, continuation) ->
+                                let! result =
+                                    state.ChildrenAsync(
+                                        parentId,
+                                        pageSize,
+                                        maximumPageSize,
+                                        continuation,
+                                        requestCancellationToken
+                                    )
+
+                                match result with
+                                | Error rpcError -> return Error rpcError
+                                | Ok(revision, parent, nodes, next, delta) ->
+                                    watcher.Rebuild()
+
+                                    let notifications =
+                                        delta
+                                        |> Option.map (PublicProtocol.workspaceDelta >> List.singleton)
+                                        |> Option.defaultValue []
+
+                                    return
+                                        Ok
+                                            { Result =
+                                                PublicProtocol.childrenResult
+                                                    state.Descriptor
+                                                    revision
+                                                    parent
+                                                    nodes
+                                                    next
+                                              Notifications = notifications
+                                              BackgroundWork = startWatcher ()
+                                              AfterResponse = None
+                                              StopAfterResponse = false }
                             | PublicRequest.Refresh expectedRevision ->
-                                match expectedRevision with
-                                | Some expected when expected <> revision ->
-                                    return Error(PublicProtocol.workspaceConflict revision)
-                                | _ ->
-                                    let! reopened = openWorkspace target requestCancellationToken
+                                let! refreshed = state.RefreshAsync(expectedRevision, requestCancellationToken)
 
-                                    match reopened with
-                                    | Error rpcError -> return Error rpcError
-                                    | Ok next ->
-                                        let nextFingerprint = ProjectionFingerprint.create next
+                                match refreshed with
+                                | Error rpcError -> return Error rpcError
+                                | Ok(revision, changed, _) ->
+                                    watcher.Rebuild()
 
-                                        let nextRevision =
-                                            PipeTestHooks.nextRevision revision fingerprint nextFingerprint
-
-                                        let changed = nextRevision <> revision
-
-                                        if changed then
-                                            workspace <- next
-                                            fingerprint <- nextFingerprint
-                                            revision <- nextRevision
-
-                                        return
-                                            Ok
-                                                { Result = PublicProtocol.refreshResult revision changed
-                                                  Notifications = []
-                                                  BackgroundWork = None
-                                                  AfterResponse = None
-                                                  StopAfterResponse = false }
+                                    return
+                                        Ok
+                                            { Result = PublicProtocol.refreshResult revision changed
+                                              Notifications = []
+                                              BackgroundWork = startWatcher ()
+                                              AfterResponse = None
+                                              StopAfterResponse = false }
                             | PublicRequest.Export ->
-                                let snapshot = workspace
-                                let snapshotRevision = revision
-                                let descriptor = snapshot.WorkspaceDescriptor
-                                let operationId = Guid.NewGuid().ToString("N")
-                                let operation = ExportOperationState(requestCancellationToken)
+                                let! exported = state.ExportAsync requestCancellationToken
 
-                                if not (activeExports.TryAdd(operationId, operation)) then
-                                    operation.Complete()
-                                    return Error RpcErrors.internalError
-                                else
-                                    let background (sink: RpcNotificationSink) sessionToken =
-                                        task {
-                                            let mutable sequence = 0
-                                            let mutable outcome = PublicOperationOutcome.Succeeded
+                                match exported with
+                                | Error rpcError -> return Error rpcError
+                                | Ok(snapshotRevision, nodes) ->
+                                    watcher.Rebuild()
+                                    let operationId = Guid.NewGuid().ToString("N")
+                                    let operation = ExportOperationState(requestCancellationToken)
 
-                                            let reserveFailure failure =
-                                                task {
-                                                    if operation.TryReserveCompletion() then
-                                                        outcome <- failure
-                                                    else
-                                                        do! operation.WaitForCancellationResponseAsync()
-                                                        outcome <- PublicOperationOutcome.Cancelled
-                                                }
+                                    if not (activeExports.TryAdd(operationId, operation)) then
+                                        operation.Complete()
+                                        return Error RpcErrors.internalError
+                                    else
+                                        let background (sink: RpcNotificationSink) sessionToken =
+                                            task {
+                                                let mutable sequence = 0
+                                                let mutable outcome = PublicOperationOutcome.Succeeded
 
-                                            try
                                                 try
                                                     use linked =
                                                         CancellationTokenSource.CreateLinkedTokenSource(
@@ -335,21 +331,18 @@ module internal Pipe =
                                                     let chunks =
                                                         chunkNodes
                                                             maximumFrameBytes
-                                                            descriptor
+                                                            state.Descriptor
                                                             operationId
                                                             snapshotRevision
-                                                            (snapshot.RootProjection.Nodes |> Seq.toArray)
+                                                            (nodes |> Seq.toArray)
 
                                                     for index in 0 .. chunks.Length - 1 do
-                                                        if operation.IsCancellationReserved then
-                                                            raise (OperationCanceledException())
-
                                                         linked.Token.ThrowIfCancellationRequested()
 
                                                         do!
                                                             sink.WriteAsync(
                                                                 PublicProtocol.exportChunk
-                                                                    descriptor
+                                                                    state.Descriptor
                                                                     operationId
                                                                     sequence
                                                                     snapshotRevision
@@ -358,58 +351,44 @@ module internal Pipe =
                                                             )
 
                                                         sequence <- sequence + 1
+                                                        do! Task.Yield()
+                                                        do! Task.Delay(1, linked.Token)
 
-                                                    if operation.TryReserveCompletion() then
-                                                        outcome <- PublicOperationOutcome.Succeeded
-                                                    else
-                                                        do! operation.WaitForCancellationResponseAsync()
+                                                    if not (operation.TryReserveCompletion()) then
                                                         outcome <- PublicOperationOutcome.Cancelled
                                                 with
                                                 | :? OperationCanceledException ->
-                                                    if operation.IsCancellationReserved then
-                                                        do! operation.WaitForCancellationResponseAsync()
-
                                                     outcome <- PublicOperationOutcome.Cancelled
                                                 | :? RpcOutboundFrameTooLargeException ->
-                                                    do!
-                                                        reserveFailure (
-                                                            PublicOperationOutcome.Failed(
-                                                                "response_too_large",
-                                                                "The workspace export exceeded the negotiated outbound frame limit."
-                                                            )
-                                                        )
-                                                | :? InvalidOperationException ->
-                                                    do!
-                                                        reserveFailure (
-                                                            PublicOperationOutcome.Failed(
-                                                                "export_failed",
-                                                                "The workspace export could not be framed safely."
-                                                            )
+                                                    outcome <-
+                                                        PublicOperationOutcome.Failed(
+                                                            "response_too_large",
+                                                            "The workspace export exceeded the negotiated outbound frame limit."
                                                         )
 
                                                 do!
                                                     sink.WriteAsync(
                                                         PublicProtocol.operationCompleted
-                                                            descriptor
+                                                            state.Descriptor
                                                             operationId
                                                             sequence
                                                             snapshotRevision
                                                             outcome
                                                     )
-                                            finally
+
                                                 activeExports.TryRemove operationId |> ignore
                                                 operation.Complete()
-                                        }
+                                            }
 
-                                    return
-                                        Ok
-                                            { Result = PublicProtocol.exportResult operationId snapshotRevision
-                                              Notifications = []
-                                              BackgroundWork = Some background
-                                              AfterResponse = None
-                                              StopAfterResponse = false }
+                                        return
+                                            Ok
+                                                { Result = PublicProtocol.exportResult operationId snapshotRevision
+                                                  Notifications = []
+                                                  BackgroundWork = Some background
+                                                  AfterResponse = None
+                                                  StopAfterResponse = false }
                             | PublicRequest.Cancel operationId ->
-                                let accepted, afterResponse =
+                                let accepted, after =
                                     match activeExports.TryGetValue operationId with
                                     | true, operation when operation.TryReserveCancellation() ->
                                         true, Some operation.CommitCancellationAfterResponse
@@ -420,7 +399,7 @@ module internal Pipe =
                                         { Result = PublicProtocol.cancelResult accepted
                                           Notifications = []
                                           BackgroundWork = None
-                                          AfterResponse = afterResponse
+                                          AfterResponse = after
                                           StopAfterResponse = false }
                             | PublicRequest.Shutdown ->
                                 for operation in activeExports.Values do
@@ -433,15 +412,12 @@ module internal Pipe =
                                           BackgroundWork = None
                                           AfterResponse = None
                                           StopAfterResponse = true }
-                            | PublicRequest.Children _ ->
-                                return
-                                    Error(RpcErrors.unsupported "Workspace children are not implemented until T-006.")
                             | PublicRequest.CommandList _
                             | PublicRequest.CommandDescribe _ ->
                                 return Error(RpcErrors.unsupported "Command discovery is not implemented until T-007.")
                             | PublicRequest.CommandPreview _
                             | PublicRequest.CommandExecute _ ->
-                                if workspace.WorkspaceDescriptor.IsReadOnly then
+                                if state.Descriptor.IsReadOnly then
                                     return Error(RpcErrors.unsupported "The selected .slnf workspace is read-only.")
                                 else
                                     return
@@ -457,5 +433,7 @@ module internal Pipe =
                       Initialize = initialize
                       Dispatch = dispatch }
 
-                return! RpcSession.runAsync configuration input output error cancellationToken
+                let! result = RpcSession.runAsync configuration input output error cancellationToken
+                do! state.DisposeAsync()
+                return result
         }

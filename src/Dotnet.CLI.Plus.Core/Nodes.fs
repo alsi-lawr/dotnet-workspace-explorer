@@ -192,3 +192,25 @@ type WorkspaceNodePage =
 type WorkspaceExport =
     { Revision: WorkspaceRevision
       Nodes: ImmutableArray<WorkspaceNode> }
+
+/// A transport-neutral description of a verified workspace graph transition.
+/// Placement keys identify a logical slot independently of a node's current ID,
+/// allowing callers to distinguish a replacement from an unrelated remove/add.
+type WorkspaceChange =
+    | Added of node: WorkspaceNode * parentId: NodeId option * placementKey: string
+    | Removed of nodeId: NodeId * parentId: NodeId option * placementKey: string
+    | Updated of node: WorkspaceNode * parentId: NodeId option * placementKey: string
+    | Moved of nodeId: NodeId * fromParentId: NodeId option * toParentId: NodeId option * placementKey: string
+    | Replaced of replacement: NodeReplacement * parentId: NodeId option * placementKey: string
+
+type WorkspaceDelta =
+    { WorkspaceId: WorkspaceId
+      BaseRevision: WorkspaceRevision
+      NewRevision: WorkspaceRevision
+      Changes: ImmutableArray<WorkspaceChange>
+      Diagnostics: ImmutableArray<WorkspaceDiagnostic> }
+
+type WorkspaceReset =
+    { WorkspaceId: WorkspaceId
+      Revision: WorkspaceRevision
+      Diagnostics: ImmutableArray<WorkspaceDiagnostic> }

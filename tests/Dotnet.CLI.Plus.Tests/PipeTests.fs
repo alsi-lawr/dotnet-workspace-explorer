@@ -481,7 +481,7 @@ type PipeTests() =
         let rightSignature =
             PipeTestHooks.canonicalSignature (right |> Seq.map (fun group -> group :> seq<string>))
 
-        Assert.False(leftSignature.AsSpan().SequenceEqual(rightSignature))
+        Assert.False(leftSignature.AsSpan().SequenceEqual(rightSignature.AsSpan()))
         Assert.Equal(8L, PipeTestHooks.nextRevision 7L leftSignature rightSignature)
 
     [<Fact>]
