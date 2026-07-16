@@ -54,6 +54,24 @@ module private Helpers =
 
 type CliBrokerTests() =
     [<Fact>]
+    member _.``incremental terminal sanitizer buffers split csi and reset``() =
+        let sanitizer = IncrementalTerminalSanitizer()
+        Assert.Equal("", sanitizer.Push("\u001b"))
+        Assert.Equal("", sanitizer.Push("[31"))
+        Assert.Equal("RED", sanitizer.Push("mRED\u001b"))
+        Assert.Equal("", sanitizer.Push("[0"))
+        Assert.Equal("", sanitizer.Push("m"))
+        Assert.Equal("", sanitizer.Complete())
+
+    [<Fact>]
+    member _.``incremental terminal sanitizer removes split osc and unsafe controls``() =
+        let sanitizer = IncrementalTerminalSanitizer()
+        Assert.Equal("", sanitizer.Push("\u001b]title"))
+        Assert.Equal("", sanitizer.Push("\u0007"))
+        Assert.Equal("plain\tline\n", sanitizer.Push("plain\u0001\tline\n\u007f"))
+        Assert.Equal("", sanitizer.Complete())
+
+    [<Fact>]
     member _.``cancellation returns typed failure and reaps managed tree``() =
         let directory = Helpers.temporaryDirectory ()
         let pidFile = Path.Combine(directory, "child.pid")
