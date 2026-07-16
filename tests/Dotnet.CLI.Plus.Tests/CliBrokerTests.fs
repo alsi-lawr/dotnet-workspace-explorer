@@ -53,6 +53,40 @@ module private Helpers =
                 Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MODE", prior))
 
 type CliBrokerTests() =
+    [<Fact>]
+    member _.``package update resolver identifies project and file targets``() =
+        let directory = Helpers.temporaryDirectory ()
+
+        try
+            let project = Path.Combine(directory, "App.fsproj")
+            let source = Path.Combine(directory, "app.cs")
+            File.WriteAllText(project, "<Project />")
+            File.WriteAllText(source, "")
+
+            match
+                PackageUpdateTargetResolver.Resolve(Some project, None),
+                PackageUpdateTargetResolver.Resolve(None, Some source)
+            with
+            | Ok(ProjectTarget _), Ok(FileTarget _) -> ()
+            | _ -> failwith "Expected project and file targets."
+        finally
+            Helpers.delete directory
+
+    [<Fact>]
+    member _.``package update resolver rejects missing ambiguous and conflicting targets``() =
+        let directory = Helpers.temporaryDirectory ()
+
+        try
+            File.WriteAllText(Path.Combine(directory, "One.fsproj"), "<Project />")
+            File.WriteAllText(Path.Combine(directory, "Two.fsproj"), "<Project />")
+            Assert.True(PackageUpdateTargetResolver.Resolve(Some "one", Some "two").IsError)
+
+            Assert.True(
+                PackageUpdateTargetResolver.Resolve(Some(Path.Combine(directory, "missing.fsproj")), None).IsError
+            )
+        finally
+            Helpers.delete directory
+
     [<Theory>]
     [<InlineData(false)>]
     [<InlineData(true)>]

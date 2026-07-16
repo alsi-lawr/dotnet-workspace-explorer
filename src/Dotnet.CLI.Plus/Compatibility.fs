@@ -598,6 +598,48 @@ module internal TemplateEngineStateReader =
             || String.Equals(value, subject, StringComparison.OrdinalIgnoreCase)
             || value.StartsWith(id + "::", StringComparison.OrdinalIgnoreCase))
 
+type internal PackageUpdateTarget =
+    | ProjectTarget of string
+    | FileTarget of string
+    | SolutionTarget of string * string list
+
+module internal PackageUpdateTargetResolver =
+    let Resolve (project: string option, file: string option) =
+        let selected =
+            match project, file with
+            | Some left, Some right when not (String.Equals(left, right, StringComparison.Ordinal)) ->
+                Error(Failure.invalid "Package update target options conflict.")
+            | Some path, _
+            | _, Some path -> Ok path
+            | None, None -> Ok(Directory.GetCurrentDirectory())
+
+        match selected with
+        | Error failure -> Error failure
+        | Ok target when File.Exists target ->
+            match Path.GetExtension(target).ToLowerInvariant() with
+            | ".csproj"
+            | ".fsproj"
+            | ".vbproj" -> Ok(ProjectTarget target)
+            | ".cs" -> Ok(FileTarget target)
+            | ".sln"
+            | ".slnx" -> Ok(SolutionTarget(target, []))
+            | ".slnf" -> Error(Failure.unsupported ".slnf targets are read-only.")
+            | _ -> Error(Failure.invalid "Package update target is unsupported.")
+        | Ok target when Directory.Exists target ->
+            let solutions =
+                Directory.EnumerateFiles(target, "*.sln*", SearchOption.TopDirectoryOnly)
+                |> Seq.toList
+
+            let projects =
+                Directory.EnumerateFiles(target, "*.*proj", SearchOption.TopDirectoryOnly)
+                |> Seq.toList
+
+            match solutions, projects with
+            | [ solution ], _ -> Ok(SolutionTarget(solution, []))
+            | [], [ project ] -> Ok(ProjectTarget project)
+            | _ -> Error(Failure.invalid "Package update target is missing or ambiguous.")
+        | Ok _ -> Error(Failure.invalid "Package update target does not exist.")
+
 module private Verify =
     let private openSolution target cancellationToken =
         task {
