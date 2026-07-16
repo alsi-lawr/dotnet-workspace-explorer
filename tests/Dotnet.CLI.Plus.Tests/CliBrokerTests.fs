@@ -54,6 +54,35 @@ module private Helpers =
 
 type CliBrokerTests() =
     [<Fact>]
+    member _.``malformed package project returns a single json failure envelope``() =
+        let directory = Helpers.temporaryDirectory ()
+
+        try
+            let project = Path.Combine(directory, "Broken.fsproj")
+            File.WriteAllText(project, "<Project>")
+
+            let result =
+                Helpers.fake "capture" [| "--json"; "package"; "add"; "Example.Package"; "--project"; project |]
+
+            let output = new StringWriter()
+            let error = new StringWriter()
+            Assert.False(result.Success)
+            Assert.Equal(1, Broker.Render result true output error)
+            use document = JsonDocument.Parse(output.ToString())
+            Assert.False(document.RootElement.GetProperty("success").GetBoolean())
+            Assert.Equal("", error.ToString())
+        finally
+            Helpers.delete directory
+
+    [<Fact>]
+    member _.``invalid package path is contained by direct broker execution``() =
+        let result =
+            Helpers.fake "capture" [| "package"; "add"; "Example.Package"; "--project"; "\u0000" |]
+
+        Assert.False(result.Success)
+        Assert.Equal("invalid_input", result.Diagnostics.Head.DiagnosticCode.Value)
+
+    [<Fact>]
     member _.``double-star glob verifies an already present project``() =
         let directory = Helpers.temporaryDirectory ()
 

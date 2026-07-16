@@ -11,6 +11,7 @@ open System.Text.Json
 open System.Text.RegularExpressions
 open System.Threading
 open System.Threading.Tasks
+open System.Xml
 open System.Xml.Linq
 open Dotnet.CLI.Plus.Core
 open Dotnet.CLI.Plus.Solution
@@ -763,7 +764,7 @@ module internal Broker =
             | _ -> return None
         }
 
-    let execute arguments host mode cancellationToken =
+    let private executeCore arguments host mode cancellationToken =
         task {
             let _, raw, parsed = Grammar.parse arguments
 
@@ -838,6 +839,25 @@ module internal Broker =
                         match verified with
                         | Ok revision -> return result commandId true revision [] (Some exitCode) child output error
                         | Error failure -> return failed commandId failure (Some exitCode) child output error
+        }
+
+    let execute arguments host mode cancellationToken =
+        task {
+            try
+                return! executeCore arguments host mode cancellationToken
+            with
+            | :? XmlException
+            | :? JsonException
+            | :? ArgumentException
+            | :? NotSupportedException
+            | :? PathTooLongException ->
+                return failed "" (Failure.invalid "The command target is invalid or malformed.") None [] "" ""
+            | :? IOException
+            | :? UnauthorizedAccessException ->
+                return failed "" (Failure.internalFailure "The command target could not be read.") None [] "" ""
+            | _ ->
+                return
+                    failed "" (Failure.internalFailure "The CLI broker encountered an internal failure.") None [] "" ""
         }
 
     let ExecuteAsync (arguments: string array, mode: BrokerMode, cancellationToken: CancellationToken) =
