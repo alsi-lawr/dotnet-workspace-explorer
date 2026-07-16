@@ -130,8 +130,12 @@ type SolutionStoreTests() =
         finally
             Helpers.deleteDirectory directory
 
-    [<Fact>]
-    member _.``filter resolves backing relative to filter and projects relative to backing solution``() =
+    [<Theory>]
+    [<InlineData(".sln")>]
+    [<InlineData(".slnx")>]
+    member _.``filter resolves backing relative to filter and projects relative to backing solution``
+        (extension: string)
+        =
         let directory = Helpers.temporaryDirectory ()
 
         try
@@ -139,11 +143,12 @@ type SolutionStoreTests() =
                 Directory.CreateDirectory(Path.Combine(directory, "solution"))
 
             let filterDirectory = Directory.CreateDirectory(Path.Combine(directory, "filters"))
-            let solutionPath = Path.Combine(solutionDirectory.FullName, "Golden.slnx")
+            let solutionPath = Path.Combine(solutionDirectory.FullName, $"Golden{extension}")
             let filterPath = Path.Combine(filterDirectory.FullName, "Golden.slnf")
             let model = SolutionModel()
             model.AddProject("src/Included.csproj", "Included", null) |> ignore
             model.AddProject("src/Excluded.csproj", "Excluded", null) |> ignore
+            model.AddProject("../external/External.csproj", "External", null) |> ignore
             Helpers.save solutionPath model |> _.GetAwaiter().GetResult()
 
             File.WriteAllText(
@@ -151,11 +156,12 @@ type SolutionStoreTests() =
                 """
                 {
                   "solution": {
-                    "path": "../solution/Golden.slnx",
+                    "path": "../solution/Golden%s",
                     "projects": [ "src/Included.csproj" ]
                   }
                 }
                 """
+                    .Replace("%s", extension)
             )
 
             let workspace = SolutionStore.OpenAsync(filterPath).Result |> Helpers.success
@@ -172,6 +178,17 @@ type SolutionStoreTests() =
             Assert.Equal(WorkspaceNodeKind.Placeholder, excluded.Node.NodeKind)
             Assert.Equal(WorkspaceNodeLoadState.FilteredOut, excluded.Node.NodeLoadState)
             Assert.False(excluded.Node.Supports WorkspaceCapabilityId.Write)
+
+            let external =
+                workspace.RootProjection.Projects
+                |> Seq.find (fun project -> project.Path.IsExternal)
+
+            Assert.Equal(Path.Combine("..", "external", "External.csproj"), external.Path.SolutionRelativePath)
+
+            Assert.Equal(
+                Path.GetFullPath(Path.Combine(solutionDirectory.FullName, "../external/External.csproj")),
+                external.Path.AbsolutePath.Value
+            )
 
             Assert.All(
                 workspace.RootProjection.Nodes,
@@ -259,8 +276,8 @@ type SolutionStoreTests() =
             let folder = model.AddFolder "/src/"
             folder.AddFile "Directory.Build.props"
             let project = model.AddProject("src/Project.csproj", "Project", folder)
-            let dependency = model.AddProject("src/Dependency.csproj", "Dependency", null)
-            project.AddDependency dependency
+            let external = model.AddProject("../external/External.csproj", "External", null)
+            project.AddDependency external
             model.AddBuildType "Debug"
             model.AddPlatform "Any CPU"
 
@@ -289,9 +306,48 @@ type SolutionStoreTests() =
 
             Assert.Contains("Debug", reopened.BuildTypes)
             Assert.Contains("Any CPU", reopened.Platforms)
-            Assert.Single workspace.RootProjection.Folders |> ignore
-            Assert.Single workspace.RootProjection.Items |> ignore
-            Assert.Single workspace.RootProjection.Dependencies |> ignore
+
+            let root = workspace.RootProjection
+            let folderProjection = Assert.Single root.Folders
+            let itemProjection = Assert.Single root.Items
+
+            let projectProjection =
+                root.Projects |> Seq.find (fun projection -> projection.Node.Name = "Project")
+
+            let externalProjection =
+                root.Projects |> Seq.find (fun projection -> projection.Path.IsExternal)
+
+            let rule =
+                projectProjection.ConfigurationRules
+                |> Seq.find (fun rule -> rule.Dimension = "BuildType" && rule.ProjectValue = "Release")
+
+            let mapping = Assert.Single projectProjection.ConfigurationMappings
+            let dependency = Assert.Single root.Dependencies
+
+            Assert.Equal("/src/", folderProjection.Path)
+            Assert.Equal(Some "/src/", itemProjection.FolderPath)
+            Assert.Equal("Directory.Build.props", itemProjection.RelativePath)
+            Assert.Equal((if extension = ".sln" then "Debug" else String.Empty), rule.SolutionBuildType)
+            Assert.Equal((if extension = ".sln" then "Any CPU" else String.Empty), rule.SolutionPlatform)
+            Assert.Equal("Release", rule.ProjectValue)
+            Assert.Equal("Debug", mapping.SolutionBuildType)
+            Assert.Equal("Any CPU", mapping.SolutionPlatform)
+            Assert.Equal("Release", mapping.ProjectBuildType)
+            Assert.Equal((if extension = ".sln" then "Any CPU" else "AnyCPU"), mapping.ProjectPlatform)
+            Assert.True(mapping.Builds)
+            Assert.False(mapping.Deploys)
+            Assert.Equal(projectProjection.Node.NodeId.Value, dependency.ProjectId.Value)
+            Assert.Equal(externalProjection.Node.NodeId.Value, dependency.DependsOnProjectId.Value)
+
+            Assert.Equal(
+                Path.Combine("..", "external", "External.csproj"),
+                externalProjection.Path.SolutionRelativePath
+            )
+
+            Assert.Equal(
+                Path.GetFullPath(Path.Combine(directory, "../external/External.csproj")),
+                externalProjection.Path.AbsolutePath.Value
+            )
 
             if extension = ".slnx" then
                 Assert.Equal("Serializer-supported description", reopened.Description)
@@ -384,12 +440,46 @@ type SolutionStoreTests() =
             Helpers.deleteDirectory directory
 
     [<Fact>]
+    member _.``backing solution semantics control filter membership and path identity``() =
+        let backing = Path.Combine(Path.GetTempPath(), "Backing.slnx")
+
+        Assert.False(
+            SolutionStoreTestHooks.FilterContains(
+                HostFileSystemCaseSemantics.Sensitive,
+                backing,
+                "src/Case.csproj",
+                "SRC/CASE.CSPROJ"
+            )
+        )
+
+        Assert.True(
+            SolutionStoreTestHooks.FilterContains(
+                HostFileSystemCaseSemantics.Insensitive,
+                backing,
+                "src/Case.csproj",
+                "SRC/CASE.CSPROJ"
+            )
+        )
+
+        Assert.Equal(
+            "src/Case.csproj",
+            SolutionStoreTestHooks.PathIdentity(HostFileSystemCaseSemantics.Sensitive, "src/Case.csproj")
+        )
+
+        Assert.Equal(
+            "SRC/CASE.CSPROJ",
+            SolutionStoreTestHooks.PathIdentity(HostFileSystemCaseSemantics.Insensitive, "src/Case.csproj")
+        )
+
+    [<Fact>]
     member _.``pre-cancelled operations return typed cancellation before resolution``() =
         let directory = Helpers.temporaryDirectory ()
 
         try
             let solution = Path.Combine(directory, "Golden.slnx")
+            let filter = Path.Combine(directory, "Golden.slnf")
             Helpers.save solution (SolutionModel()) |> _.GetAwaiter().GetResult()
+            File.WriteAllText(filter, "{ \"solution\": { \"path\": \"Golden.slnx\" } }")
             use cancellation = new CancellationTokenSource()
             cancellation.Cancel()
 
@@ -400,8 +490,53 @@ type SolutionStoreTests() =
 
             assertCancelled solution
             assertCancelled directory
+            assertCancelled filter
         finally
             Helpers.deleteDirectory directory
+
+    [<Fact>]
+    member _.``cancellation after ordering materialization returns typed cancellation``() =
+        use cancellation = new CancellationTokenSource()
+
+        let values =
+            seq {
+                for value in 1..2000 do
+                    yield value.ToString("D5")
+
+                cancellation.Cancel()
+            }
+
+        Assert.Throws<OperationCanceledException>(fun () ->
+            SolutionStoreTestHooks.Order(cancellation.Token, values) |> ignore)
+        |> ignore
+
+    [<Fact>]
+    member _.``excessive direct and filter paths return invalid input when supported by the runtime``() =
+        let excessive = String('a', 32768)
+
+        let raisesPathTooLong =
+            try
+                Path.GetFullPath excessive |> ignore
+                false
+            with :? PathTooLongException ->
+                true
+
+        if raisesPathTooLong then
+            match SolutionStore.OpenAsync(excessive).Result with
+            | Failure(InvalidInput("targetPath", _)) -> ()
+            | _ -> failwith "Expected invalid excessive direct path."
+
+            let directory = Helpers.temporaryDirectory ()
+
+            try
+                let filter = Path.Combine(directory, "Excessive.slnf")
+                File.WriteAllText(filter, $"{{ \"solution\": {{ \"path\": \"{excessive}\" }} }}")
+
+                match SolutionStore.OpenAsync(filter).Result with
+                | Failure(InvalidInput("filter", _)) -> ()
+                | _ -> failwith "Expected invalid excessive filter path."
+            finally
+                Helpers.deleteDirectory directory
 
     [<Fact>]
     member _.``capability enrichment returns a separate immutable projection``() =
