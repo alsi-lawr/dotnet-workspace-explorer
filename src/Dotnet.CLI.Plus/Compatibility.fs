@@ -474,6 +474,11 @@ module private Verify =
             match opened with
             | Error failure -> return Error failure
             | Ok workspace ->
+                let pathComparer =
+                    match HostFileSystemCaseDetector.DetectFromExistingPath(workspace.BackingPath.Value) with
+                    | HostFileSystemCaseSemantics.Insensitive -> StringComparer.OrdinalIgnoreCase
+                    | _ -> StringComparer.Ordinal
+
                 match operation with
                 | Some Add
                 | Some Remove ->
@@ -486,7 +491,7 @@ module private Verify =
                             projects
                             |> List.exists (fun (name, path) ->
                                 String.Equals(name, operand, StringComparison.OrdinalIgnoreCase)
-                                || String.Equals(path, Path.GetFullPath operand, StringComparison.OrdinalIgnoreCase))
+                                || pathComparer.Equals(path, Path.GetFullPath operand))
 
                         let correct =
                             match operation with
@@ -874,3 +879,8 @@ module internal BrokerTestHooks =
               Prefix = [ prefix ] }
             Json
             cancellationToken
+
+    let PathEquals (caseSemantics: HostFileSystemCaseSemantics, left: string, right: string) =
+        match caseSemantics with
+        | HostFileSystemCaseSemantics.Insensitive -> StringComparer.OrdinalIgnoreCase.Equals(left, right)
+        | _ -> StringComparer.Ordinal.Equals(left, right)

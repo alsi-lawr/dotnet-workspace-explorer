@@ -7,6 +7,7 @@ open System.IO
 open System.Text.Json
 open System.Threading
 open Dotnet.CLI.Plus
+open Dotnet.CLI.Plus.Core
 open Microsoft.VisualStudio.SolutionPersistence.Model
 open Microsoft.VisualStudio.SolutionPersistence.Serializer
 open Xunit
@@ -43,6 +44,26 @@ module private Helpers =
                 Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MODE", prior))
 
 type CliBrokerTests() =
+    [<Fact>]
+    member _.``sensitive case semantics reject casing-only path mismatch``() =
+        Assert.False(
+            BrokerTestHooks.PathEquals(
+                HostFileSystemCaseSemantics.Sensitive,
+                "/workspace/Project.fsproj",
+                "/workspace/project.fsproj"
+            )
+        )
+
+    [<Fact>]
+    member _.``insensitive case semantics accept casing-only path mismatch``() =
+        Assert.True(
+            BrokerTestHooks.PathEquals(
+                HostFileSystemCaseSemantics.Insensitive,
+                "/workspace/Project.fsproj",
+                "/workspace/project.fsproj"
+            )
+        )
+
     [<Fact>]
     member _.``unknown command is invalid input``() =
         let result = Helpers.fake "capture" [| "publish" |]
