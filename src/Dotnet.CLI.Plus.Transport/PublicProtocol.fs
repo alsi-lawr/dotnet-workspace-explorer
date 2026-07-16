@@ -424,38 +424,39 @@ module PublicProtocol =
 
     let private change (workspaceId: WorkspaceId) revision =
         function
-        | WorkspaceChange.Added(nodeValue, parentId, placementKey) ->
+        | WorkspaceChange.Added(nodeValue, parentId, index) ->
             map
                 [ "kind", text "add"
                   "parentId", optionalNodeId parentId
-                  "placementKey", text placementKey
+                  "index", integer (int64 index)
                   "node", node workspaceId revision nodeValue ]
-        | WorkspaceChange.Removed(nodeId, parentId, placementKey) ->
+        | WorkspaceChange.Removed(nodeId, parentId, index) ->
             map
                 [ "kind", text "remove"
                   "id", text nodeId.Value
                   "parentId", optionalNodeId parentId
-                  "placementKey", text placementKey ]
-        | WorkspaceChange.Updated(nodeValue, parentId, placementKey) ->
+                  "index", integer (int64 index) ]
+        | WorkspaceChange.Updated(nodeValue, parentId, index) ->
             map
                 [ "kind", text "update"
                   "parentId", optionalNodeId parentId
-                  "placementKey", text placementKey
+                  "index", integer (int64 index)
                   "node", node workspaceId revision nodeValue ]
-        | WorkspaceChange.Moved(nodeId, fromParentId, toParentId, placementKey) ->
+        | WorkspaceChange.Moved(nodeId, oldParentId, oldIndex, newParentId, newIndex) ->
             map
                 [ "kind", text "move"
                   "id", text nodeId.Value
-                  "fromParentId", optionalNodeId fromParentId
-                  "toParentId", optionalNodeId toParentId
-                  "placementKey", text placementKey ]
-        | WorkspaceChange.Replaced(replacement, parentId, placementKey) ->
+                  "oldParentId", optionalNodeId oldParentId
+                  "oldIndex", integer (int64 oldIndex)
+                  "newParentId", optionalNodeId newParentId
+                  "newIndex", integer (int64 newIndex) ]
+        | WorkspaceChange.Replaced(oldNodeId, newNode, parentId, index) ->
             map
                 [ "kind", text "replace"
-                  "oldId", text replacement.OldId.Value
-                  "newId", text replacement.NewId.Value
+                  "oldId", text oldNodeId.Value
                   "parentId", optionalNodeId parentId
-                  "placementKey", text placementKey ]
+                  "index", integer (int64 index)
+                  "node", node workspaceId revision newNode ]
 
     let workspaceDelta (delta: WorkspaceDelta) =
         Notification(

@@ -7,6 +7,7 @@
     <ItemGroup>
         <Compile Include="AssemblyInfo.fs" />
         <Compile Include="CliBrokerTests.fs" />
+        <Compile Include="WorkspaceStateTests.fs" />
         <Compile Include="PipeTests.fs" />
     </ItemGroup>
 

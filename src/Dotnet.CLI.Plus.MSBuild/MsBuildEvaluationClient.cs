@@ -57,10 +57,24 @@ public sealed class MsBuildEvaluationClient : IAsyncDisposable
                     workers.Add(toolsetKey, worker);
                 }
 
-                return await worker.EvaluateAsync(
+                var outcome = await worker.EvaluateAsync(
                     WorkspaceArtifactPath.Create(projectPath.Value),
                     cancellationToken
                 );
+
+                if (!CoreOutcomes.TrySuccess(outcome, out var snapshot, out _))
+                {
+                    return outcome;
+                }
+
+                var watchInputs = binding.Toolset.GlobalJsonPath is { } globalJson
+                    ? snapshot!
+                        .WatchInputs.Append(globalJson)
+                        .DistinctBy(path => path.Value, PathComparer)
+                        .OrderBy(path => path.Value, PathComparer)
+                        .ToImmutableArray()
+                    : snapshot!.WatchInputs;
+                return CoreOutcomes.Success(snapshot with { WatchInputs = watchInputs });
             }
         );
 

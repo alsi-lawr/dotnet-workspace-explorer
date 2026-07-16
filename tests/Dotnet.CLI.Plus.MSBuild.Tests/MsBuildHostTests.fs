@@ -606,13 +606,17 @@ type MsBuildHostTests() =
             let launches = ConcurrentBag<int>()
             let client = Test.client (Action<Process>(fun child -> launches.Add child.Id))
 
-            client.EvaluateAsync(Test.path firstProject, Test.path first).GetAwaiter().GetResult()
-            |> Test.success
-            |> ignore
+            let firstSnapshot =
+                client.EvaluateAsync(Test.path firstProject, Test.path first).GetAwaiter().GetResult()
+                |> Test.success
 
-            client.EvaluateAsync(Test.path secondProject, Test.path second).GetAwaiter().GetResult()
-            |> Test.success
-            |> ignore
+            let secondSnapshot =
+                client.EvaluateAsync(Test.path secondProject, Test.path second).GetAwaiter().GetResult()
+                |> Test.success
+
+            Assert.Contains(firstSnapshot.WatchInputs, fun path -> path.Value = Path.Combine(first, "global.json"))
+
+            Assert.Contains(secondSnapshot.WatchInputs, fun path -> path.Value = Path.Combine(second, "global.json"))
 
             Assert.Equal(1, launches.Count)
 

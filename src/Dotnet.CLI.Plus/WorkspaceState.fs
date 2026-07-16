@@ -13,33 +13,154 @@ open Dotnet.CLI.Plus.MSBuild
 open Dotnet.CLI.Plus.Solution
 open Dotnet.CLI.Plus.Transport
 
-type internal WorkspaceEntry =
-    { Node: WorkspaceNode
-      ParentId: NodeId option
-      PlacementKey: string }
+type internal WorkspaceStateServices =
+    { OpenAsync: string -> CancellationToken -> Task<WorkspaceOutcome<SolutionWorkspace>>
+      EvaluateAsync:
+          WorkspaceArtifactPath
+              -> WorkspaceArtifactPath
+              -> CancellationToken
+              -> Task<WorkspaceOutcome<EvaluationSnapshot>>
+      InvalidateAsync:
+          ImmutableArray<WorkspaceArtifactPath> -> CancellationToken -> Task<WorkspaceOutcome<MsBuildInvalidationKind>>
+      RefreshAsync: unit -> Task
+      DisposeAsync: unit -> Task }
 
-type internal MaterializedProject =
-    { Root: WorkspaceNode
-      Children: ImmutableArray<WorkspaceNode>
-      Snapshot: EvaluationSnapshot }
+type internal WorkspaceStateOptions =
+    { HydrationLimit: int
+      TokenSecret: byte array }
+
+type internal WorkspacePageResult =
+    { Revision: int64
+      ParentId: NodeId
+      Nodes: ImmutableArray<WorkspaceNode>
+      NextToken: ContinuationToken option
+      Delta: WorkspaceDelta option }
+
+type internal WorkspaceRefreshResult =
+    { Revision: int64
+      Reset: bool
+      Delta: WorkspaceDelta option
+      ResetEvent: WorkspaceReset option
+      Diagnostics: ImmutableArray<WorkspaceDiagnostic> }
+
+type internal WorkspaceExportSnapshot =
+    { Descriptor: WorkspaceDescriptor
+      Revision: int64
+      Nodes: ImmutableArray<WorkspaceNode> }
 
 [<RequireQualifiedAccess>]
-type internal WorkspaceWatchOutcome =
+type internal WorkspaceInvalidationResult =
     | None
     | Delta of WorkspaceDelta
     | Reset of WorkspaceReset
 
-module private WorkspaceStateSupport =
-    let diagnostic code message retryable =
-        WorkspaceDiagnostic.CreateSimple(
-            WorkspaceDiagnosticSeverity.Warning,
-            WorkspaceDiagnosticCode.Create code,
-            message,
-            retryable,
-            CorrelationId.New()
-        )
+[<RequireQualifiedAccess>]
+type internal WatchKind =
+    | ExactFile
+    | RecursiveGlob
 
-    let canonicalBytes (values: seq<string>) =
+type internal WatchSpec =
+    { Directory: string
+      Filters: ImmutableArray<string>
+      IncludeSubdirectories: bool
+      Kind: WatchKind }
+
+type internal PlacementKey = PlacementKey of string list
+
+type internal Placement =
+    { Key: PlacementKey
+      Node: WorkspaceNode
+      ParentId: NodeId option
+      Index: int }
+
+type internal WorkspaceData =
+    { Workspace: SolutionWorkspace
+      Hydrated: Map<string, EvaluationSnapshot>
+      Recency: string list
+      Revision: int64
+      NeedsRebase: bool }
+
+type internal BodyContribution =
+    { Logical: string list
+      Content: string list
+      Display: string
+      Dimension: string }
+
+[<RequireQualifiedAccess>]
+module internal ContinuationTokens =
+    type Payload =
+        { WorkspaceId: string
+          ParentId: string
+          Offset: int
+          Revision: int64 }
+
+    let private writeString (writer: BinaryWriter) (value: string) =
+        let bytes = Encoding.UTF8.GetBytes value
+        writer.Write bytes.Length
+        writer.Write bytes
+
+    let private readString (reader: BinaryReader) =
+        let length = reader.ReadInt32()
+
+        if length < 0 || length > 4096 then
+            invalidArg "token" "The continuation token contains an invalid string."
+
+        reader.ReadBytes length
+        |> fun bytes ->
+            if bytes.Length <> length then
+                invalidArg "token" "The continuation token is truncated."
+
+            UTF8Encoding(false, true).GetString bytes
+
+    let create (secret: byte array) (payload: Payload) =
+        use stream = new MemoryStream()
+        use writer = new BinaryWriter(stream, Encoding.UTF8, true)
+        writeString writer payload.WorkspaceId
+        writeString writer payload.ParentId
+        writer.Write payload.Offset
+        writer.Write payload.Revision
+        writer.Flush()
+        let body = stream.ToArray()
+        use hmac = new HMACSHA256(secret)
+        let signature = hmac.ComputeHash body
+        $"{Convert.ToBase64String body}.{Convert.ToBase64String signature}"
+
+    let tryParse (secret: byte array) (value: string) =
+        try
+            let parts = value.Split('.', StringSplitOptions.None)
+
+            if parts.Length <> 2 then
+                None
+            else
+                let body = Convert.FromBase64String parts[0]
+                let supplied = Convert.FromBase64String parts[1]
+                use hmac = new HMACSHA256(secret)
+                let expected = hmac.ComputeHash body
+
+                if not (CryptographicOperations.FixedTimeEquals(expected, supplied)) then
+                    None
+                else
+                    use stream = new MemoryStream(body, false)
+                    use reader = new BinaryReader(stream, Encoding.UTF8, true)
+
+                    let payload =
+                        { WorkspaceId = readString reader
+                          ParentId = readString reader
+                          Offset = reader.ReadInt32()
+                          Revision = reader.ReadInt64() }
+
+                    if payload.Offset < 0 || stream.Position <> stream.Length then
+                        None
+                    else
+                        Some payload
+        with
+        | :? ArgumentException
+        | :? EndOfStreamException
+        | :? DecoderFallbackException
+        | :? FormatException -> None
+
+module internal WorkspaceStatePure =
+    let private canonicalBytes (values: seq<string>) =
         use stream = new MemoryStream()
         use writer = new BinaryWriter(stream, Encoding.UTF8, true)
 
@@ -51,394 +172,716 @@ module private WorkspaceStateSupport =
         writer.Flush()
         stream.ToArray()
 
-    let snapshotSignature (snapshot: EvaluationSnapshot) =
-        let values = ResizeArray<string>()
-        values.Add snapshot.ProjectPath.Value
+    let canonicalHash (values: seq<string>) =
+        values |> canonicalBytes |> SHA256.HashData |> Convert.ToHexString
 
-        for dimension in snapshot.Dimensions do
-            values.Add(
-                if dimension.TargetFramework.HasValue then
-                    $"framework:{dimension.TargetFramework.Value.Value}"
-                else
-                    "framework:outer"
-            )
+    let private pathValue (path: WorkspaceArtifactPath | null) =
+        Option.ofObj path |> Option.map _.Value |> Option.defaultValue String.Empty
 
-            for property in dimension.Properties do
-                values.Add($"property:{property.Name}:{property.Value}")
-
-            for item in dimension.Items do
-                values.Add($"item:{item.ItemType}:{item.EvaluatedInclude}")
-
-            for reference in dimension.ProjectReferences do
-                values.Add($"project-reference:{reference.Include}")
-
-            for reference in dimension.References do
-                values.Add($"reference:{reference.Include}")
-
-            for package in dimension.Packages do
-                values.Add($"package:{package.Id}:{Option.ofObj package.Version |> Option.defaultValue String.Empty}")
-
-            for analyzer in dimension.Analyzers do
-                values.Add($"analyzer:{analyzer.Value}")
-
-        for path in snapshot.Imports do
-            values.Add($"import:{path.Value}")
-
-        for path in snapshot.WatchInputs do
-            values.Add($"watch:{path.Value}")
-
-        for path in snapshot.GlobRoots do
-            values.Add($"glob:{path.Value}")
-
-        canonicalBytes values
-
-    let sameSnapshot left right =
-        snapshotSignature left
-        |> fun bytes -> bytes.AsSpan().SequenceEqual(snapshotSignature right)
-
-    let nodeEqual (left: WorkspaceNode) (right: WorkspaceNode) =
-        left.NodeId = right.NodeId
-        && left.Name = right.Name
-        && left.NodeKind = right.NodeKind
-        && left.NodeLoadState = right.NodeLoadState
-        && left.Profile = right.Profile
-        && Seq.forall2 (=) left.AvailableCapabilities right.AvailableCapabilities
-
-    let isCovered root path =
-        let relative = Path.GetRelativePath(root, path)
-
-        relative = "."
-        || (not (Path.IsPathRooted relative)
-            && relative <> ".."
-            && not (relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
-            && not (relative.StartsWith($"..{Path.AltDirectorySeparatorChar}", StringComparison.Ordinal)))
-
-type internal WorkspaceState
-    private
-    (target: string, initialWorkspace: SolutionWorkspace, evaluator: MsBuildEvaluationClient, hydrationLimit: int) =
-    let gate = new SemaphoreSlim(1, 1)
-    let secret = RandomNumberGenerator.GetBytes 32
-    let hydrated = Dictionary<string, MaterializedProject>(StringComparer.Ordinal)
-    let recency = LinkedList<string>()
-
-    let recencyNodes =
-        Dictionary<string, LinkedListNode<string>>(StringComparer.Ordinal)
-
-    let mutable workspace = initialWorkspace
-    let mutable revision = initialWorkspace.WorkspaceDescriptor.WorkspaceRevision.Value
-    let mutable disposed = false
-
-    let projectKey (project: SolutionProjectProjection) = project.Path.AbsolutePath.Value
-
-    let rootForProject (project: SolutionProjectProjection) =
-        match hydrated.TryGetValue(projectKey project) with
-        | true, materialized -> materialized.Root
-        | _ -> project.Node
-
-    let entries () =
-        let root = workspace.RootProjection
-
-        let folders =
-            root.Folders |> Seq.map (fun folder -> folder.Path, folder.Node.NodeId) |> dict
-
-        let values = ResizeArray<WorkspaceEntry>()
-
-        for folder in root.Folders do
-            let parent =
-                folder.ParentPath
-                |> Option.bind (fun path ->
-                    folders.TryGetValue path
-                    |> function
-                        | true, value -> Some value
-                        | _ -> None)
-
-            values.Add
-                { Node = folder.Node
-                  ParentId = parent
-                  PlacementKey = $"folder:{folder.Path}" }
-
-        for item in root.Items do
-            let parent =
-                item.FolderPath
-                |> Option.bind (fun path ->
-                    folders.TryGetValue path
-                    |> function
-                        | true, value -> Some value
-                        | _ -> None)
-
-            values.Add
-                { Node = item.Node
-                  ParentId = parent
-                  PlacementKey = $"solution-item:{item.RelativePath}" }
-
-        for project in root.Projects do
-            let parent =
-                project.ParentFolderPath
-                |> Option.bind (fun path ->
-                    folders.TryGetValue path
-                    |> function
-                        | true, value -> Some value
-                        | _ -> None)
-
-            values.Add
-                { Node = rootForProject project
-                  ParentId = parent
-                  PlacementKey = $"project:{project.Path.AbsolutePath.Value}" }
-
-        for node in root.BuildTypes do
-            values.Add
-                { Node = node
-                  ParentId = None
-                  PlacementKey = $"configuration:{node.Identity.Value}" }
-
-        for node in root.Platforms do
-            values.Add
-                { Node = node
-                  ParentId = None
-                  PlacementKey = $"platform:{node.Identity.Value}" }
-
-        for dependency in root.Dependencies do
-            values.Add
-                { Node = dependency.Node
-                  ParentId = Some dependency.ProjectId
-                  PlacementKey = $"dependency:{dependency.Node.Identity.Value}" }
-
-        for project in root.Projects do
-            match hydrated.TryGetValue(projectKey project) with
-            | true, materialized ->
-                for node in materialized.Children do
-                    values.Add
-                        { Node = node
-                          ParentId = Some materialized.Root.NodeId
-                          PlacementKey = $"body:{node.Identity.Value}" }
-            | _ -> ()
-
-        values |> Seq.sortBy (fun entry -> entry.PlacementKey) |> Seq.toArray
-
-    let advance oldEntries diagnostics =
-        let nextRevision = WorkspaceRevision.Create(revision + 1L)
-        let newEntries = entries ()
-
-        let oldByPlacement =
-            oldEntries |> Seq.map (fun entry -> entry.PlacementKey, entry) |> dict
-
-        let newByPlacement =
-            newEntries |> Seq.map (fun entry -> entry.PlacementKey, entry) |> dict
-
-        let changes = ResizeArray<WorkspaceChange>()
-
-        for KeyValue(key, oldEntry) in oldByPlacement do
-            match newByPlacement.TryGetValue key with
-            | false, _ -> changes.Add(WorkspaceChange.Removed(oldEntry.Node.NodeId, oldEntry.ParentId, key))
-            | true, nextEntry when oldEntry.Node.NodeId <> nextEntry.Node.NodeId ->
-                changes.Add(
-                    WorkspaceChange.Replaced(
-                        { OldId = oldEntry.Node.NodeId
-                          NewId = nextEntry.Node.NodeId },
-                        nextEntry.ParentId,
-                        key
-                    )
-                )
-            | true, nextEntry when oldEntry.ParentId <> nextEntry.ParentId ->
-                changes.Add(WorkspaceChange.Moved(nextEntry.Node.NodeId, oldEntry.ParentId, nextEntry.ParentId, key))
-            | true, nextEntry when not (WorkspaceStateSupport.nodeEqual oldEntry.Node nextEntry.Node) ->
-                changes.Add(WorkspaceChange.Updated(nextEntry.Node, nextEntry.ParentId, key))
-            | _ -> ()
-
-        for KeyValue(key, nextEntry) in newByPlacement do
-            if not (oldByPlacement.ContainsKey key) then
-                changes.Add(WorkspaceChange.Added(nextEntry.Node, nextEntry.ParentId, key))
-
-        revision <- nextRevision.Value
-
-        { WorkspaceId = workspace.WorkspaceDescriptor.WorkspaceId
-          BaseRevision = WorkspaceRevision.Create(nextRevision.Value - 1L)
-          NewRevision = nextRevision
-          Changes =
-            ImmutableArray.CreateRange(
-                changes
-                |> Seq.sortBy (fun change ->
-                    match change with
-                    | WorkspaceChange.Added(_, _, key)
-                    | WorkspaceChange.Removed(_, _, key)
-                    | WorkspaceChange.Updated(_, _, key)
-                    | WorkspaceChange.Moved(_, _, _, key)
-                    | WorkspaceChange.Replaced(_, _, key) -> key)
-            )
-          Diagnostics = ImmutableArray.CreateRange diagnostics }
-
-    let touch key =
-        match recencyNodes.TryGetValue key with
-        | true, node -> recency.Remove node
-        | _ -> ()
-
-        recencyNodes[key] <- recency.AddFirst key
-
-    let evict () =
-        if hydrated.Count > hydrationLimit then
-            let key = recency |> Seq.last
-            recency.RemoveLast()
-            recencyNodes.Remove key |> ignore
-            hydrated.Remove key |> ignore
-            true
+    let private dimensionName (dimension: EvaluationDimensionSnapshot) =
+        if dimension.TargetFramework.HasValue then
+            dimension.TargetFramework.Value.Value
         else
-            false
+            "outer"
 
-    let projectBody (project: SolutionProjectProjection) (snapshot: EvaluationSnapshot) =
-        let semantic = HashSet<string>(StringComparer.Ordinal)
-        let nodes = ResizeArray<WorkspaceNode>()
+    let contributions (snapshot: EvaluationSnapshot) =
+        seq {
+            for dimension in snapshot.Dimensions do
+                let framework = dimensionName dimension
 
-        let add identity name =
-            if semantic.Add identity then
-                nodes.Add(
+                for property in dimension.Properties do
+                    yield
+                        { Logical = [ "property"; property.Name ]
+                          Content = [ property.Value ]
+                          Display = $"{property.Name} = {property.Value}"
+                          Dimension = framework }
+
+                for item in dimension.Items do
+                    let metadata =
+                        item.Metadata
+                        |> Seq.collect (fun value -> [ value.Name; value.Value ])
+                        |> Seq.toList
+
+                    let resolved = pathValue item.ResolvedPath
+
+                    let details =
+                        [ if not (String.IsNullOrEmpty resolved) then
+                              $"path={resolved}"
+                          if item.Metadata.Length > 0 then
+                              item.Metadata
+                              |> Seq.map (fun value -> $"{value.Name}={value.Value}")
+                              |> String.concat ", " ]
+                        |> String.concat "; "
+
+                    yield
+                        { Logical = [ "item"; item.ItemType; item.EvaluatedInclude ]
+                          Content = resolved :: metadata
+                          Display =
+                            if String.IsNullOrEmpty details then
+                                $"{item.ItemType}: {item.EvaluatedInclude}"
+                            else
+                                $"{item.ItemType}: {item.EvaluatedInclude} ({details})"
+                          Dimension = framework }
+
+                for reference in dimension.ProjectReferences do
+                    let resolved = pathValue reference.ResolvedPath
+
+                    yield
+                        { Logical = [ "project-reference"; reference.Include ]
+                          Content = [ resolved ]
+                          Display =
+                            if String.IsNullOrEmpty resolved then
+                                $"Project reference: {reference.Include}"
+                            else
+                                $"Project reference: {reference.Include} -> {resolved}"
+                          Dimension = framework }
+
+                for reference in dimension.References do
+                    let resolved = pathValue reference.ResolvedPath
+
+                    yield
+                        { Logical = [ "reference"; reference.Include ]
+                          Content = [ resolved ]
+                          Display =
+                            if String.IsNullOrEmpty resolved then
+                                $"Reference: {reference.Include}"
+                            else
+                                $"Reference: {reference.Include} -> {resolved}"
+                          Dimension = framework }
+
+                for package in dimension.Packages do
+                    let version = Option.ofObj package.Version |> Option.defaultValue String.Empty
+
+                    yield
+                        { Logical = [ "package"; package.Id ]
+                          Content = [ version ]
+                          Display = $"Package: {package.Id} {version}".Trim()
+                          Dimension = framework }
+
+                for analyzer in dimension.Analyzers do
+                    yield
+                        { Logical = [ "analyzer"; analyzer.Value ]
+                          Content = [ analyzer.Value ]
+                          Display = $"Analyzer: {analyzer.Value}"
+                          Dimension = framework }
+        }
+        |> Seq.toArray
+
+    let projectBodyEntries descriptor (project: SolutionProjectProjection) snapshot =
+        contributions snapshot
+        |> Seq.groupBy _.Logical
+        |> Seq.collect (fun (_, logicalValues) ->
+            let variants = logicalValues |> Seq.groupBy _.Content |> Seq.toArray
+            let showDimension = variants.Length > 1
+
+            variants
+            |> Seq.map (fun (_, values) ->
+                let values = values |> Seq.toArray
+
+                let dimensions =
+                    values |> Seq.map _.Dimension |> Seq.distinct |> Seq.sort |> String.concat ","
+
+                let representative = values[0]
+
+                let display =
+                    if showDimension then
+                        $"[{dimensions}] {representative.Display}"
+                    else
+                        representative.Display
+
+                let boundedDisplay =
+                    if display.Length <= 240 then
+                        display
+                    else
+                        $"{display[..199]}… [{canonicalHash [ display ]}]"
+
+                let identity =
+                    canonicalHash (Seq.concat [ representative.Logical; representative.Content ])
+
+                let node =
                     WorkspaceNode.Create(
-                        workspace.WorkspaceDescriptor,
+                        descriptor,
                         WorkspaceNodeKind.ProjectItem,
                         NodeSemanticIdentity.Create $"project-body:{project.Node.Identity.Value}:{identity}",
-                        name,
+                        boundedDisplay,
                         snapshot.CapabilityProfile
                     )
-                )
 
-        for dimension in snapshot.Dimensions do
-            let dimensionKey =
-                if dimension.TargetFramework.HasValue then
-                    dimension.TargetFramework.Value.Value
-                else
-                    "outer"
+                let placement =
+                    if showDimension then
+                        representative.Logical @ [ dimensions ]
+                    else
+                        representative.Logical
 
-            for property in dimension.Properties do
-                add $"property:{dimensionKey}:{property.Name}:{property.Value}" $"{property.Name} = {property.Value}"
-
-            for item in dimension.Items do
-                add
-                    $"item:{dimensionKey}:{item.ItemType}:{item.EvaluatedInclude}"
-                    $"{item.ItemType}: {item.EvaluatedInclude}"
-
-            for reference in dimension.ProjectReferences do
-                add $"project-reference:{dimensionKey}:{reference.Include}" $"Project reference: {reference.Include}"
-
-            for reference in dimension.References do
-                add $"reference:{dimensionKey}:{reference.Include}" $"Reference: {reference.Include}"
-
-            for package in dimension.Packages do
-                let version = Option.ofObj package.Version |> Option.defaultValue String.Empty
-                add $"package:{dimensionKey}:{package.Id}:{version}" ($"Package: {package.Id} {version}".Trim())
-
-            for analyzer in dimension.Analyzers do
-                add $"analyzer:{dimensionKey}:{analyzer.Value}" $"Analyzer: {analyzer.Value}"
-
-        nodes
-        |> Seq.sortBy (fun node -> node.Identity.Value)
+                placement, node))
+        |> Seq.sortBy fst
         |> ImmutableArray.CreateRange
 
-    let materialize project fresh cancellationToken =
-        task {
-            let key = projectKey project
+    let projectBody descriptor project snapshot =
+        projectBodyEntries descriptor project snapshot
+        |> Seq.map snd
+        |> ImmutableArray.CreateRange
 
-            match hydrated.TryGetValue key with
-            | true, current when not fresh ->
-                touch key
-                return Ok current
-            | _ when project.IsFilteredOut ->
-                return Error(RpcErrors.invalidParams "Filtered-out projects cannot be hydrated.")
-            | _ ->
-                let! outcome =
-                    evaluator.EvaluateAsync(project.Path.AbsolutePath, workspace.BackingPath, cancellationToken)
+    let snapshotSemanticValues (snapshot: EvaluationSnapshot) =
+        seq {
+            yield snapshot.ProjectPath.Value
 
-                match outcome with
-                | WorkspaceOutcome.Success snapshot when not cancellationToken.IsCancellationRequested ->
-                    let root =
-                        WorkspaceNode.CreateWithLoadState(
-                            workspace.WorkspaceDescriptor,
-                            WorkspaceNodeKind.Project,
-                            project.Node.Identity,
-                            project.Node.Name,
-                            snapshot.CapabilityProfile,
-                            WorkspaceNodeLoadState.Hydrated
-                        )
+            for value in
+                contributions snapshot
+                |> Seq.sortBy (fun value -> value.Logical, value.Content, value.Dimension) do
+                yield! value.Logical
+                yield! value.Content
+                yield value.Dimension
 
-                    let value =
-                        { Root = root
-                          Children = projectBody project snapshot
-                          Snapshot = snapshot }
+            for capability in snapshot.Capabilities do
+                yield $"capability:{capability.Value}"
 
-                    return Ok value
-                | WorkspaceOutcome.Success _ ->
-                    return Error(RpcErrors.invalidParams "The workspace operation was cancelled.")
-                | WorkspaceOutcome.Failure failure -> return Error(PublicProtocol.failureError failure)
+            for path in snapshot.Imports do
+                yield $"import:{path.Value}"
+
+            for path in snapshot.WatchInputs do
+                yield $"watch:{path.Value}"
+
+            for path in snapshot.GlobRoots do
+                yield $"glob:{path.Value}"
+
+            for diagnostic in snapshot.Diagnostics do
+                yield $"diagnostic-severity:{int diagnostic.DiagnosticSeverity}"
+                yield $"diagnostic-code:{diagnostic.DiagnosticCode.Value}"
+                yield $"diagnostic-message:{diagnostic.Message}"
+                yield $"diagnostic-retryable:{diagnostic.Retryable}"
+
+                yield
+                    $"diagnostic-path:{diagnostic.DiagnosticArtifactPath
+                                       |> Option.map _.Value
+                                       |> Option.defaultValue String.Empty}"
+
+                yield
+                    diagnostic.DiagnosticLocation
+                    |> Option.map (fun location -> $"diagnostic-location:{location.Line}:{location.Column}")
+                    |> Option.defaultValue "diagnostic-location:"
         }
 
-    let token (parentId: NodeId) (offset: int) (tokenRevision: int64) =
-        let payload =
-            $"{workspace.WorkspaceDescriptor.WorkspaceId.Value}|{parentId.Value}|{offset}|{tokenRevision}"
+    let sameSnapshot left right =
+        canonicalHash (snapshotSemanticValues left) = canonicalHash (snapshotSemanticValues right)
 
-        use hmac = new HMACSHA256(secret)
+    let private nodeEqual (left: WorkspaceNode) (right: WorkspaceNode) =
+        left.NodeId = right.NodeId
+        && left.NodeKind = right.NodeKind
+        && left.Identity = right.Identity
+        && left.Name = right.Name
+        && left.Profile = right.Profile
+        && left.NodeLoadState = right.NodeLoadState
+        && left.AvailableCapabilities.Length = right.AvailableCapabilities.Length
+        && Seq.forall2 (=) left.AvailableCapabilities right.AvailableCapabilities
 
-        let signature =
-            hmac.ComputeHash(Encoding.UTF8.GetBytes payload) |> Convert.ToHexString
+    let private pathIdentity insensitive (path: string) =
+        if insensitive then path.ToUpperInvariant() else path
 
-        Convert.ToBase64String(Encoding.UTF8.GetBytes payload) + "." + signature
+    let placements insensitive (data: WorkspaceData) =
+        let root = data.Workspace.RootProjection
+        let raw = ResizeArray<PlacementKey * WorkspaceNode * NodeId option>()
 
-    let parseToken (parentId: NodeId) (value: string) =
-        try
-            let pieces = value.Split('.', StringSplitOptions.None)
+        let folderIds =
+            Dictionary<string, NodeId>(
+                if insensitive then
+                    StringComparer.OrdinalIgnoreCase
+                else
+                    StringComparer.Ordinal
+            )
 
-            if pieces.Length <> 2 then
-                None
-            else
-                let payload = Encoding.UTF8.GetString(Convert.FromBase64String pieces[0])
-                use hmac = new HMACSHA256(secret)
+        for folder in root.Folders do
+            folderIds[folder.Path] <- folder.Node.NodeId
 
-                let expected =
-                    hmac.ComputeHash(Encoding.UTF8.GetBytes payload) |> Convert.ToHexString
+        let folderParent path =
+            path
+            |> Option.bind (fun value ->
+                match folderIds.TryGetValue value with
+                | true, nodeId -> Some nodeId
+                | _ -> None)
 
-                if
-                    not (
-                        CryptographicOperations.FixedTimeEquals(
-                            Encoding.ASCII.GetBytes expected,
-                            Encoding.ASCII.GetBytes pieces[1]
-                        )
+        for folder in root.Folders do
+            raw.Add(PlacementKey [ "folder"; folder.Path ], folder.Node, folderParent folder.ParentPath)
+
+        for item in root.Items do
+            raw.Add(
+                PlacementKey
+                    [ "solution-item"
+                      item.FolderPath |> Option.defaultValue String.Empty
+                      item.RelativePath ],
+                item.Node,
+                folderParent item.FolderPath
+            )
+
+        for project in root.Projects do
+            let key = pathIdentity insensitive project.Path.AbsolutePath.Value
+
+            let node =
+                match data.Hydrated.TryFind key with
+                | Some snapshot ->
+                    WorkspaceNode.CreateWithLoadState(
+                        data.Workspace.WorkspaceDescriptor,
+                        WorkspaceNodeKind.Project,
+                        project.Node.Identity,
+                        project.Node.Name,
+                        snapshot.CapabilityProfile,
+                        WorkspaceNodeLoadState.Hydrated
                     )
-                then
+                | None -> project.Node
+
+            raw.Add(PlacementKey [ "project"; key ], node, folderParent project.ParentFolderPath)
+
+            match data.Hydrated.TryFind key with
+            | Some snapshot ->
+                for placement, child in projectBodyEntries data.Workspace.WorkspaceDescriptor project snapshot do
+                    raw.Add(PlacementKey("project-body" :: key :: placement), child, Some node.NodeId)
+            | None -> ()
+
+        for node in root.BuildTypes do
+            raw.Add(PlacementKey [ "configuration"; node.Identity.Value ], node, None)
+
+        for node in root.Platforms do
+            raw.Add(PlacementKey [ "platform"; node.Identity.Value ], node, None)
+
+        for dependency in root.Dependencies do
+            raw.Add(
+                PlacementKey
+                    [ "dependency"
+                      dependency.ProjectId.Value
+                      dependency.DependsOnProjectId.Value ],
+                dependency.Node,
+                Some dependency.ProjectId
+            )
+
+        raw
+        |> Seq.groupBy (fun (_, _, parentId) -> parentId |> Option.map _.Value |> Option.defaultValue String.Empty)
+        |> Seq.collect (fun (_, siblings) ->
+            siblings
+            |> Seq.sortBy (fun (key, _, _) -> key)
+            |> Seq.mapi (fun index (key, node, parentId) ->
+                { Key = key
+                  Node = node
+                  ParentId = parentId
+                  Index = index }))
+        |> Seq.sortBy _.Key
+        |> Seq.toArray
+
+    let diff workspaceId baseRevision oldPlacements newPlacements =
+        let oldByKey = oldPlacements |> Seq.map (fun value -> value.Key, value) |> Map.ofSeq
+        let newByKey = newPlacements |> Seq.map (fun value -> value.Key, value) |> Map.ofSeq
+
+        let removals =
+            oldByKey
+            |> Seq.choose (fun (KeyValue(key, oldValue)) ->
+                if newByKey.ContainsKey key then
                     None
                 else
-                    let fields = payload.Split('|')
+                    Some(key, oldValue))
+            |> Seq.sortBy (fun (key, value) -> value.ParentId |> Option.map _.Value, -value.Index, key)
+            |> Seq.map (fun (_, value) -> WorkspaceChange.Removed(value.Node.NodeId, value.ParentId, value.Index))
 
-                    match fields with
-                    | [| workspaceId; tokenParent; offset; tokenRevision |] when
-                        workspaceId = workspace.WorkspaceDescriptor.WorkspaceId.Value
-                        && tokenParent = parentId.Value
-                        ->
-                        match Int32.TryParse offset, Int64.TryParse tokenRevision with
-                        | (true, parsedOffset), (true, parsedRevision) when parsedOffset >= 0 ->
-                            Some(parsedOffset, parsedRevision)
-                        | _ -> None
-                    | _ -> None
-        with :? FormatException ->
+        let replacements, moves, updates =
+            oldByKey
+            |> Seq.choose (fun (KeyValue(key, oldValue)) ->
+                newByKey.TryFind key |> Option.map (fun newValue -> key, oldValue, newValue))
+            |> Seq.fold
+                (fun (replaceValues, moveValues, updateValues) (key, oldValue, newValue) ->
+                    if oldValue.Node.NodeId <> newValue.Node.NodeId then
+                        ((key,
+                          WorkspaceChange.Replaced(
+                              oldValue.Node.NodeId,
+                              newValue.Node,
+                              newValue.ParentId,
+                              newValue.Index
+                          ))
+                         :: replaceValues,
+                         moveValues,
+                         updateValues)
+                    else
+                        let nextMoves =
+                            if oldValue.ParentId <> newValue.ParentId then
+                                (key,
+                                 WorkspaceChange.Moved(
+                                     newValue.Node.NodeId,
+                                     oldValue.ParentId,
+                                     oldValue.Index,
+                                     newValue.ParentId,
+                                     newValue.Index
+                                 ))
+                                :: moveValues
+                            else
+                                moveValues
+
+                        let nextUpdates =
+                            if not (nodeEqual oldValue.Node newValue.Node) then
+                                (key, WorkspaceChange.Updated(newValue.Node, newValue.ParentId, newValue.Index))
+                                :: updateValues
+                            else
+                                updateValues
+
+                        replaceValues, nextMoves, nextUpdates)
+                ([], [], [])
+
+        let ordered values = values |> Seq.sortBy fst |> Seq.map snd
+
+        let additions =
+            newByKey
+            |> Seq.choose (fun (KeyValue(key, newValue)) ->
+                if oldByKey.ContainsKey key then
+                    None
+                else
+                    Some(key, newValue))
+            |> Seq.sortBy (fun (key, value) -> value.ParentId |> Option.map _.Value, value.Index, key)
+            |> Seq.map (fun (_, value) -> WorkspaceChange.Added(value.Node, value.ParentId, value.Index))
+
+        let changes =
+            Seq.concat [ removals; ordered replacements; ordered moves; ordered updates; additions ]
+            |> ImmutableArray.CreateRange
+
+        if changes.IsEmpty then
             None
+        else
+            Some
+                { WorkspaceId = workspaceId
+                  BaseRevision = WorkspaceRevision.Create baseRevision
+                  NewRevision = WorkspaceRevision.Create(baseRevision + 1L)
+                  Changes = changes
+                  Diagnostics = ImmutableArray<WorkspaceDiagnostic>.Empty }
 
-    member _.Descriptor = workspace.WorkspaceDescriptor
-    member _.Revision = revision
+    let omitLazyBodyChanges (oldPlacements: Placement array) (delta: WorkspaceDelta) =
+        let oldKinds =
+            oldPlacements
+            |> Seq.map (fun value -> value.Node.NodeId, value.Node.NodeKind)
+            |> dict
 
-    member this.RootAsync(cancellationToken: CancellationToken) =
+        let isBody =
+            function
+            | WorkspaceChange.Added(node, _, _)
+            | WorkspaceChange.Updated(node, _, _)
+            | WorkspaceChange.Replaced(_, node, _, _) -> node.NodeKind = WorkspaceNodeKind.ProjectItem
+            | WorkspaceChange.Removed(nodeId, _, _) ->
+                match oldKinds.TryGetValue nodeId with
+                | true, kind -> kind = WorkspaceNodeKind.ProjectItem
+                | _ -> false
+            | WorkspaceChange.Moved(nodeId, _, _, _, _) ->
+                match oldKinds.TryGetValue nodeId with
+                | true, kind -> kind = WorkspaceNodeKind.ProjectItem
+                | _ -> false
+
+        { delta with
+            Changes = delta.Changes |> Seq.filter (isBody >> not) |> ImmutableArray.CreateRange }
+
+    let watchPlan insensitive (data: WorkspaceData) =
+        let specs = ResizeArray<WatchSpec>()
+
+        let comparer =
+            if insensitive then
+                StringComparer.OrdinalIgnoreCase
+            else
+                StringComparer.Ordinal
+
+        let exact (path: string) =
+            let directory = Path.GetDirectoryName path |> Option.ofObj
+
+            directory
+            |> Option.iter (fun value ->
+                specs.Add
+                    { Directory = Path.GetFullPath value
+                      Filters =
+                        Path.GetFileName path
+                        |> Option.ofObj
+                        |> Option.defaultValue "*"
+                        |> ImmutableArray.Create
+                      IncludeSubdirectories = false
+                      Kind = WatchKind.ExactFile })
+
+        exact data.Workspace.WorkspaceDescriptor.Path.Value
+        exact data.Workspace.BackingPath.Value
+
+        for KeyValue(_, snapshot) in data.Hydrated do
+            exact snapshot.ProjectPath.Value
+
+            for path in Seq.append snapshot.Imports snapshot.WatchInputs do
+                exact path.Value
+
+            let projectDirectory =
+                Path.GetDirectoryName snapshot.ProjectPath.Value |> Option.ofObj
+
+            projectDirectory
+            |> Option.iter (fun projectDirectory ->
+                let mutable directory = Some(DirectoryInfo projectDirectory)
+
+                while directory.IsSome do
+                    let current = directory.Value
+
+                    for name in
+                        [ "Directory.Build.props"
+                          "Directory.Build.targets"
+                          "Directory.Packages.props" ] do
+                        exact (Path.Combine(current.FullName, name))
+
+                    directory <- current.Parent |> Option.ofObj)
+
+            for root in snapshot.GlobRoots do
+                if Directory.Exists root.Value then
+                    specs.Add
+                        { Directory = root.Value
+                          Filters = ImmutableArray.Create "*"
+                          IncludeSubdirectories = true
+                          Kind = WatchKind.RecursiveGlob }
+
+            for dimension in snapshot.Dimensions do
+                for item in dimension.Items do
+                    item.ResolvedPath
+                    |> Option.ofObj
+                    |> Option.iter (fun path ->
+                        let projectRoot = Path.GetDirectoryName snapshot.ProjectPath.Value |> Option.ofObj
+
+                        let relative =
+                            projectRoot
+                            |> Option.map (fun value -> Path.GetRelativePath(value, path.Value))
+                            |> Option.defaultValue path.Value
+
+                        if
+                            Path.IsPathRooted relative
+                            || relative = ".."
+                            || relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+                            || relative.StartsWith($"..{Path.AltDirectorySeparatorChar}", StringComparison.Ordinal)
+                        then
+                            exact path.Value)
+
+        specs
+        |> Seq.filter (fun value -> Directory.Exists value.Directory && not value.Filters.IsEmpty)
+        |> Seq.groupBy (fun value -> pathIdentity insensitive value.Directory, value.IncludeSubdirectories, value.Kind)
+        |> Seq.map (fun (_, values) ->
+            let first = Seq.head values
+
+            { first with
+                Filters =
+                    values
+                    |> Seq.collect _.Filters
+                    |> Seq.distinctBy (fun value -> if insensitive then value.ToUpperInvariant() else value)
+                    |> Seq.sortWith (fun left right -> comparer.Compare(left, right))
+                    |> ImmutableArray.CreateRange })
+        |> Seq.sortWith (fun left right ->
+            let directory = comparer.Compare(left.Directory, right.Directory)
+
+            if directory <> 0 then
+                directory
+            else
+                let includeChildren = compare left.IncludeSubdirectories right.IncludeSubdirectories
+
+                if includeChildren <> 0 then
+                    includeChildren
+                else
+                    compare left.Kind right.Kind)
+        |> ImmutableArray.CreateRange
+
+type internal WorkspaceState
+    private (target: string, services: WorkspaceStateServices, options: WorkspaceStateOptions, initial: WorkspaceData) =
+    let gate = new SemaphoreSlim(1, 1)
+
+    let caseSemantics =
+        HostFileSystemCaseDetector.DetectFromExistingPath(initial.Workspace.WorkspaceDescriptor.Path.Value)
+
+    let insensitive = caseSemantics = HostFileSystemCaseSemantics.Insensitive
+
+    let pathKey (path: string) =
+        let value = Path.GetFullPath path
+        if insensitive then value.ToUpperInvariant() else value
+
+    let mutable current = initial
+    let mutable disposed = false
+
+    let cancelledError =
+        RpcErrors.create "cancelled" "The workspace operation was cancelled." None
+
+    let failureError (failure: WorkspaceFailure) : RpcError =
+        if failure.Code = WorkspaceErrorCode.Cancelled then
+            cancelledError
+        else
+            PublicProtocol.failureError failure
+
+    let projectByKey (workspace: SolutionWorkspace) (key: string) =
+        workspace.RootProjection.Projects
+        |> Seq.tryFind (fun project -> pathKey project.Path.AbsolutePath.Value = key)
+
+    let touch (key: string) (recency: string list) =
+        key :: (recency |> List.filter ((<>) key))
+
+    let evaluate
+        (workspace: SolutionWorkspace)
+        (project: SolutionProjectProjection)
+        (cancellationToken: CancellationToken)
+        =
+        task {
+            let! outcome = services.EvaluateAsync project.Path.AbsolutePath workspace.BackingPath cancellationToken
+
+            return
+                match outcome with
+                | WorkspaceOutcome.Success snapshot -> Ok snapshot
+                | WorkspaceOutcome.Failure failure -> Error(failureError failure)
+        }
+
+    let stageMaterialized
+        (source: WorkspaceData)
+        (workspace: SolutionWorkspace)
+        (cancellationToken: CancellationToken)
+        =
+        task {
+            let mutable result = Ok Map.empty
+
+            for key in source.Recency |> List.rev do
+                match result, projectByKey workspace key with
+                | Ok values, Some project when not project.IsFilteredOut ->
+                    let! evaluated = evaluate workspace project cancellationToken
+                    result <- evaluated |> Result.map (fun snapshot -> values.Add(key, snapshot))
+                | _ -> ()
+
+            return result
+        }
+
+    let applyCandidate (candidate: WorkspaceData) =
+        let oldPlacements = WorkspaceStatePure.placements insensitive current
+        let newPlacements = WorkspaceStatePure.placements insensitive candidate
+
+        let semanticChanged =
+            current.Hydrated.Count <> candidate.Hydrated.Count
+            || (current.Hydrated
+                |> Seq.exists (fun (KeyValue(key, snapshot)) ->
+                    match candidate.Hydrated.TryFind key with
+                    | Some next -> not (WorkspaceStatePure.sameSnapshot snapshot next)
+                    | None -> true))
+
+        let diagnostics =
+            candidate.Hydrated.Values
+            |> Seq.collect _.Diagnostics
+            |> Seq.sortBy (fun value -> value.DiagnosticCode.Value, value.Message)
+            |> ImmutableArray.CreateRange
+
+        match
+            WorkspaceStatePure.diff
+                current.Workspace.WorkspaceDescriptor.WorkspaceId
+                current.Revision
+                oldPlacements
+                newPlacements
+        with
+        | None when not semanticChanged ->
+            current <-
+                { candidate with
+                    Revision = current.Revision }
+
+            None
+        | None ->
+            let delta =
+                { WorkspaceId = current.Workspace.WorkspaceDescriptor.WorkspaceId
+                  BaseRevision = WorkspaceRevision.Create current.Revision
+                  NewRevision = WorkspaceRevision.Create(current.Revision + 1L)
+                  Changes = ImmutableArray<WorkspaceChange>.Empty
+                  Diagnostics = diagnostics }
+
+            current <-
+                { candidate with
+                    Revision = delta.NewRevision.Value }
+
+            Some delta
+        | Some delta ->
+            let withDiagnostics = { delta with Diagnostics = diagnostics }
+
+            current <-
+                { candidate with
+                    Revision = withDiagnostics.NewRevision.Value }
+
+            Some withDiagnostics
+
+    let resetUnsafe (diagnostic: WorkspaceDiagnostic) =
+        task {
+            try
+                do! services.RefreshAsync()
+            with _ ->
+                ()
+
+            let resetRevision = current.Revision + 1L
+
+            current <-
+                { current with
+                    Hydrated = Map.empty
+                    Recency = []
+                    Revision = resetRevision
+                    NeedsRebase = true }
+
+            return
+                { WorkspaceId = current.Workspace.WorkspaceDescriptor.WorkspaceId
+                  Revision = WorkspaceRevision.Create resetRevision
+                  Diagnostics = ImmutableArray.Create diagnostic }
+        }
+
+    let ensureReadyUnsafe (cancellationToken: CancellationToken) =
+        task {
+            if not current.NeedsRebase then
+                return Ok()
+            else
+                try
+                    do! services.RefreshAsync()
+                    cancellationToken.ThrowIfCancellationRequested()
+                    let! opened = services.OpenAsync target cancellationToken
+
+                    match opened with
+                    | WorkspaceOutcome.Success workspace ->
+                        current <-
+                            { Workspace = workspace
+                              Hydrated = Map.empty
+                              Recency = []
+                              Revision = current.Revision
+                              NeedsRebase = false }
+
+                        return Ok()
+                    | WorkspaceOutcome.Failure failure -> return Error(failureError failure)
+                with :? OperationCanceledException ->
+                    return Error cancelledError
+        }
+
+    let uncertainty (code: string) (message: string) =
+        WorkspaceDiagnostic.CreateSimple(
+            WorkspaceDiagnosticSeverity.Warning,
+            WorkspaceDiagnosticCode.Create code,
+            message,
+            true,
+            CorrelationId.New()
+        )
+
+    member _.Descriptor = current.Workspace.WorkspaceDescriptor
+    member _.Revision = current.Revision
+
+    member _.PathComparer =
+        if insensitive then
+            StringComparer.OrdinalIgnoreCase
+        else
+            StringComparer.Ordinal
+
+    member _.RootAsync(cancellationToken: CancellationToken) =
         task {
             do! gate.WaitAsync cancellationToken
 
             try
-                cancellationToken.ThrowIfCancellationRequested()
+                let! ready = ensureReadyUnsafe cancellationToken
 
                 return
-                    revision,
-                    entries ()
-                    |> Seq.filter (fun entry -> entry.ParentId.IsNone)
-                    |> Seq.map _.Node
-                    |> ImmutableArray.CreateRange
+                    ready
+                    |> Result.map (fun () ->
+                        let nodes =
+                            WorkspaceStatePure.placements insensitive current
+                            |> Seq.filter (fun value -> value.ParentId.IsNone)
+                            |> Seq.sortBy _.Index
+                            |> Seq.map _.Node
+                            |> ImmutableArray.CreateRange
+
+                        current.Revision, nodes)
             finally
                 gate.Release() |> ignore
         }
 
-    member this.ChildrenAsync
+    member _.ChildrenAsync
         (
             parentIdText: string,
             requestedPageSize: int option,
@@ -450,329 +893,438 @@ type internal WorkspaceState
             do! gate.WaitAsync cancellationToken
 
             try
-                cancellationToken.ThrowIfCancellationRequested()
-                let allBefore = entries ()
+                let! ready = ensureReadyUnsafe cancellationToken
 
-                let parent =
-                    allBefore |> Array.tryFind (fun entry -> entry.Node.NodeId.Value = parentIdText)
-
-                match parent with
-                | None -> return Error(RpcErrors.invalidParams "The requested workspace parent does not exist.")
-                | Some parentEntry ->
-                    let pageSize =
-                        requestedPageSize
-                        |> Option.defaultValue 256
-                        |> min 4096
-                        |> min negotiatedPageSize
-
-                    let offsetResult =
+                match ready with
+                | Error error -> return Error error
+                | Ok() ->
+                    let offset =
                         match continuation with
                         | None -> Ok 0
                         | Some value ->
-                            match parseToken parentEntry.Node.NodeId value with
-                            | Some(offset, tokenRevision) when tokenRevision = revision -> Ok offset
-                            | Some _ -> Error(PublicProtocol.workspaceConflict revision)
-                            | None -> Error(RpcErrors.invalidParams "The continuation token is invalid.")
+                            match ContinuationTokens.tryParse options.TokenSecret value with
+                            | Some payload when payload.Revision <> current.Revision ->
+                                Error(PublicProtocol.workspaceConflict current.Revision)
+                            | Some payload when
+                                payload.WorkspaceId = current.Workspace.WorkspaceDescriptor.WorkspaceId.Value
+                                && payload.ParentId = parentIdText
+                                ->
+                                Ok payload.Offset
+                            | _ -> Error(RpcErrors.invalidParams "The continuation token is invalid.")
 
-                    match offsetResult with
+                    match offset with
                     | Error error -> return Error error
-                    | Ok offset ->
-                        let project =
-                            workspace.RootProjection.Projects
-                            |> Seq.tryFind (fun item -> item.Node.NodeId.Value = parentIdText)
+                    | Ok pageOffset ->
+                        let before = WorkspaceStatePure.placements insensitive current
 
-                        match project with
-                        | Some item when not item.IsFilteredOut && not (hydrated.ContainsKey(projectKey item)) ->
-                            let! evaluated = materialize item false cancellationToken
+                        match before |> Array.tryFind (fun value -> value.Node.NodeId.Value = parentIdText) with
+                        | None -> return Error(RpcErrors.invalidParams "The requested workspace parent does not exist.")
+                        | Some parent ->
+                            let project =
+                                current.Workspace.RootProjection.Projects
+                                |> Seq.tryFind (fun value -> value.Node.NodeId = parent.Node.NodeId)
 
-                            match evaluated with
+                            let hydrate () =
+                                task {
+                                    match project with
+                                    | Some value when not value.IsFilteredOut ->
+                                        let key = pathKey value.Path.AbsolutePath.Value
+
+                                        match current.Hydrated.TryFind key with
+                                        | Some _ ->
+                                            current <-
+                                                { current with
+                                                    Recency = touch key current.Recency }
+
+                                            return Ok None
+                                        | None ->
+                                            let! evaluated = evaluate current.Workspace value cancellationToken
+
+                                            match evaluated with
+                                            | Error error -> return Error error
+                                            | Ok snapshot ->
+                                                if cancellationToken.IsCancellationRequested then
+                                                    return Error cancelledError
+                                                else
+                                                    let hydrated = current.Hydrated.Add(key, snapshot)
+                                                    let recency = touch key current.Recency
+
+                                                    let evicted =
+                                                        if hydrated.Count > options.HydrationLimit then
+                                                            Some(List.last recency)
+                                                        else
+                                                            None
+
+                                                    let! invalidation =
+                                                        match
+                                                            evicted |> Option.bind (projectByKey current.Workspace)
+                                                        with
+                                                        | Some evictedProject ->
+                                                            task {
+                                                                let! outcome =
+                                                                    services.InvalidateAsync
+                                                                        (ImmutableArray.Create<WorkspaceArtifactPath>
+                                                                            evictedProject.Path.AbsolutePath)
+                                                                        cancellationToken
+
+                                                                return
+                                                                    match outcome with
+                                                                    | WorkspaceOutcome.Success _ when
+                                                                        cancellationToken.IsCancellationRequested
+                                                                        ->
+                                                                        Error cancelledError
+                                                                    | WorkspaceOutcome.Success _ -> Ok()
+                                                                    | WorkspaceOutcome.Failure failure ->
+                                                                        Error(failureError failure)
+                                                            }
+                                                        | None -> Task.FromResult(Ok())
+
+                                                    match invalidation with
+                                                    | Error error -> return Error error
+                                                    | Ok() ->
+                                                        let candidate =
+                                                            { current with
+                                                                Hydrated =
+                                                                    evicted
+                                                                    |> Option.map hydrated.Remove
+                                                                    |> Option.defaultValue hydrated
+                                                                Recency =
+                                                                    evicted
+                                                                    |> Option.map (fun item ->
+                                                                        recency |> List.filter ((<>) item))
+                                                                    |> Option.defaultValue recency }
+
+                                                        return
+                                                            Ok(
+                                                                applyCandidate candidate
+                                                                |> Option.map (
+                                                                    WorkspaceStatePure.omitLazyBodyChanges before
+                                                                )
+                                                            )
+                                    | _ -> return Ok None
+                                }
+
+                            let! hydrated = hydrate ()
+
+                            match hydrated with
                             | Error error -> return Error error
-                            | Ok value ->
-                                cancellationToken.ThrowIfCancellationRequested()
-                                let old = entries ()
-                                hydrated[projectKey item] <- value
-                                touch (projectKey item)
-                                evict () |> ignore
-                                let delta = advance old Seq.empty
+                            | Ok delta ->
+                                let placements = WorkspaceStatePure.placements insensitive current
+
+                                let actualParent =
+                                    placements |> Array.find (fun value -> value.Node.NodeId.Value = parentIdText)
 
                                 let children =
-                                    entries ()
-                                    |> Seq.filter (fun entry -> entry.ParentId = Some value.Root.NodeId)
+                                    placements
+                                    |> Seq.filter (fun value -> value.ParentId = Some actualParent.Node.NodeId)
+                                    |> Seq.sortBy _.Index
                                     |> Seq.toArray
 
+                                let pageSize =
+                                    requestedPageSize
+                                    |> Option.defaultValue 256
+                                    |> min 4096
+                                    |> min negotiatedPageSize
+
                                 let page =
-                                    children |> Array.skip (min offset children.Length) |> Array.truncate pageSize
+                                    children
+                                    |> Array.skip (min pageOffset children.Length)
+                                    |> Array.truncate pageSize
 
                                 let next =
-                                    if offset + page.Length < children.Length then
-                                        Some(
-                                            ContinuationToken.Create(
-                                                token value.Root.NodeId (offset + page.Length) revision
-                                            )
-                                        )
+                                    if pageOffset + page.Length < children.Length then
+                                        ContinuationTokens.create
+                                            options.TokenSecret
+                                            { WorkspaceId = current.Workspace.WorkspaceDescriptor.WorkspaceId.Value
+                                              ParentId = actualParent.Node.NodeId.Value
+                                              Offset = pageOffset + page.Length
+                                              Revision = current.Revision }
+                                        |> ContinuationToken.Create
+                                        |> Some
                                     else
                                         None
 
                                 return
-                                    Ok(
-                                        revision,
-                                        value.Root.NodeId,
-                                        page |> Seq.map _.Node |> ImmutableArray.CreateRange,
-                                        next,
-                                        Some delta
-                                    )
-                        | _ ->
-                            let children =
-                                entries ()
-                                |> Seq.filter (fun entry -> entry.ParentId = Some parentEntry.Node.NodeId)
-                                |> Seq.toArray
-
-                            let page =
-                                children |> Array.skip (min offset children.Length) |> Array.truncate pageSize
-
-                            let next =
-                                if offset + page.Length < children.Length then
-                                    Some(
-                                        ContinuationToken.Create(
-                                            token parentEntry.Node.NodeId (offset + page.Length) revision
-                                        )
-                                    )
-                                else
-                                    None
-
-                            return
-                                Ok(
-                                    revision,
-                                    parentEntry.Node.NodeId,
-                                    page |> Seq.map _.Node |> ImmutableArray.CreateRange,
-                                    next,
-                                    None
-                                )
+                                    Ok
+                                        { Revision = current.Revision
+                                          ParentId = actualParent.Node.NodeId
+                                          Nodes = page |> Seq.map _.Node |> ImmutableArray.CreateRange
+                                          NextToken = next
+                                          Delta = delta }
             finally
                 gate.Release() |> ignore
         }
 
-    member this.ExportAsync(cancellationToken: CancellationToken) =
-        task {
-            do! gate.WaitAsync cancellationToken
-
-            try
-                let staged = ResizeArray<string * MaterializedProject>()
-                let mutable failure = None
-
-                for project in workspace.RootProjection.Projects do
-                    cancellationToken.ThrowIfCancellationRequested()
-
-                    if
-                        failure.IsNone
-                        && not project.IsFilteredOut
-                        && File.Exists(project.Path.AbsolutePath.Value)
-                        && not (hydrated.ContainsKey(projectKey project))
-                    then
-                        let! value = materialize project false cancellationToken
-
-                        match value with
-                        | Ok item -> staged.Add(projectKey project, item)
-                        | Error error -> failure <- Some error
-
-                cancellationToken.ThrowIfCancellationRequested()
-
-                match failure with
-                | Some rpcError -> return Error rpcError
-                | None ->
-                    if staged.Count > 0 then
-                        let old = entries ()
-
-                        for key, value in staged do
-                            hydrated[key] <- value
-                            touch key
-
-                        advance old Seq.empty |> ignore
-
-                    return Ok(revision, entries () |> Seq.map _.Node |> ImmutableArray.CreateRange)
-            finally
-                gate.Release() |> ignore
-        }
-
-    member this.RefreshAsync(expectedRevision: int64 option, cancellationToken: CancellationToken) =
+    member _.RefreshAsync(expectedRevision: int64 option, cancellationToken: CancellationToken) =
         task {
             do! gate.WaitAsync cancellationToken
 
             try
                 match expectedRevision with
-                | Some expected when expected <> revision -> return Error(PublicProtocol.workspaceConflict revision)
+                | Some expected when expected <> current.Revision ->
+                    return Error(PublicProtocol.workspaceConflict current.Revision)
                 | _ ->
-                    let! opened = SolutionStore.OpenAsync(target, cancellationToken)
+                    try
+                        do! services.RefreshAsync()
+                        cancellationToken.ThrowIfCancellationRequested()
+                        let! opened = services.OpenAsync target cancellationToken
 
-                    match opened with
-                    | WorkspaceOutcome.Failure failure -> return Error(PublicProtocol.failureError failure)
-                    | WorkspaceOutcome.Success next ->
-                        let old = entries ()
-                        let oldWorkspace = workspace
-                        workspace <- next
-                        hydrated.Clear()
-                        recency.Clear()
-                        recencyNodes.Clear()
-                        let delta = advance old Seq.empty
+                        match opened with
+                        | WorkspaceOutcome.Failure failure when failure.Code = WorkspaceErrorCode.Cancelled ->
+                            return Error cancelledError
+                        | WorkspaceOutcome.Failure failure ->
+                            let! reset = resetUnsafe failure.Diagnostic
 
-                        if delta.Changes.IsEmpty then
-                            workspace <- oldWorkspace
-                            revision <- revision - 1L
-                            return Ok(revision, false, None)
-                        else
-                            return Ok(revision, true, Some delta)
+                            return
+                                Ok
+                                    { Revision = reset.Revision.Value
+                                      Reset = true
+                                      Delta = None
+                                      ResetEvent = Some reset
+                                      Diagnostics = reset.Diagnostics }
+                        | WorkspaceOutcome.Success workspace ->
+                            let! hydrated = stageMaterialized current workspace cancellationToken
+
+                            match hydrated with
+                            | Error error when error.Code = "cancelled" -> return Error error
+                            | Error _ ->
+                                let! reset =
+                                    resetUnsafe (
+                                        uncertainty
+                                            "workspace.refresh_unverified"
+                                            "The workspace refresh could not be verified."
+                                    )
+
+                                return
+                                    Ok
+                                        { Revision = reset.Revision.Value
+                                          Reset = true
+                                          Delta = None
+                                          ResetEvent = Some reset
+                                          Diagnostics = reset.Diagnostics }
+                            | Ok values ->
+                                let recency = current.Recency |> List.filter values.ContainsKey
+
+                                let delta =
+                                    applyCandidate
+                                        { Workspace = workspace
+                                          Hydrated = values
+                                          Recency = recency
+                                          Revision = current.Revision
+                                          NeedsRebase = false }
+
+                                return
+                                    Ok
+                                        { Revision = current.Revision
+                                          Reset = false
+                                          Delta = delta
+                                          ResetEvent = None
+                                          Diagnostics = ImmutableArray<WorkspaceDiagnostic>.Empty }
+                    with :? OperationCanceledException ->
+                        return Error cancelledError
             finally
                 gate.Release() |> ignore
         }
 
-    member this.InvalidateAsync(paths: seq<WorkspaceArtifactPath>, cancellationToken: CancellationToken) =
+    member _.InvalidateAsync(paths: ImmutableArray<WorkspaceArtifactPath>, cancellationToken: CancellationToken) =
         task {
             do! gate.WaitAsync cancellationToken
 
             try
-                let changed = paths |> Seq.toArray
-
-                let touchesSolution =
-                    changed
-                    |> Array.exists (fun path ->
-                        String.Equals(path.Value, workspace.WorkspaceDescriptor.Path.Value, StringComparison.Ordinal)
-                        || String.Equals(path.Value, workspace.BackingPath.Value, StringComparison.Ordinal))
-
-                if touchesSolution then
-                    let! opened = SolutionStore.OpenAsync(target, cancellationToken)
-
-                    match opened with
-                    | WorkspaceOutcome.Failure _ ->
-                        return
-                            WorkspaceWatchOutcome.Reset
-                                { WorkspaceId = workspace.WorkspaceDescriptor.WorkspaceId
-                                  Revision = WorkspaceRevision.Create revision
-                                  Diagnostics =
-                                    ImmutableArray.Create(
-                                        WorkspaceStateSupport.diagnostic
-                                            "workspace.watch_unverified"
-                                            "The solution change could not be verified."
-                                            true
-                                    ) }
-                    | WorkspaceOutcome.Success next ->
-                        let old = entries ()
-                        workspace <- next
-                        hydrated.Clear()
-                        recency.Clear()
-                        recencyNodes.Clear()
-                        let delta = advance old Seq.empty
-                        return WorkspaceWatchOutcome.Delta delta
+                if current.NeedsRebase then
+                    return WorkspaceInvalidationResult.None
                 else
-                    let! outcome = evaluator.InvalidateAsync(changed, cancellationToken)
+                    let! invalidated = services.InvalidateAsync paths cancellationToken
 
-                    match outcome with
-                    | WorkspaceOutcome.Failure _ ->
-                        return
-                            WorkspaceWatchOutcome.Reset
-                                { WorkspaceId = workspace.WorkspaceDescriptor.WorkspaceId
-                                  Revision = WorkspaceRevision.Create revision
-                                  Diagnostics =
-                                    ImmutableArray.Create(
-                                        WorkspaceStateSupport.diagnostic
-                                            "workspace.watch_unverified"
-                                            "The workspace change could not be verified."
-                                            true
-                                    ) }
-                    | WorkspaceOutcome.Success MsBuildInvalidationKind.None -> return WorkspaceWatchOutcome.None
+                    match invalidated with
+                    | WorkspaceOutcome.Failure failure when failure.Code = WorkspaceErrorCode.Cancelled ->
+                        return WorkspaceInvalidationResult.None
+                    | WorkspaceOutcome.Failure failure ->
+                        let! reset = resetUnsafe failure.Diagnostic
+                        return WorkspaceInvalidationResult.Reset reset
                     | WorkspaceOutcome.Success MsBuildInvalidationKind.ToolsetSelection ->
-                        return
-                            WorkspaceWatchOutcome.Reset
-                                { WorkspaceId = workspace.WorkspaceDescriptor.WorkspaceId
-                                  Revision = WorkspaceRevision.Create revision
-                                  Diagnostics =
-                                    ImmutableArray.Create(
-                                        WorkspaceStateSupport.diagnostic
-                                            "workspace.toolset_changed"
-                                            "The selected SDK changed; request a fresh workspace graph."
-                                            true
-                                    ) }
-                    | WorkspaceOutcome.Success _ ->
-                        let old = entries ()
-                        let mutable changedAny = false
+                        let! reset =
+                            resetUnsafe (
+                                uncertainty
+                                    "workspace.toolset_changed"
+                                    "The selected SDK changed; request a fresh workspace graph."
+                            )
 
-                        for project in workspace.RootProjection.Projects do
-                            match hydrated.TryGetValue(projectKey project) with
-                            | true, prior ->
-                                let! next = materialize project true cancellationToken
+                        return WorkspaceInvalidationResult.Reset reset
+                    | WorkspaceOutcome.Success kind ->
+                        let touchesSolution =
+                            paths
+                            |> Seq.exists (fun path ->
+                                pathKey path.Value = pathKey current.Workspace.WorkspaceDescriptor.Path.Value
+                                || pathKey path.Value = pathKey current.Workspace.BackingPath.Value)
 
-                                match next with
-                                | Ok value when not (WorkspaceStateSupport.sameSnapshot prior.Snapshot value.Snapshot) ->
-                                    hydrated[projectKey project] <- value
-                                    changedAny <- true
-                                | Ok _ -> ()
-                                | Error _ -> changedAny <- false
-                            | _ -> ()
-
-                        if changedAny then
-                            return WorkspaceWatchOutcome.Delta(advance old Seq.empty)
+                        if kind = MsBuildInvalidationKind.None && not touchesSolution then
+                            return WorkspaceInvalidationResult.None
                         else
-                            return WorkspaceWatchOutcome.None
+                            let! opened = services.OpenAsync target cancellationToken
+
+                            match opened with
+                            | WorkspaceOutcome.Failure failure when failure.Code = WorkspaceErrorCode.Cancelled ->
+                                return WorkspaceInvalidationResult.None
+                            | WorkspaceOutcome.Failure failure ->
+                                let! reset = resetUnsafe failure.Diagnostic
+                                return WorkspaceInvalidationResult.Reset reset
+                            | WorkspaceOutcome.Success workspace ->
+                                let! hydrated = stageMaterialized current workspace cancellationToken
+
+                                match hydrated with
+                                | Error error when error.Code = "cancelled" -> return WorkspaceInvalidationResult.None
+                                | Error _ ->
+                                    let! reset =
+                                        resetUnsafe (
+                                            uncertainty
+                                                "workspace.watch_unverified"
+                                                "The workspace change could not be verified."
+                                        )
+
+                                    return WorkspaceInvalidationResult.Reset reset
+                                | Ok values ->
+                                    let recency = current.Recency |> List.filter values.ContainsKey
+
+                                    let delta =
+                                        applyCandidate
+                                            { Workspace = workspace
+                                              Hydrated = values
+                                              Recency = recency
+                                              Revision = current.Revision
+                                              NeedsRebase = false }
+
+                                    return
+                                        delta
+                                        |> Option.map WorkspaceInvalidationResult.Delta
+                                        |> Option.defaultValue WorkspaceInvalidationResult.None
             finally
                 gate.Release() |> ignore
         }
 
-    member this.InvalidateFromTransactionAsync(cancellationToken: CancellationToken) =
-        this.InvalidateAsync(Seq.empty, cancellationToken)
+    member this.InvalidateFromTransactionAsync
+        (paths: seq<WorkspaceArtifactPath>, cancellationToken: CancellationToken)
+        =
+        this.InvalidateAsync(ImmutableArray.CreateRange paths, cancellationToken)
 
-    member _.WatchDirectories() =
-        let paths = ResizeArray<string>()
+    member _.ResetAsync(diagnostic: WorkspaceDiagnostic, cancellationToken: CancellationToken) =
+        task {
+            do! gate.WaitAsync cancellationToken
 
-        let addFile path =
-            if not (String.IsNullOrWhiteSpace path) then
-                Path.GetDirectoryName path |> Option.ofObj |> Option.iter paths.Add
+            try
+                return! resetUnsafe diagnostic
+            finally
+                gate.Release() |> ignore
+        }
 
-        addFile workspace.WorkspaceDescriptor.Path.Value
-        addFile workspace.BackingPath.Value
+    member _.ExportAsync(expectedRevision: int64, cancellationToken: CancellationToken) =
+        task {
+            do! gate.WaitAsync cancellationToken
 
-        for project in hydrated.Values do
-            for path in project.Snapshot.WatchInputs do
-                addFile path.Value
+            try
+                if current.NeedsRebase || current.Revision <> expectedRevision then
+                    return Error(PublicProtocol.workspaceConflict current.Revision)
+                else
+                    let mutable hydrated = Map.empty
+                    let mutable failure = None
 
-            for path in project.Snapshot.Imports do
-                addFile path.Value
+                    for project in current.Workspace.RootProjection.Projects do
+                        if failure.IsNone && not project.IsFilteredOut then
+                            if not (File.Exists project.Path.AbsolutePath.Value) then
+                                failure <-
+                                    Some(
+                                        RpcErrors.create
+                                            "not_found"
+                                            $"Project '{project.Path.AbsolutePath.Value}' was not found."
+                                            None
+                                    )
+                            else
+                                let! evaluated = evaluate current.Workspace project cancellationToken
 
-            for path in project.Snapshot.GlobRoots do
-                paths.Add path.Value
+                                match evaluated with
+                                | Ok snapshot ->
+                                    hydrated <- hydrated.Add(pathKey project.Path.AbsolutePath.Value, snapshot)
+                                | Error error -> failure <- Some error
 
-            for dimension in project.Snapshot.Dimensions do
-                for item in dimension.Items do
-                    item.ResolvedPath
-                    |> Option.ofObj
-                    |> Option.iter (fun path -> addFile path.Value)
+                    match failure with
+                    | Some error -> return Error error
+                    | None ->
+                        cancellationToken.ThrowIfCancellationRequested()
 
-        paths
-        |> Seq.filter Directory.Exists
-        |> Seq.map Path.GetFullPath
-        |> Seq.distinct
-        |> Seq.sort
-        |> Seq.filter (fun path ->
-            not (
-                paths
-                |> Seq.exists (fun root -> root <> path && WorkspaceStateSupport.isCovered root path)
-            ))
-        |> Seq.toArray
+                        let exportData =
+                            { current with
+                                Hydrated = hydrated
+                                Recency = hydrated |> Seq.map (fun (KeyValue(key, _)) -> key) |> Seq.toList }
+
+                        return
+                            Ok
+                                { Descriptor = current.Workspace.WorkspaceDescriptor
+                                  Revision = current.Revision
+                                  Nodes =
+                                    WorkspaceStatePure.placements insensitive exportData
+                                    |> Seq.map _.Node
+                                    |> ImmutableArray.CreateRange }
+            finally
+                gate.Release() |> ignore
+        }
+
+    member _.WatchPlanAsync(cancellationToken: CancellationToken) =
+        task {
+            do! gate.WaitAsync cancellationToken
+
+            try
+                return WorkspaceStatePure.watchPlan insensitive current
+            finally
+                gate.Release() |> ignore
+        }
 
     member _.DisposeAsync() =
         task {
-            if not disposed then
-                disposed <- true
-                do! evaluator.DisposeAsync().AsTask()
-                gate.Dispose()
+            do! gate.WaitAsync()
+
+            try
+                if not disposed then
+                    disposed <- true
+                    do! services.DisposeAsync()
+            finally
+                gate.Release() |> ignore
         }
 
-    static member CreateAsync(target: string, workspace: SolutionWorkspace, cancellationToken: CancellationToken) =
-        task {
-            cancellationToken.ThrowIfCancellationRequested()
+    static member Create(target, workspace, services, options) =
+        if
+            options.HydrationLimit <= 0
+            || isNull (box options.TokenSecret)
+            || options.TokenSecret.Length < 16
+        then
+            invalidArg (nameof options) "Workspace options require a positive hydration limit and a token secret."
 
-            let capacity =
-                match Int32.TryParse(Environment.GetEnvironmentVariable "DOTNET_PLUS_HYDRATION_LIMIT") with
-                | true, value when value > 0 -> value
-                | _ -> 32
+        WorkspaceState(
+            target,
+            services,
+            options,
+            { Workspace = workspace
+              Hydrated = Map.empty
+              Recency = []
+              Revision = workspace.WorkspaceDescriptor.WorkspaceRevision.Value
+              NeedsRebase = false }
+        )
 
-            return new WorkspaceState(target, workspace, new MsBuildEvaluationClient(), capacity)
-        }
+    static member CreateProduction(target, workspace) =
+        let evaluator = new MsBuildEvaluationClient()
+
+        let services =
+            { OpenAsync = fun path cancellationToken -> SolutionStore.OpenAsync(path, cancellationToken)
+              EvaluateAsync =
+                fun project workspace cancellationToken ->
+                    evaluator.EvaluateAsync(project, workspace, cancellationToken)
+              InvalidateAsync = fun paths cancellationToken -> evaluator.InvalidateAsync(paths, cancellationToken)
+              RefreshAsync = evaluator.RefreshAsync
+              DisposeAsync = fun () -> evaluator.DisposeAsync().AsTask() }
+
+        WorkspaceState.Create(
+            target,
+            workspace,
+            services,
+            { HydrationLimit = 32
+              TokenSecret = RandomNumberGenerator.GetBytes 32 }
+        )

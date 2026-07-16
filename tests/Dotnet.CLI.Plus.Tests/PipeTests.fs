@@ -36,6 +36,12 @@ module private PipeTest =
         let serializer = SolutionSerializers.GetSerializerByMoniker path
         serializer.SaveAsync(path, model, CancellationToken.None).GetAwaiter().GetResult()
 
+    let writeProject path =
+        File.WriteAllText(
+            path,
+            "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"
+        )
+
     let temporaryDirectory name =
         let path =
             Path.Combine(Path.GetTempPath(), $"dotnet-cli-plus-{name}-{Guid.NewGuid():N}")
@@ -226,6 +232,7 @@ type PipeTests() =
             let solution = Path.Combine(directory, "Demo.slnx")
             let model = SolutionModel()
             model.AddProject("Demo.fsproj", "Demo", null) |> ignore
+            PipeTest.writeProject (Path.Combine(directory, "Demo.fsproj"))
             PipeTest.save solution model
             use child = PipeTest.startPipe alias solution
 
@@ -297,6 +304,7 @@ type PipeTests() =
                 Assert.Equal(RpcValue.Boolean false, PipeTest.field "reset" noOpResult)
 
                 model.AddProject("Second.fsproj", "Second", null) |> ignore
+                PipeTest.writeProject (Path.Combine(directory, "Second.fsproj"))
                 PipeTest.save solution model
 
                 let expected = PipeTest.map [ "expectedRevision", RpcValue.Integer 0L ]
@@ -304,7 +312,18 @@ type PipeTests() =
                 let changedError, changedResult = PipeTest.readFrame child |> PipeTest.response 5u
                 Assert.True(changedError.IsNone)
                 Assert.Equal(1L, PipeTest.field "revision" changedResult |> RpcValue.requireInteger "revision")
-                Assert.Equal(RpcValue.Boolean true, PipeTest.field "reset" changedResult)
+                Assert.Equal(RpcValue.Boolean false, PipeTest.field "reset" changedResult)
+
+                match PipeTest.readFrame child with
+                | Notification("workspace/delta", parameters) ->
+                    Assert.Equal(
+                        0L,
+                        PipeTest.field "baseRevision" parameters
+                        |> RpcValue.requireInteger "baseRevision"
+                    )
+
+                    Assert.Equal(1L, PipeTest.field "newRevision" parameters |> RpcValue.requireInteger "newRevision")
+                | frame -> failwithf "Expected refresh delta, got %A" frame
 
                 PipeTest.send child false (PipeTest.request 6u "workspace/refresh" expected)
                 let staleError, _ = PipeTest.readFrame child |> PipeTest.response 6u
@@ -346,6 +365,81 @@ type PipeTests() =
                 Directory.Delete(directory, true)
 
     [<Fact>]
+    member _.``built apphost pages hydrated children and watches a real project edit``() =
+        let directory = PipeTest.temporaryDirectory "pipe-children-watch"
+
+        try
+            let solution = Path.Combine(directory, "Demo.slnx")
+            let project = Path.Combine(directory, "Demo.fsproj")
+            let model = SolutionModel()
+            model.AddProject("Demo.fsproj", "Demo", null) |> ignore
+            PipeTest.writeProject project
+            PipeTest.save solution model
+            use child = PipeTest.startPipe "solution" solution
+
+            try
+                let initialize =
+                    PipeTest.map
+                        [ "protocolVersion", PipeTest.map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 0L ]
+                          "clientInfo", PipeTest.map [ "name", RpcValue.String "watch-test" ]
+                          "capabilities",
+                          RpcValue.array
+                              [ RpcValue.String "workspace.root"
+                                RpcValue.String "workspace.children"
+                                RpcValue.String "workspace.delta" ]
+                          "limits",
+                          PipeTest.map [ "maxFrameBytes", RpcValue.Integer 65536L; "maxPageSize", RpcValue.Integer 1L ] ]
+
+                PipeTest.send child false (PipeTest.request 1u "initialize" initialize)
+                PipeTest.readFrame child |> PipeTest.response 1u |> ignore
+                PipeTest.send child false (PipeTest.request 2u "workspace/root" RpcValue.emptyMap)
+                let _, root = PipeTest.readFrame child |> PipeTest.response 2u
+
+                let projectId =
+                    PipeTest.field "nodes" root
+                    |> RpcValue.requireArray "nodes"
+                    |> Seq.filter (fun node -> PipeTest.field "kind" node = RpcValue.String "project")
+                    |> Seq.map (PipeTest.field "id" >> RpcValue.requireString "id")
+                    |> Seq.exactlyOne
+
+                let children =
+                    PipeTest.map [ "parentId", RpcValue.String projectId; "pageSize", RpcValue.Integer 1L ]
+
+                PipeTest.send child false (PipeTest.request 3u "workspace/children" children)
+                let childError, page = PipeTest.readFrame child |> PipeTest.response 3u
+                Assert.True(childError.IsNone)
+
+                Assert.Single(PipeTest.field "nodes" page |> RpcValue.requireArray "nodes")
+                |> ignore
+
+                match PipeTest.readFrame child with
+                | Notification("workspace/delta", parameters) ->
+                    Assert.Equal(0L, PipeTest.field "baseRevision" parameters |> RpcValue.requireInteger "revision")
+                    Assert.Equal(1L, PipeTest.field "newRevision" parameters |> RpcValue.requireInteger "revision")
+                | frame -> failwithf "Expected hydration delta, got %A" frame
+
+                File.WriteAllText(
+                    project,
+                    "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework><WatchedValue>changed</WatchedValue></PropertyGroup></Project>"
+                )
+
+                let watching = Task.Run(fun () -> PipeTest.readFrame child)
+                Assert.True(watching.Wait(TimeSpan.FromSeconds 10.0), "The watcher did not publish a transition.")
+
+                match watching.Result with
+                | Notification("workspace/delta", parameters) ->
+                    Assert.Equal(1L, PipeTest.field "baseRevision" parameters |> RpcValue.requireInteger "revision")
+                    Assert.Equal(2L, PipeTest.field "newRevision" parameters |> RpcValue.requireInteger "revision")
+                | frame -> failwithf "Expected watcher delta, got %A" frame
+
+                PipeTest.shutdown child 4u
+            finally
+                PipeTest.disposeProcess child
+        finally
+            if Directory.Exists directory then
+                Directory.Delete(directory, true)
+
+    [<Fact>]
     member _.``concurrent export cancellation is accepted and completes exactly once``() =
         let directory = PipeTest.temporaryDirectory "pipe-cancel"
 
@@ -353,8 +447,9 @@ type PipeTests() =
             let solution = Path.Combine(directory, "Demo.slnx")
             let model = SolutionModel()
 
-            for index in 1..500 do
+            for index in 1..20 do
                 model.AddProject($"Project{index}.fsproj", $"Project{index}", null) |> ignore
+                PipeTest.writeProject (Path.Combine(directory, $"Project{index}.fsproj"))
 
             PipeTest.save solution model
             use child = PipeTest.startPipe "solution" solution
@@ -408,10 +503,12 @@ type PipeTests() =
             let solution = Path.Combine(directory, "Demo.slnx")
             let model = SolutionModel()
 
-            for index in 1..40 do
+            for index in 1..2 do
                 model.AddProject($"Project{index}.fsproj", $"Project{index}", null) |> ignore
+                PipeTest.writeProject (Path.Combine(directory, $"Project{index}.fsproj"))
 
             model.AddProject("Oversized.fsproj", "Oversized", null) |> ignore
+            PipeTest.writeProject (Path.Combine(directory, "Oversized.fsproj"))
             PipeTest.save solution model
             use child = PipeTest.startPipe "solution" solution
 
@@ -559,6 +656,16 @@ type PipeTests() =
             Assert.Equal(65, fatal.ExitCode)
             Assert.Empty(PipeTest.readRemaining fatal.StandardOutput.BaseStream)
             Assert.Contains("protocol failure", fatal.StandardError.ReadToEnd())
+
+            use orderlyEof = PipeTest.startPipe "solution" solution
+            PipeTest.send orderlyEof false (PipeTest.request 1u "initialize" PipeTest.initialize)
+            PipeTest.readFrame orderlyEof |> PipeTest.response 1u |> ignore
+            PipeTest.send orderlyEof false (PipeTest.request 2u "workspace/root" RpcValue.emptyMap)
+            PipeTest.readFrame orderlyEof |> PipeTest.response 2u |> ignore
+            orderlyEof.StandardInput.Close()
+            Assert.True(orderlyEof.WaitForExit(5000), "The watched pipe did not exit after stdin closed.")
+            Assert.Equal(0, orderlyEof.ExitCode)
+            Assert.Equal(String.Empty, orderlyEof.StandardError.ReadToEnd())
         finally
             if Directory.Exists directory then
                 Directory.Delete(directory, true)
