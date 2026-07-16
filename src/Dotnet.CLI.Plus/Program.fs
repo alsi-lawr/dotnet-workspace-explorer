@@ -17,9 +17,13 @@ module Program =
         let jsonMode = arguments |> Array.tryHead = Some "--json"
 
         let result =
-            try
-                CliBroker.ExecuteAsync(arguments, cancellation.Token).GetAwaiter().GetResult()
-            with _ ->
-                CliBroker.InternalFailure()
+            Broker
+                .ExecuteAsync(
+                    arguments,
+                    (if jsonMode then Json else Human(Console.Out, Console.Error)),
+                    cancellation.Token
+                )
+                .GetAwaiter()
+                .GetResult()
 
-        CliBroker.Render(result, jsonMode, Console.Out, Console.Error)
+        Broker.Render result jsonMode Console.Out Console.Error

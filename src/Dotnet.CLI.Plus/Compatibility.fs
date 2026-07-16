@@ -1,69 +1,107 @@
 namespace Dotnet.CLI.Plus
 
+#nowarn "3261"
+#nowarn "3511"
+
 open System
 open System.Diagnostics
 open System.IO
+open System.Text
+open System.Text.Json
 open System.Text.RegularExpressions
 open System.Threading
 open System.Threading.Tasks
+open System.Xml.Linq
 open Dotnet.CLI.Plus.Core
 open Dotnet.CLI.Plus.Solution
 
-/// The supported direct grammar. This is deliberately a closed table: this tool is
-/// a compatibility broker for these SDK commands, never a proxy for arbitrary dotnet commands.
-type CommandCompatibility =
+type internal CommandCompatibility =
     { PlusGrammar: string
       ChildArguments: string
       PassThroughOptions: string
       UnsupportedCases: string }
 
-[<RequireQualifiedAccess>]
-module CompatibilityTable =
-    /// Based on the locally installed .NET SDK 10.0.301 help.
+module internal CompatibilityTable =
     let Commands =
-        [ { PlusGrammar = "solution|sln [<SLN_FILE>] add|list|remove|migrate [options]"
-            ChildArguments = "solution ... (sln is normalized to solution)"
-            PassThroughOptions = "All SDK arguments after the plus command are preserved verbatim."
-            UnsupportedCases = "Mutating a .slnf; arbitrary dotnet commands." }
-          { PlusGrammar = "package search|add|list|remove|update|download [options]"
+        [ { PlusGrammar = "[--json] solution|sln [<SLN_FILE>] add|list|remove|migrate [options]"
+            ChildArguments = "solution ...; sln is normalized"
+            PassThroughOptions = "All child argv, including tokens after --, is preserved exactly."
+            UnsupportedCases = "Mutating a selected .slnf; unexpandable solution globs." }
+          { PlusGrammar = "[--json] package add|list|remove|update|search|download [options]"
             ChildArguments = "package ..."
-            PassThroughOptions = "All SDK arguments after the plus command are preserved verbatim."
-            UnsupportedCases = "Mutations without --project, and arbitrary dotnet commands." }
-          { PlusGrammar = "reference add|list|remove [options]"
+            PassThroughOptions = "SDK options and their values can appear before operands."
+            UnsupportedCases = "Ambiguous current-directory project selection." }
+          { PlusGrammar = "[--json] reference add|list|remove [options]"
             ChildArguments = "reference ..."
-            PassThroughOptions = "All SDK arguments after the plus command are preserved verbatim."
-            UnsupportedCases = "Mutations without --project, and arbitrary dotnet commands." }
-          { PlusGrammar = "new [template|create|install|uninstall|update|search|list|details] [options]"
+            PassThroughOptions = "SDK options and their values can appear before operands."
+            UnsupportedCases = "Ambiguous current-directory project selection." }
+          { PlusGrammar = "[--json] new [template|create|list|search|details|install|uninstall|update] [options]"
             ChildArguments = "new ..."
-            PassThroughOptions = "All SDK arguments after the plus command are preserved verbatim."
-            UnsupportedCases = "Mutating templates without --output, and arbitrary dotnet commands." }
-          { PlusGrammar = "restore|build|test|run [options]"
+            PassThroughOptions = "--output/-o and --dry-run are inspected without changing child argv."
+            UnsupportedCases = "Template state that cannot be deterministically refreshed." }
+          { PlusGrammar = "[--json] restore|build|test|run [options]"
             ChildArguments = "same command and arguments"
-            PassThroughOptions = "All SDK arguments after the plus command are preserved verbatim."
-            UnsupportedCases = "Lifecycle policy and orchestration (owned by T-011)." } ]
+            PassThroughOptions = "All child argv is preserved exactly."
+            UnsupportedCases = "Lifecycle policy and orchestration (T-011)." } ]
 
-type BrokerDiagnostic =
-    { Code: string
-      Message: string
-      Retryable: bool }
+type private SolutionOperation =
+    | Add
+    | List
+    | Remove
+    | Migrate
 
-type BrokerResult =
-    { CommandId: string
-      Success: bool
-      Revision: int64 option
-      Result: BrokerPayload
-      Diagnostics: BrokerDiagnostic list
-      ExternalExitCode: int option
-      StandardOutput: string
-      StandardError: string }
+type private PackageOperation =
+    | PackageAdd
+    | PackageList
+    | PackageRemove
+    | PackageUpdate
+    | PackageSearch
+    | PackageDownload
 
-and BrokerPayload =
+type private ReferenceOperation =
+    | ReferenceAdd
+    | ReferenceList
+    | ReferenceRemove
+
+type private NewOperation =
+    | TemplateCreate
+    | TemplateList
+    | TemplateSearch
+    | TemplateDetails
+    | TemplateInstall
+    | TemplateUninstall
+    | TemplateUpdate
+
+type private ParsedCommand =
+    | Solution of target: string option * operation: SolutionOperation option * operands: string list * help: bool
+    | Package of operation: PackageOperation option * project: string option * operands: string list * help: bool
+    | Reference of operation: ReferenceOperation option * project: string option * operands: string list * help: bool
+    | New of operation: NewOperation * output: string option * dryRun: bool * operands: string list * help: bool
+    | Lifecycle of command: string * help: bool
+
+type internal BrokerHost =
+    { FileName: string
+      Prefix: string list }
+
+type internal BrokerMode =
+    | Human of TextWriter * TextWriter
+    | Json
+
+type internal BrokerPayload =
     { Summary: string option
       ChildArguments: string list
       StandardOutput: string
       StandardError: string }
 
-module private BrokerFailure =
+type internal BrokerResult =
+    { CommandId: string
+      Success: bool
+      Revision: WorkspaceRevision option
+      Payload: BrokerPayload
+      Diagnostics: WorkspaceDiagnostic list
+      ExternalExitCode: int option }
+
+module private Failure =
     let diagnostic code message retryable =
         WorkspaceDiagnostic.CreateSimple(
             WorkspaceDiagnosticSeverity.Error,
@@ -72,13 +110,6 @@ module private BrokerFailure =
             retryable,
             CorrelationId.New()
         )
-
-    let toBrokerDiagnostic (failure: WorkspaceFailure) =
-        let diagnostic = failure.Diagnostic
-
-        { Code = failure.Code.Value
-          Message = diagnostic.Message
-          Retryable = diagnostic.Retryable }
 
     let invalid message =
         InvalidInput("arguments", diagnostic WorkspaceErrorCode.InvalidInput.Value message false)
@@ -108,491 +139,636 @@ module private BrokerFailure =
     let internalFailure message =
         Internal(diagnostic WorkspaceErrorCode.InternalError.Value message false)
 
-module private ArgumentGrammar =
-    let private supported =
-        Set.ofList
-            [ "solution"
-              "sln"
-              "package"
-              "reference"
-              "new"
-              "restore"
-              "build"
-              "test"
-              "run" ]
+module private Grammar =
+    let private help tokens =
+        tokens
+        |> List.exists (fun token -> token = "--help" || token = "-h" || token = "-?")
 
-    let private mutatingSolutionCommands = Set.ofList [ "add"; "remove"; "migrate" ]
-    let private mutatingPackageCommands = Set.ofList [ "add"; "remove"; "update" ]
-    let private mutatingReferenceCommands = Set.ofList [ "add"; "remove" ]
+    let private splitSentinel tokens =
+        match tokens |> List.tryFindIndex ((=) "--") with
+        | Some index -> tokens |> List.take index, tokens |> List.skip index
+        | None -> tokens, []
 
-    /// --json is owned by dotnet-plus only when it is the leading argument.
-    /// A literal --json after -- remains a child argument.
+    let private optionValues names tokens =
+        let rec collect remaining values positional =
+            match remaining with
+            | [] -> List.rev values, List.rev positional
+            | "--" :: _ -> List.rev values, List.rev positional
+            | token :: tail when
+                token.StartsWith("--", StringComparison.Ordinal)
+                && token.Contains("=", StringComparison.Ordinal)
+                ->
+                let name, value = token.Split('=', 2) |> fun parts -> parts[0], parts[1]
+
+                if names |> Set.contains name then
+                    collect tail (value :: values) positional
+                else
+                    collect tail values positional
+            | token :: value :: tail when names |> Set.contains token -> collect tail (value :: values) positional
+            | token :: tail when token.StartsWith("-", StringComparison.Ordinal) -> collect tail values positional
+            | token :: tail -> collect tail values (token :: positional)
+
+        collect tokens [] []
+
+    let private operation values token = values |> List.tryFindIndex ((=) token)
+
     let parse (arguments: string array) =
-        match arguments |> Array.toList with
-        | "--json" :: remaining -> true, remaining
-        | remaining -> false, remaining
+        let json, child =
+            match arguments |> Array.toList with
+            | "--json" :: tail -> true, tail
+            | tail -> false, tail
 
-    let childArguments command arguments =
-        (if command = "sln" then "solution" else command) :: arguments
+        let beforeSentinel, _ = splitSentinel child
 
-    let commandId command =
-        if command = "sln" then "solution" else command
+        let parsed =
+            match child with
+            | [] -> Error(Failure.invalid "A plus command is required.")
+            | command :: rest ->
+                match command with
+                | "solution"
+                | "sln" ->
+                    let positions =
+                        optionValues (Set.ofList [ "--solution-folder"; "-s" ]) beforeSentinel.Tail
+                        |> snd
 
-    let isMutating command (arguments: string list) =
-        match command, arguments with
-        | ("solution" | "sln"), first :: second :: _ when mutatingSolutionCommands.Contains second -> true
-        | ("solution" | "sln"), first :: _ when mutatingSolutionCommands.Contains first -> true
-        | "package", first :: _ -> mutatingPackageCommands.Contains first
-        | "reference", first :: _ -> mutatingReferenceCommands.Contains first
-        | "new", "list" :: _
-        | "new", "search" :: _
-        | "new", "details" :: _ -> false
-        | "new", _ -> not (arguments |> List.contains "--dry-run")
+                    let operationIndex =
+                        positions
+                        |> List.tryFindIndex (fun value ->
+                            [ "add"; "list"; "remove"; "migrate" ] |> List.contains value)
+
+                    let target, operation, operands =
+                        match operationIndex with
+                        | Some index ->
+                            let before = positions |> List.take index
+                            let after = positions |> List.skip (index + 1)
+                            let target = if before.Length = 1 then Some before.Head else None
+
+                            let operation =
+                                [ Add; List; Remove; Migrate ][positions[index]
+                                                               |> function
+                                                                   | "add" -> 0
+                                                                   | "list" -> 1
+                                                                   | "remove" -> 2
+                                                                   | _ -> 3]
+
+                            target, Some operation, after
+                        | None ->
+                            match positions with
+                            | [ target ] -> Some target, None, []
+                            | _ -> None, None, []
+
+                    Ok(Solution(target, operation, operands, help beforeSentinel))
+                | "package" ->
+                    let projectValues, positions =
+                        optionValues
+                            (Set.ofList
+                                [ "--project"
+                                  "--framework"
+                                  "--version"
+                                  "--source"
+                                  "--configfile"
+                                  "--package-directory"
+                                  "--output" ])
+                            beforeSentinel.Tail
+
+                    let operation, operands =
+                        match positions with
+                        | op :: tail ->
+                            let parsed =
+                                match op with
+                                | "add" -> Some PackageAdd
+                                | "list" -> Some PackageList
+                                | "remove" -> Some PackageRemove
+                                | "update" -> Some PackageUpdate
+                                | "search" -> Some PackageSearch
+                                | "download" -> Some PackageDownload
+                                | _ -> None
+
+                            parsed, tail
+                        | [] -> None, []
+
+                    Ok(Package(operation, projectValues |> List.tryHead, operands, help beforeSentinel))
+                | "reference" ->
+                    let projectValues, positions =
+                        optionValues (Set.ofList [ "--project"; "--framework" ]) beforeSentinel.Tail
+
+                    let operation, operands =
+                        match positions with
+                        | op :: tail ->
+                            let parsed =
+                                match op with
+                                | "add" -> Some ReferenceAdd
+                                | "list" -> Some ReferenceList
+                                | "remove" -> Some ReferenceRemove
+                                | _ -> None
+
+                            parsed, tail
+                        | [] -> None, []
+
+                    Ok(Reference(operation, projectValues |> List.tryHead, operands, help beforeSentinel))
+                | "new" ->
+                    let outputValues, positions =
+                        optionValues
+                            (Set.ofList [ "--output"; "-o"; "--name"; "-n"; "--project"; "--verbosity"; "-v" ])
+                            beforeSentinel.Tail
+
+                    let operation, operands =
+                        match positions with
+                        | "list" :: tail -> TemplateList, tail
+                        | "search" :: tail -> TemplateSearch, tail
+                        | "details" :: tail -> TemplateDetails, tail
+                        | "install" :: tail -> TemplateInstall, tail
+                        | "uninstall" :: tail -> TemplateUninstall, tail
+                        | "update" :: tail -> TemplateUpdate, tail
+                        | "create" :: tail -> TemplateCreate, tail
+                        | tail -> TemplateCreate, tail
+
+                    Ok(
+                        New(
+                            operation,
+                            outputValues |> List.tryHead,
+                            beforeSentinel |> List.contains "--dry-run",
+                            operands,
+                            help beforeSentinel
+                        )
+                    )
+                | "restore"
+                | "build"
+                | "test"
+                | "run" -> Ok(Lifecycle(command, help beforeSentinel))
+                | _ -> Error(Failure.invalid "This dotnet command is not in the dotnet-plus compatibility grammar.")
+
+        json, child, parsed
+
+    let commandId =
+        function
+        | Solution _ -> "solution"
+        | Package _ -> "package"
+        | Reference _ -> "reference"
+        | New _ -> "new"
+        | Lifecycle(command, _) -> command
+
+    let mutates =
+        function
+        | Solution(_, Some(Add | Remove | Migrate), _, false) -> true
+        | Package(Some(PackageAdd | PackageRemove | PackageUpdate), _, _, false) -> true
+        | Reference(Some(ReferenceAdd | ReferenceRemove), _, _, false) -> true
+        | New(TemplateCreate, _, false, _, false) -> true
         | _ -> false
 
-    let containsSolutionFilter (arguments: string list) =
-        arguments
-        |> List.exists (fun argument -> argument.EndsWith(".slnf", StringComparison.OrdinalIgnoreCase))
+module private Paths =
+    let projects (directory: string) =
+        Directory.EnumerateFiles(directory, "*.*proj", SearchOption.TopDirectoryOnly)
+        |> Seq.filter (fun path -> [ ".csproj"; ".fsproj"; ".vbproj" ] |> List.contains (Path.GetExtension path))
+        |> Seq.sort
+        |> Seq.toList
 
-    let legacyDirectoryAdd command arguments =
-        match command, arguments with
-        | ("solution" | "sln"), target :: "add" :: ("directory" | "dir") :: directory :: [] -> Some(target, directory)
-        | _ -> None
+    let defaultProject () =
+        match projects (Directory.GetCurrentDirectory()) with
+        | [ project ] -> Ok project
+        | [] -> Error "No project exists in the current directory."
+        | _ -> Error "More than one project exists in the current directory; use --project."
 
-    let tryProject arguments =
-        arguments
-        |> List.pairwise
-        |> List.tryPick (function
-            | "--project", project -> Some project
-            | _ -> None)
+    let expandSolutionOperand (operand: string) =
+        if operand.IndexOfAny([| '*'; '?' |]) >= 0 then
+            let directory =
+                Path.GetDirectoryName operand
+                |> Option.ofObj
+                |> Option.defaultValue (Directory.GetCurrentDirectory())
 
-    let tryOutput arguments =
-        arguments
-        |> List.pairwise
-        |> List.tryPick (function
-            | ("--output" | "-o"), output -> Some output
-            | _ -> None)
+            let pattern = Path.GetFileName operand
 
-    let isSupported command = supported.Contains command
+            if Directory.Exists directory then
+                Directory.EnumerateFiles(directory, pattern, SearchOption.AllDirectories)
+                |> Seq.toList
+            else
+                []
+        else
+            [ operand ]
 
-    let solutionInvocation (arguments: string list) =
-        let commands = Set.ofList [ "add"; "list"; "remove"; "migrate" ]
-
-        match arguments with
-        | option :: _ when option.StartsWith("-", StringComparison.Ordinal) -> None, None, []
-        | command :: remaining when commands.Contains command -> None, Some command, remaining
-        | target :: command :: remaining when commands.Contains command -> Some target, Some command, remaining
-        | target :: _ -> Some target, None, []
-        | [] -> None, None, []
-
-    let requiresConcreteVerification command arguments =
-        match command with
-        | "package"
-        | "reference" -> isMutating command arguments && Option.isNone (tryProject arguments)
-        | "new" -> isMutating command arguments && Option.isNone (tryOutput arguments)
-        | _ -> false
-
-module private StateVerification =
-    let private solutionTarget target =
-        target |> Option.defaultValue (Directory.GetCurrentDirectory())
-
-    let private verifySolution targetPath cancellationToken =
+module private Verify =
+    let private openSolution target cancellationToken =
         task {
-            let! outcome = SolutionStore.OpenAsync(targetPath, cancellationToken)
+            let! outcome =
+                SolutionStore.OpenAsync(
+                    target |> Option.defaultValue (Directory.GetCurrentDirectory()),
+                    cancellationToken
+                )
 
-            match outcome with
-            | Success workspace -> return Ok(workspace)
-            | Failure failure -> return Error failure.Diagnostic.Message
+            return
+                match outcome with
+                | Success workspace -> Ok workspace
+                | Failure failure -> Error failure
         }
 
-    let private solutionProjectPaths (workspace: SolutionWorkspace) =
-        workspace.RootProjection.Projects
-        |> Seq.map (fun project -> project.Path.AbsolutePath.Value)
-        |> Set.ofSeq
-
-    let private requestedPaths (arguments: string list) =
-        arguments
-        |> List.takeWhile (fun argument -> not (argument.StartsWith("-", StringComparison.Ordinal)))
-        |> List.map (fun argument -> Path.GetFullPath argument)
-
-    let verify command arguments cancellationToken =
+    let prepareSolution (target: string option) cancellationToken =
         task {
-            match command, arguments with
-            | ("solution" | "sln"), _ ->
-                let target, operation, operands = ArgumentGrammar.solutionInvocation arguments
-                let! workspace = verifySolution (solutionTarget target) cancellationToken
+            match target with
+            | Some path when path.EndsWith(".slnf", StringComparison.OrdinalIgnoreCase) ->
+                return Error(Failure.unsupported ".slnf workspaces are read-only and cannot be mutated.")
+            | _ ->
+                let! workspace = openSolution target cancellationToken
 
-                match workspace, operation with
-                | Error message, _ -> return Error message
-                | Ok opened, Some "add" ->
-                    let projects = solutionProjectPaths opened
-                    let expected = requestedPaths operands
+                return
+                    match workspace with
+                    | Error failure -> Error failure
+                    | Ok workspace when workspace.WorkspaceDescriptor.IsReadOnly ->
+                        Error(Failure.unsupported ".slnf workspaces are read-only and cannot be mutated.")
+                    | Ok workspace -> Ok workspace
+        }
 
-                    if expected |> List.forall projects.Contains then
-                        return Ok(Some opened.WorkspaceDescriptor.WorkspaceRevision.Value)
-                    else
-                        return Error "The requested project was not present after the solution command."
-                | Ok opened, Some "remove" ->
-                    let projects = solutionProjectPaths opened
-                    let expected = requestedPaths operands
+    let private solutionProjects (workspace: SolutionWorkspace) =
+        workspace.RootProjection.Projects
+        |> Seq.map (fun project -> project.Node.Name, project.Path.AbsolutePath.Value)
+        |> Seq.toList
 
-                    if expected |> List.forall (fun project -> not (projects.Contains project)) then
-                        return Ok(Some opened.WorkspaceDescriptor.WorkspaceRevision.Value)
-                    else
-                        return Error "The requested project remained after the solution command."
-                | Ok opened, Some "migrate" ->
-                    let migrated = Path.ChangeExtension(opened.BackingPath.Value, ".slnx")
+    let private requestedSolutionOperands operands =
+        let expanded = operands |> List.collect Paths.expandSolutionOperand
+
+        if List.isEmpty operands || List.isEmpty expanded then
+            Error "Solution add/remove requires at least one verifiable project operand."
+        else
+            Ok expanded
+
+    let verifySolution target operation operands cancellationToken =
+        task {
+            let! opened = openSolution target cancellationToken
+
+            match opened with
+            | Error failure -> return Error failure
+            | Ok workspace ->
+                match operation with
+                | Some Add
+                | Some Remove ->
+                    match requestedSolutionOperands operands with
+                    | Error message -> return Error(Failure.invalid message)
+                    | Ok requested ->
+                        let projects = solutionProjects workspace
+
+                        let matches operand =
+                            projects
+                            |> List.exists (fun (name, path) ->
+                                String.Equals(name, operand, StringComparison.OrdinalIgnoreCase)
+                                || String.Equals(path, Path.GetFullPath operand, StringComparison.OrdinalIgnoreCase))
+
+                        let correct =
+                            match operation with
+                            | Some Add -> requested |> List.forall matches
+                            | _ -> requested |> List.forall (matches >> not)
+
+                        if correct then
+                            return Ok(Some workspace.WorkspaceDescriptor.WorkspaceRevision)
+                        else
+                            return
+                                Error(
+                                    Failure.verification
+                                        "The refreshed solution does not contain the requested final project state."
+                                )
+                | Some Migrate ->
+                    let migrated = Path.ChangeExtension(workspace.BackingPath.Value, ".slnx")
 
                     if File.Exists migrated then
-                        return Ok(Some opened.WorkspaceDescriptor.WorkspaceRevision.Value)
+                        return Ok(Some workspace.WorkspaceDescriptor.WorkspaceRevision)
                     else
-                        return Error "The migrated .slnx file was not created."
-                | Ok opened, _ -> return Ok(Some opened.WorkspaceDescriptor.WorkspaceRevision.Value)
-            | ("package" | "reference"), _ ->
-                match ArgumentGrammar.tryProject arguments with
-                | Some project when File.Exists project ->
-                    let text = File.ReadAllText project
-                    let operation = arguments |> List.tryHead |> Option.defaultValue ""
-
-                    let subject =
-                        arguments
-                        |> List.skip 1
-                        |> List.tryFind (fun value -> not (value.StartsWith("-", StringComparison.Ordinal)))
-
-                    match command, operation, subject with
-                    | "package", ("add" | "update"), Some package when text.Contains(package, StringComparison.Ordinal) ->
-                        return Ok None
-                    | "package", "remove", Some package when not (text.Contains(package, StringComparison.Ordinal)) ->
-                        return Ok None
-                    | "reference", "add", Some reference ->
-                        let name = Path.GetFileName(reference) |> Option.ofObj |> Option.defaultValue ""
-
-                        if text.Contains(name, StringComparison.Ordinal) then
-                            return Ok None
-                        else
-                            return Error "The requested project mutation was not reflected in the project file."
-                    | "reference", "remove", Some reference ->
-                        let name = Path.GetFileName(reference) |> Option.ofObj |> Option.defaultValue ""
-
-                        if not (text.Contains(name, StringComparison.Ordinal)) then
-                            return Ok None
-                        else
-                            return Error "The requested project mutation was not reflected in the project file."
-                    | _ -> return Error "The requested project mutation was not reflected in the project file."
-                | Some _ -> return Error "The project selected for verification does not exist."
-                | None -> return Error "This management command requires --project for verification."
-            | "new", _ ->
-                match ArgumentGrammar.tryOutput arguments with
-                | Some output when Directory.Exists output -> return Ok None
-                | Some _ -> return Error "The template output directory was not created."
-                | None -> return Error "This template command requires --output for verification."
-            | _ -> return Ok None
+                        return Error(Failure.verification "The migrated .slnx file was not created.")
+                | _ -> return Ok(Some workspace.WorkspaceDescriptor.WorkspaceRevision)
         }
+
+    let private descendants name (document: XDocument) =
+        document.Descendants()
+        |> Seq.filter (fun element -> element.Name.LocalName = name)
+
+    let private attribute name (element: XElement) =
+        element.Attribute(XName.Get name) |> Option.ofObj |> Option.map _.Value
+
+    let private packageSubject (value: string) =
+        let index = value.LastIndexOf '@'
+
+        if index > 0 then
+            value.Substring(0, index), Some(value.Substring(index + 1))
+        else
+            value, None
+
+    let verifyPackage operation (project: string) operands =
+        match operands with
+        | [] -> Error(Failure.invalid "Package mutations require a package ID.")
+        | subjects ->
+            let document = XDocument.Load project
+            let references = descendants "PackageReference" document |> Seq.toList
+
+            let present subject =
+                let id, version = packageSubject subject
+
+                references
+                |> List.exists (fun reference ->
+                    let matchesId =
+                        attribute "Include" reference
+                        |> Option.orElseWith (fun () -> attribute "Update" reference)
+                        |> Option.exists (fun actual -> String.Equals(actual, id, StringComparison.OrdinalIgnoreCase))
+
+                    let actualVersion =
+                        attribute "Version" reference
+                        |> Option.orElseWith (fun () ->
+                            reference.Elements()
+                            |> Seq.tryFind (fun child -> child.Name.LocalName = "Version")
+                            |> Option.map _.Value)
+
+                    matchesId
+                    && (version |> Option.forall (fun expected -> actualVersion = Some expected)))
+
+            let correct =
+                match operation with
+                | PackageAdd
+                | PackageUpdate -> subjects |> List.forall present
+                | PackageRemove -> subjects |> List.forall (present >> not)
+                | _ -> true
+
+            if correct then
+                Ok None
+            else
+                Error(Failure.verification "The refreshed project does not contain the requested package state.")
+
+    let verifyReferences operation (project: string) operands =
+        if List.isEmpty operands then
+            Error(Failure.invalid "Reference mutations require one or more project operands.")
+        else
+            let projectDirectory =
+                Path.GetDirectoryName project
+                |> Option.ofObj
+                |> Option.defaultValue (Directory.GetCurrentDirectory())
+
+            let document = XDocument.Load project
+
+            let references =
+                descendants "ProjectReference" document
+                |> Seq.choose (attribute "Include")
+                |> Seq.map (fun value -> Path.GetFullPath(value, projectDirectory))
+                |> Set.ofSeq
+
+            let requested =
+                operands |> List.map (fun value -> Path.GetFullPath(value, projectDirectory))
+
+            let correct =
+                match operation with
+                | ReferenceAdd -> requested |> List.forall references.Contains
+                | ReferenceRemove -> requested |> List.forall (references.Contains >> not)
+                | _ -> true
+
+            if correct then
+                Ok None
+            else
+                Error(Failure.verification "The refreshed project does not contain the requested reference state.")
+
+    let snapshot (directory: string) =
+        if Directory.Exists directory then
+            Directory.EnumerateFileSystemEntries(directory, "*", SearchOption.AllDirectories)
+            |> Set.ofSeq
+        else
+            Set.empty
+
+    let verifyNew (output: string) before =
+        let after = snapshot output
+
+        if after <> before || not (Set.isEmpty after) then
+            Ok None
+        else
+            Error(Failure.verification "The template command did not create a verifiable output state.")
 
 module private ProcessExecution =
     let private ansi =
         Regex("\u001b(?:[@-_][0-?]*[ -/]*[@-~]|\\[[0-?]*[ -/]*[@-~])", RegexOptions.Compiled)
 
-    let withoutAnsi (value: string) =
+    let sanitize value =
         ansi.Replace(value, String.Empty).Replace("\u001b", String.Empty)
 
-    let run (host: string) (arguments: string list) (cancellationToken: CancellationToken) =
+    let private pump (reader: StreamReader) (writer: TextWriter) tty capture =
         task {
-            let startInfo = ProcessStartInfo()
-            startInfo.FileName <- host
-            startInfo.UseShellExecute <- false
-            startInfo.RedirectStandardOutput <- true
-            startInfo.RedirectStandardError <- true
-            startInfo.CreateNoWindow <- true
+            let builder = StringBuilder()
+            let buffer = Array.zeroCreate<char> 1024
 
-            let prefix =
-                Environment.GetEnvironmentVariable "DOTNET_PLUS_DOTNET_PREFIX" |> Option.ofObj
+            let rec copy () =
+                task {
+                    let! read = reader.ReadAsync(buffer, 0, buffer.Length)
 
-            prefix |> Option.iter startInfo.ArgumentList.Add
-            arguments |> List.iter startInfo.ArgumentList.Add
+                    if read > 0 then
+                        let chunk = String(buffer, 0, read)
+                        builder.Append chunk |> ignore
+                        writer.Write(if tty then chunk else sanitize chunk)
+                        writer.Flush()
+                        return! copy ()
+                }
 
-            use childProcess = new Process(StartInfo = startInfo)
+            do! copy ()
+            return builder.ToString()
+        }
+
+    let run host childArguments mode cancellationToken =
+        task {
+            let info =
+                ProcessStartInfo(
+                    FileName = host.FileName,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                )
+
+            host.Prefix |> List.iter info.ArgumentList.Add
+            childArguments |> List.iter info.ArgumentList.Add
+            use childProcess = new Process(StartInfo = info)
 
             try
                 if not (childProcess.Start()) then
-                    return Error(BrokerFailure.internalFailure "The dotnet host did not start.")
+                    return Error(Failure.internalFailure "The dotnet host did not start.")
                 else
-                    let outputTask = childProcess.StandardOutput.ReadToEndAsync()
-                    let errorTask = childProcess.StandardError.ReadToEndAsync()
+                    let outputTask, errorTask =
+                        match mode with
+                        | Json ->
+                            childProcess.StandardOutput.ReadToEndAsync(), childProcess.StandardError.ReadToEndAsync()
+                        | Human(output, error) ->
+                            pump childProcess.StandardOutput output (not Console.IsOutputRedirected) true,
+                            pump childProcess.StandardError error (not Console.IsErrorRedirected) true
 
-                    try
-                        do! childProcess.WaitForExitAsync(cancellationToken)
+                    let! wasCancelled =
+                        task {
+                            try
+                                do! childProcess.WaitForExitAsync cancellationToken
+                                return false
+                            with :? OperationCanceledException ->
+                                return true
+                        }
+
+                    if wasCancelled then
+                        try
+                            if not childProcess.HasExited then
+                                childProcess.Kill(true)
+                        with :? InvalidOperationException ->
+                            ()
+
+                        do! childProcess.WaitForExitAsync CancellationToken.None
+                        let! output = outputTask
+                        let! error = errorTask
+                        return Error(Failure.cancelled ())
+                    else
                         let! output = outputTask
                         let! error = errorTask
                         return Ok(childProcess.ExitCode, output, error)
-                    with :? OperationCanceledException ->
-                        if not childProcess.HasExited then
-                            childProcess.Kill(true)
-
-                        do! childProcess.WaitForExitAsync(CancellationToken.None)
-                        let! _ = outputTask
-                        let! _ = errorTask
-                        return Error(BrokerFailure.cancelled ())
             with
-            | :? OperationCanceledException -> return Error(BrokerFailure.cancelled ())
+            | :? OperationCanceledException -> return Error(Failure.cancelled ())
             | :? System.ComponentModel.Win32Exception ->
-                return Error(BrokerFailure.internalFailure "The dotnet host could not be started.")
-            | :? IOException -> return Error(BrokerFailure.internalFailure "The dotnet host could not be started.")
+                return Error(Failure.internalFailure "The dotnet host could not be started.")
         }
 
-[<AbstractClass; Sealed>]
-type CliBroker private () =
-    static member InternalFailure() =
-        let failure =
-            BrokerFailure.internalFailure "The CLI broker encountered an internal failure."
+module internal Broker =
+    let private productionHost () =
+        { FileName =
+            Environment.GetEnvironmentVariable "DOTNET_HOST_PATH"
+            |> Option.ofObj
+            |> Option.defaultValue "dotnet"
+          Prefix = [] }
 
-        { CommandId = ""
-          Success = false
-          Revision = None
-          Result =
-            { Summary = None
-              ChildArguments = []
-              StandardOutput = ""
-              StandardError = "" }
-          Diagnostics = [ BrokerFailure.toBrokerDiagnostic failure ]
-          ExternalExitCode = None
-          StandardOutput = ""
-          StandardError = "" }
+    let private result command success revision diagnostics externalExitCode child output error =
+        { CommandId = command
+          Success = success
+          Revision = revision
+          Diagnostics = diagnostics
+          ExternalExitCode = externalExitCode
+          Payload =
+            { Summary = if success then Some "dotnet command completed" else None
+              ChildArguments = child
+              StandardOutput = output
+              StandardError = error } }
 
-    static member ExecuteAsync(arguments: string array, cancellationToken: CancellationToken) : Task<BrokerResult> =
+    let private failed command (failure: WorkspaceFailure) exit child output error =
+        result command false None [ failure.Diagnostic ] exit child output error
+
+    let execute arguments host mode cancellationToken =
         task {
-            let _, commandAndArguments = ArgumentGrammar.parse arguments
+            let _, raw, parsed = Grammar.parse arguments
 
-            let result
-                commandId
-                success
-                summary
-                diagnostics
-                externalExitCode
-                childArguments
-                standardOutput
-                standardError
-                revision
-                =
-                { CommandId = commandId
-                  Success = success
-                  Revision = revision
-                  Result =
-                    { Summary = summary
-                      ChildArguments = childArguments
-                      StandardOutput = standardOutput
-                      StandardError = standardError }
-                  Diagnostics = diagnostics
-                  ExternalExitCode = externalExitCode
-                  StandardOutput = standardOutput
-                  StandardError = standardError }
+            match parsed with
+            | Error failure -> return failed "" failure None [] "" ""
+            | Ok command ->
+                let commandId = Grammar.commandId command
 
-            match commandAndArguments with
-            | [] ->
-                let failure = BrokerFailure.invalid "A plus command is required."
-                return result "" false None [ BrokerFailure.toBrokerDiagnostic failure ] None [] "" "" None
-            | command :: remaining when not (ArgumentGrammar.isSupported command) ->
-                let failure =
-                    BrokerFailure.unsupported "This dotnet command is not supported by dotnet-plus."
+                let child =
+                    match raw with
+                    | "sln" :: tail -> "solution" :: tail
+                    | _ -> raw
 
-                return result command false None [ BrokerFailure.toBrokerDiagnostic failure ] None [] "" "" None
-            | command :: remaining when
-                ArgumentGrammar.isMutating command remaining
-                && ArgumentGrammar.containsSolutionFilter remaining
-                ->
-                let failure =
-                    BrokerFailure.unsupported ".slnf files are read-only and cannot be mutated."
+                let! prepared =
+                    task {
+                        match command with
+                        | Solution(target, Some(Add | Remove | Migrate), _, false) ->
+                            let! workspace = Verify.prepareSolution target cancellationToken
+                            return workspace |> Result.map ignore
+                        | _ -> return Ok()
+                    }
 
-                return
-                    result
-                        (ArgumentGrammar.commandId command)
-                        false
-                        None
-                        [ BrokerFailure.toBrokerDiagnostic failure ]
-                        None
-                        []
-                        ""
-                        ""
-                        None
-            | command :: remaining when ArgumentGrammar.requiresConcreteVerification command remaining ->
-                let failure =
-                    BrokerFailure.unsupported
-                        "This management command shape cannot be verified; provide the documented target option."
+                match prepared with
+                | Error failure -> return failed commandId failure None child "" ""
+                | Ok _ ->
+                    let newOutput, before =
+                        match command with
+                        | New(TemplateCreate, output, false, _, false) ->
+                            let target = output |> Option.defaultValue (Directory.GetCurrentDirectory()) in
+                            target, Verify.snapshot target
+                        | _ -> "", Set.empty
 
-                return
-                    result
-                        (ArgumentGrammar.commandId command)
-                        false
-                        None
-                        [ BrokerFailure.toBrokerDiagnostic failure ]
-                        None
-                        []
-                        ""
-                        ""
-                        None
-            | command :: remaining ->
-                match ArgumentGrammar.legacyDirectoryAdd command remaining with
-                | Some(solutionPath, directoryPath) ->
-                    let! legacy =
-                        LegacySolutionCompatibilityEditor.AddDirectoryAsync(
-                            solutionPath,
-                            directoryPath,
-                            cancellationToken
-                        )
+                    let! executed = ProcessExecution.run host child mode cancellationToken
 
-                    if legacy.ExitCode <> 0 then
-                        let failure = BrokerFailure.external legacy.ExitCode
-                        let message = legacy.Message |> Option.defaultValue failure.Diagnostic.Message
+                    match executed with
+                    | Error failure -> return failed commandId failure None child "" ""
+                    | Ok(exitCode, output, error) when exitCode <> 0 ->
+                        return failed commandId (Failure.external exitCode) (Some exitCode) child output error
+                    | Ok(exitCode, output, error) ->
+                        let! verified =
+                            match command with
+                            | Solution(target, operation, operands, false) ->
+                                Verify.verifySolution target operation operands cancellationToken
+                            | Package(Some((PackageAdd | PackageRemove | PackageUpdate) as operation),
+                                      project,
+                                      operands,
+                                      false) ->
+                                let target =
+                                    project
+                                    |> Option.map Ok
+                                    |> Option.defaultWith (fun () -> Paths.defaultProject ())
 
-                        let diagnostic =
-                            { BrokerFailure.toBrokerDiagnostic failure with
-                                Message = message }
+                                match target with
+                                | Ok target -> Task.FromResult(Verify.verifyPackage operation target operands)
+                                | Error message -> Task.FromResult(Error(Failure.invalid message))
+                            | Reference(Some((ReferenceAdd | ReferenceRemove) as operation), project, operands, false) ->
+                                let target =
+                                    project
+                                    |> Option.map Ok
+                                    |> Option.defaultWith (fun () -> Paths.defaultProject ())
 
-                        return result "solution" false None [ diagnostic ] (Some legacy.ExitCode) [] "" "" None
-                    else
-                        let! verified = StateVerification.verify "solution" [ solutionPath ] cancellationToken
+                                match target with
+                                | Ok target -> Task.FromResult(Verify.verifyReferences operation target operands)
+                                | Error message -> Task.FromResult(Error(Failure.invalid message))
+                            | New(TemplateCreate, _, false, _, false) ->
+                                Task.FromResult(Verify.verifyNew newOutput before)
+                            | _ -> Task.FromResult(Ok None)
 
                         match verified with
-                        | Ok revision ->
-                            return
-                                result
-                                    "solution"
-                                    true
-                                    (Some "legacy directory import verified")
-                                    []
-                                    (Some 0)
-                                    []
-                                    ""
-                                    ""
-                                    revision
-                        | Error message ->
-                            let failure = BrokerFailure.verification message
-
-                            return
-                                result
-                                    "solution"
-                                    false
-                                    None
-                                    [ BrokerFailure.toBrokerDiagnostic failure ]
-                                    (Some 0)
-                                    []
-                                    ""
-                                    ""
-                                    None
-                | None ->
-                    let childArguments = ArgumentGrammar.childArguments command remaining
-
-                    let host =
-                        Environment.GetEnvironmentVariable "DOTNET_PLUS_DOTNET_HOST"
-                        |> Option.ofObj
-                        |> Option.defaultValue "dotnet"
-
-                    let! execution = ProcessExecution.run host childArguments cancellationToken
-
-                    match execution with
-                    | Error failure ->
-                        return
-                            result
-                                (ArgumentGrammar.commandId command)
-                                false
-                                None
-                                [ BrokerFailure.toBrokerDiagnostic failure ]
-                                None
-                                childArguments
-                                ""
-                                ""
-                                None
-                    | Ok(exitCode, output, error) when exitCode <> 0 ->
-                        let failure = BrokerFailure.external exitCode
-
-                        return
-                            result
-                                (ArgumentGrammar.commandId command)
-                                false
-                                None
-                                [ BrokerFailure.toBrokerDiagnostic failure ]
-                                (Some exitCode)
-                                childArguments
-                                output
-                                error
-                                None
-                    | Ok(exitCode, output, error) ->
-                        let isHelp =
-                            remaining
-                            |> List.exists (fun argument -> argument = "--help" || argument = "-h" || argument = "-?")
-
-                        let! verification =
-                            if
-                                (command = "solution" || command = "sln") && not isHelp
-                                || ArgumentGrammar.isMutating command remaining
-                            then
-                                StateVerification.verify command remaining cancellationToken
-                            else
-                                Task.FromResult(Ok None)
-
-                        match verification with
-                        | Ok revision ->
-                            return
-                                result
-                                    (ArgumentGrammar.commandId command)
-                                    true
-                                    (Some "dotnet command completed")
-                                    []
-                                    (Some exitCode)
-                                    childArguments
-                                    output
-                                    error
-                                    revision
-                        | Error message ->
-                            let failure = BrokerFailure.verification message
-
-                            return
-                                result
-                                    (ArgumentGrammar.commandId command)
-                                    false
-                                    None
-                                    [ BrokerFailure.toBrokerDiagnostic failure ]
-                                    (Some exitCode)
-                                    childArguments
-                                    output
-                                    error
-                                    None
+                        | Ok revision -> return result commandId true revision [] (Some exitCode) child output error
+                        | Error failure -> return failed commandId failure (Some exitCode) child output error
         }
 
-    static member Render(result: BrokerResult, jsonMode: bool, output: TextWriter, error: TextWriter) =
+    let ExecuteAsync (arguments: string array, mode: BrokerMode, cancellationToken: CancellationToken) =
+        execute arguments (productionHost ()) mode cancellationToken
+
+    let Render (result: BrokerResult) jsonMode (output: TextWriter) (error: TextWriter) =
+        let diagnostic (value: WorkspaceDiagnostic) =
+            {| severity = value.DiagnosticSeverity.ToString()
+               code = value.DiagnosticCode.Value
+               safeMessage = value.Message
+               artifactPath = value.DiagnosticArtifactPath |> Option.map _.Value
+               location =
+                value.DiagnosticLocation
+                |> Option.map (fun location ->
+                    {| line = location.Line
+                       column = location.Column |})
+               retryable = value.Retryable
+               correlationId = value.DiagnosticCorrelationId.Value |}
+
         if jsonMode then
             let envelope =
                 {| schemaVersion = 1
                    commandId = result.CommandId
                    success = result.Success
-                   revision = result.Revision
-                   result = result.Result
-                   diagnostics = result.Diagnostics
+                   revision = result.Revision |> Option.map _.Value
+                   result =
+                    {| summary = result.Payload.Summary
+                       childArguments = result.Payload.ChildArguments
+                       standardOutput = ProcessExecution.sanitize result.Payload.StandardOutput
+                       standardError = ProcessExecution.sanitize result.Payload.StandardError |}
+                   diagnostics = result.Diagnostics |> List.map diagnostic
                    externalExitCode = result.ExternalExitCode |}
 
-            let options =
-                System.Text.Json.JsonSerializerOptions(
-                    PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
+            output.WriteLine(
+                JsonSerializer.Serialize(
+                    envelope,
+                    JsonSerializerOptions(PropertyNamingPolicy = JsonNamingPolicy.CamelCase)
                 )
-
-            output.WriteLine(System.Text.Json.JsonSerializer.Serialize(envelope, options))
-        else
-            let sanitize =
-                if Console.IsOutputRedirected || not (Object.ReferenceEquals(output, Console.Out)) then
-                    ProcessExecution.withoutAnsi
-                else
-                    id
-
-            if not (String.IsNullOrEmpty result.StandardOutput) then
-                output.Write(sanitize result.StandardOutput)
-
-            if not (String.IsNullOrEmpty result.StandardError) then
-                error.Write(sanitize result.StandardError)
-
+            )
+        elif not result.Success then
             result.Diagnostics
-            |> List.iter (fun diagnostic -> error.WriteLine($"{diagnostic.Code}: {diagnostic.Message}"))
+            |> List.iter (fun value -> error.WriteLine($"{value.DiagnosticCode.Value}: {value.Message}"))
 
         if result.Success then
             0
         else
-            result.ExternalExitCode |> Option.defaultValue 1
+            result.ExternalExitCode |> Option.filter ((<>) 0) |> Option.defaultValue 1
+
+module internal BrokerTestHooks =
+    let ExecuteWithHostAsync
+        (arguments: string array, fileName: string, prefix: string, cancellationToken: CancellationToken)
+        =
+        Broker.execute
+            arguments
+            { FileName = fileName
+              Prefix = [ prefix ] }
+            Json
+            cancellationToken
