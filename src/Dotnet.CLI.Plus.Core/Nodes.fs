@@ -7,6 +7,11 @@ type WorkspaceCapabilityProfile =
     | ReadOnly = 1
     | UnknownProjectSystem = 2
 
+type WorkspaceNodeLoadState =
+    | Hydrated = 0
+    | Unhydrated = 1
+    | FilteredOut = 2
+
 type WorkspaceCapabilityId private (value: string) =
     static let read = WorkspaceCapabilityId "workspace.read"
     static let write = WorkspaceCapabilityId "workspace.write"
@@ -91,6 +96,7 @@ type WorkspaceNode =
           SemanticIdentity: NodeSemanticIdentity
           DisplayName: string
           CapabilityProfile: WorkspaceCapabilityProfile
+          LoadState: WorkspaceNodeLoadState
           Capabilities: ImmutableArray<WorkspaceCapabilityId> }
 
     member this.NodeId = this.Id
@@ -98,16 +104,18 @@ type WorkspaceNode =
     member this.Identity = this.SemanticIdentity
     member this.Name = this.DisplayName
     member this.Profile = this.CapabilityProfile
+    member this.NodeLoadState = this.LoadState
     member this.AvailableCapabilities = this.Capabilities
     member this.Supports(capability: WorkspaceCapabilityId) = this.Capabilities.Contains capability
 
-    static member Create
+    static member private CreateCore
         (
             workspace: WorkspaceDescriptor,
             kind: WorkspaceNodeKind,
             semanticIdentity: NodeSemanticIdentity,
             displayName: string,
-            capabilityProfile: WorkspaceCapabilityProfile
+            capabilityProfile: WorkspaceCapabilityProfile,
+            loadState: WorkspaceNodeLoadState
         ) =
         if isNull (box workspace) then
             nullArg (nameof workspace)
@@ -122,7 +130,36 @@ type WorkspaceNode =
           SemanticIdentity = semanticIdentity
           DisplayName = displayName
           CapabilityProfile = capabilityProfile
+          LoadState = loadState
           Capabilities = WorkspaceNodeCapabilities.For(workspace, kind, capabilityProfile) }
+
+    static member Create
+        (
+            workspace: WorkspaceDescriptor,
+            kind: WorkspaceNodeKind,
+            semanticIdentity: NodeSemanticIdentity,
+            displayName: string,
+            capabilityProfile: WorkspaceCapabilityProfile
+        ) =
+        WorkspaceNode.CreateCore(
+            workspace,
+            kind,
+            semanticIdentity,
+            displayName,
+            capabilityProfile,
+            WorkspaceNodeLoadState.Hydrated
+        )
+
+    static member CreateWithLoadState
+        (
+            workspace: WorkspaceDescriptor,
+            kind: WorkspaceNodeKind,
+            semanticIdentity: NodeSemanticIdentity,
+            displayName: string,
+            capabilityProfile: WorkspaceCapabilityProfile,
+            loadState: WorkspaceNodeLoadState
+        ) =
+        WorkspaceNode.CreateCore(workspace, kind, semanticIdentity, displayName, capabilityProfile, loadState)
 
 type NodeReplacement = { OldId: NodeId; NewId: NodeId }
 

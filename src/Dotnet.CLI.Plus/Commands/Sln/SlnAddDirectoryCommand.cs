@@ -34,30 +34,17 @@ public sealed class SlnAddDirectoryCommand : AsyncCommand<SlnAddDirectoryCommand
         CancellationToken cancellationToken
     )
     {
-        var parseResult = await SolutionParser.ParseAsync(settings.SolutionPath, cancellationToken);
-
-        return await parseResult.Match(
-            solution => AddDirectoryAsync(solution, settings.PathToAdd, cancellationToken),
-            error => Task.FromResult(error.DisplayCliInfo())
+        var result = await LegacySolutionCompatibilityEditor.AddDirectoryAsync(
+            settings.SolutionPath,
+            settings.PathToAdd,
+            cancellationToken
         );
-    }
 
-    private static async Task<int> AddDirectoryAsync(
-        SolutionDocument solution,
-        string targetPath,
-        CancellationToken cancellationToken
-    )
-    {
-        var folderPathResult = SolutionFolderPath.FromDirectory(solution.FilePath, targetPath);
+        if (result.Message is not null)
+        {
+            AnsiConsole.MarkupLine($"[red]{Markup.Escape(result.Message.Value)}[/]");
+        }
 
-        return await folderPathResult.Match(
-            async folderPath =>
-            {
-                solution.Model.AddFolder(folderPath.Value);
-                var saveResult = await solution.SaveAsync(cancellationToken);
-                return saveResult.Match(_ => 0, error => error.DisplayCliInfo());
-            },
-            error => Task.FromResult(error.DisplayCliInfo())
-        );
+        return result.ExitCode;
     }
 }

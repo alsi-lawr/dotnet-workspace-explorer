@@ -25,6 +25,48 @@ type HostFileSystemCaseSemantics =
     | Sensitive = 0
     | Insensitive = 1
 
+[<AbstractClass; Sealed>]
+type HostFileSystemCaseDetector private () =
+    /// Detects case comparison behaviour using the resolved, existing target itself.
+    static member DetectFromExistingPath(existingPath: string) =
+        existingPath |> Validation.nonEmpty (nameof existingPath) |> ignore
+
+        let fullPath = Path.GetFullPath existingPath
+
+        if not (File.Exists fullPath || Directory.Exists fullPath) then
+            invalidArg (nameof existingPath) "Case semantics require an existing filesystem path."
+
+        let name =
+            Path.GetFileName fullPath |> Option.ofObj |> Option.defaultValue String.Empty
+
+        let alternateName =
+            match name |> Seq.tryFindIndex Char.IsLetter with
+            | Some index ->
+                let characters = name.ToCharArray()
+                let character = characters[index]
+
+                characters[index] <-
+                    if Char.IsUpper character then
+                        Char.ToLowerInvariant character
+                    else
+                        Char.ToUpperInvariant character
+
+                Some(new String(characters))
+            | None -> None
+
+        match alternateName with
+        | Some alternate when alternate <> name ->
+            match Path.GetDirectoryName(fullPath) |> Option.ofObj with
+            | None -> HostFileSystemCaseSemantics.Sensitive
+            | Some parent ->
+                let alternatePath = Path.Combine(parent, alternate)
+
+                if File.Exists alternatePath || Directory.Exists alternatePath then
+                    HostFileSystemCaseSemantics.Insensitive
+                else
+                    HostFileSystemCaseSemantics.Sensitive
+        | _ -> HostFileSystemCaseSemantics.Sensitive
+
 type WorkspaceFormat =
     | Sln = 0
     | Slnx = 1
