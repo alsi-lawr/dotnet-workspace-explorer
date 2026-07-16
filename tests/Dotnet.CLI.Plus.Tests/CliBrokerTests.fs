@@ -33,6 +33,15 @@ module private Helpers =
         let serializer = SolutionSerializers.GetSerializerByMoniker path
         serializer.SaveAsync(path, SolutionModel(), CancellationToken.None).GetAwaiter().GetResult()
 
+    let saveSolutionWithProject path projectPath =
+        let serializer = SolutionSerializers.GetSerializerByMoniker path
+        let model = SolutionModel()
+
+        model.AddProject(projectPath, Path.GetFileNameWithoutExtension projectPath, null)
+        |> ignore
+
+        serializer.SaveAsync(path, model, CancellationToken.None).GetAwaiter().GetResult()
+
     let fake mode arguments =
         lock gate (fun () ->
             let prior = Environment.GetEnvironmentVariable "DOTNET_PLUS_FAKE_HOST_MODE"
@@ -44,6 +53,54 @@ module private Helpers =
                 Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MODE", prior))
 
 type CliBrokerTests() =
+    [<Fact>]
+    member _.``double-star glob verifies an already present project``() =
+        let directory = Helpers.temporaryDirectory ()
+
+        try
+            let project = Path.Combine(directory, "src", "Lib.fsproj")
+            Directory.CreateDirectory(Path.GetDirectoryName project) |> ignore
+            File.WriteAllText(project, "<Project />")
+            let solution = Path.Combine(directory, "Demo.sln")
+            Helpers.saveSolutionWithProject solution "src/Lib.fsproj"
+
+            let result =
+                Helpers.fake "capture" [| "solution"; solution; "add"; Path.Combine(directory, "**", "*.fsproj") |]
+
+            Assert.True(result.Success)
+        finally
+            Helpers.delete directory
+
+    [<Fact>]
+    member _.``zero match glob rejects before marker launch``() =
+        let directory = Helpers.temporaryDirectory ()
+
+        try
+            let solution = Path.Combine(directory, "Demo.sln")
+            Helpers.saveSolution solution
+
+            let result =
+                Helpers.fake "marker" [| "solution"; solution; "add"; Path.Combine(directory, "none", "*.fsproj") |]
+
+            Assert.False(result.Success)
+            Assert.Equal("invalid_input", result.Diagnostics.Head.DiagnosticCode.Value)
+        finally
+            Helpers.delete directory
+
+    [<Fact>]
+    member _.``post sentinel solution operand is verified``() =
+        let directory = Helpers.temporaryDirectory ()
+
+        try
+            let project = Path.Combine(directory, "Lib.fsproj")
+            File.WriteAllText(project, "<Project />")
+            let solution = Path.Combine(directory, "Demo.sln")
+            Helpers.saveSolutionWithProject solution "Lib.fsproj"
+            let result = Helpers.fake "capture" [| "solution"; solution; "add"; "--"; project |]
+            Assert.True(result.Success)
+        finally
+            Helpers.delete directory
+
     [<Fact>]
     member _.``sensitive case semantics reject casing-only path mismatch``() =
         Assert.False(

@@ -393,15 +393,35 @@ module private Paths =
 
     let expandSolutionOperand (operand: string) =
         if operand.IndexOfAny([| '*'; '?' |]) >= 0 then
-            let directory =
-                Path.GetDirectoryName operand
-                |> Option.ofObj
-                |> Option.defaultValue (Directory.GetCurrentDirectory())
+            let full = Path.GetFullPath operand
+            let segments = full.Replace('\\', '/').Split('/')
 
-            let pattern = Path.GetFileName operand
+            let wildcard =
+                segments
+                |> Array.findIndex (fun segment -> segment.IndexOfAny([| '*'; '?' |]) >= 0)
 
-            if Directory.Exists directory then
-                Directory.EnumerateFiles(directory, pattern, SearchOption.AllDirectories)
+            let prefix = segments |> Array.take wildcard |> String.concat "/"
+
+            let root =
+                if String.IsNullOrEmpty prefix then
+                    Path.DirectorySeparatorChar.ToString()
+                else
+                    prefix
+
+            let expression =
+                "^"
+                + Regex
+                    .Escape(full.Replace('\\', '/'))
+                    .Replace("\\*\\*", ".*")
+                    .Replace("\\*", "[^/]*")
+                    .Replace("\\?", "[^/]")
+                + "$"
+
+            let matcher = Regex(expression, RegexOptions.CultureInvariant)
+
+            if Directory.Exists root then
+                Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+                |> Seq.filter (fun path -> matcher.IsMatch(path.Replace('\\', '/')))
                 |> Seq.toList
             else
                 []
