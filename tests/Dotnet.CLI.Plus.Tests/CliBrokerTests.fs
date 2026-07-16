@@ -102,6 +102,29 @@ type CliBrokerTests() =
             Helpers.delete directory
 
     [<Fact>]
+    member _.``sensitive backing volume rejects case mismatched solution operand``() =
+        let directory = Helpers.temporaryDirectory ()
+
+        try
+            let actual = Path.Combine(directory, "Actual.fsproj")
+            let mismatched = Path.Combine(directory, "actual.fsproj")
+            File.WriteAllText(actual, "<Project />")
+            let solution = Path.Combine(directory, "Demo.sln")
+            Helpers.saveSolutionWithProject solution "Actual.fsproj"
+
+            match HostFileSystemCaseDetector.DetectFromExistingPath solution with
+            | HostFileSystemCaseSemantics.Insensitive ->
+                Assert.True(BrokerTestHooks.PathEquals(HostFileSystemCaseSemantics.Insensitive, actual, mismatched))
+            | _ ->
+                let result = Helpers.fake "capture" [| "solution"; solution; "add"; mismatched |]
+                let output = new StringWriter()
+                let error = new StringWriter()
+                Assert.False(result.Success)
+                Assert.Equal(1, Broker.Render result true output error)
+        finally
+            Helpers.delete directory
+
+    [<Fact>]
     member _.``sensitive case semantics reject casing-only path mismatch``() =
         Assert.False(
             BrokerTestHooks.PathEquals(
