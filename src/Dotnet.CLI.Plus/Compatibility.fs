@@ -792,7 +792,13 @@ module private ProcessExecution =
         Regex("\u001b(?:[@-_][0-?]*[ -/]*[@-~]|\\[[0-?]*[ -/]*[@-~])", RegexOptions.Compiled)
 
     let sanitize value =
-        ansi.Replace(value, String.Empty).Replace("\u001b", String.Empty)
+        ansi.Replace(value, String.Empty)
+        |> Seq.filter (fun character ->
+            character = '\t'
+            || character = '\n'
+            || character = '\r'
+            || (character >= ' ' && character <> '\u007f'))
+        |> String.Concat
 
     let private pump (reader: StreamReader) (writer: TextWriter) tty capture =
         task {
@@ -1130,27 +1136,30 @@ module internal Broker =
 
     let Render (result: BrokerResult) jsonMode (output: TextWriter) (error: TextWriter) =
         let diagnostic (value: WorkspaceDiagnostic) =
-            {| severity = value.DiagnosticSeverity.ToString()
-               code = value.DiagnosticCode.Value
-               safeMessage = value.Message
-               artifactPath = value.DiagnosticArtifactPath |> Option.map _.Value
+            {| severity = value.DiagnosticSeverity.ToString() |> ProcessExecution.sanitize
+               code = value.DiagnosticCode.Value |> ProcessExecution.sanitize
+               safeMessage = value.Message |> ProcessExecution.sanitize
+               artifactPath =
+                value.DiagnosticArtifactPath
+                |> Option.map _.Value
+                |> Option.map ProcessExecution.sanitize
                location =
                 value.DiagnosticLocation
                 |> Option.map (fun location ->
                     {| line = location.Line
                        column = location.Column |})
                retryable = value.Retryable
-               correlationId = value.DiagnosticCorrelationId.Value |}
+               correlationId = value.DiagnosticCorrelationId.Value.ToString() |> ProcessExecution.sanitize |}
 
         if jsonMode then
             let envelope =
                 {| schemaVersion = 1
-                   commandId = result.CommandId
+                   commandId = ProcessExecution.sanitize result.CommandId
                    success = result.Success
                    revision = result.Revision |> Option.map _.Value
                    result =
-                    {| summary = result.Payload.Summary
-                       childArguments = result.Payload.ChildArguments
+                    {| summary = result.Payload.Summary |> Option.map ProcessExecution.sanitize
+                       childArguments = result.Payload.ChildArguments |> List.map ProcessExecution.sanitize
                        standardOutput = ProcessExecution.sanitize result.Payload.StandardOutput
                        standardError = ProcessExecution.sanitize result.Payload.StandardError |}
                    diagnostics = result.Diagnostics |> List.map diagnostic
