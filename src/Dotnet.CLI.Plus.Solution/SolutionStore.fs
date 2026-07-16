@@ -54,10 +54,18 @@ module private SolutionStoreImplementation =
         | Failure failure -> Failure failure
         | Success _ -> invalidOp "A successful outcome cannot be converted to a failure."
 
+    let throwIfCancellationRequested (cancellationToken: CancellationToken) =
+        cancellationToken.ThrowIfCancellationRequested()
+
     let comparer semantics : StringComparer =
         match semantics with
         | HostFileSystemCaseSemantics.Insensitive -> StringComparer.OrdinalIgnoreCase
         | _ -> StringComparer.Ordinal
+
+    let pathIdentity semantics (path: string) =
+        match semantics with
+        | HostFileSystemCaseSemantics.Insensitive -> path.ToUpperInvariant()
+        | _ -> path
 
     let isExtension extension (path: string) =
         String.Equals(System.IO.Path.GetExtension path, extension, StringComparison.OrdinalIgnoreCase)
@@ -78,10 +86,16 @@ module private SolutionStoreImplementation =
         else
             invalidArg (nameof path) "Expected a supported solution path."
 
-    let resolveCandidates predicate candidates =
-        candidates
-        |> Seq.filter predicate
-        |> Seq.map System.IO.Path.GetFullPath
+    let resolveCandidates cancellationToken predicate candidates =
+        let matches = ResizeArray<string>()
+
+        for candidate in candidates do
+            throwIfCancellationRequested cancellationToken
+
+            if predicate candidate then
+                matches.Add(System.IO.Path.GetFullPath candidate)
+
+        matches
         |> Seq.sortWith (fun left right -> StringComparer.Ordinal.Compare(left, right))
         |> Seq.truncate 2
         |> Seq.toArray
@@ -90,14 +104,16 @@ module private SolutionStoreImplementation =
             | [| path |] -> Success path
             | _ -> ambiguous "solution" "Multiple solution or filter files were found."
 
-    let resolveTarget targetPath =
+    let resolveTarget targetPath cancellationToken =
+        throwIfCancellationRequested cancellationToken
+
         if String.IsNullOrWhiteSpace targetPath then
             invalidInput "targetPath" "A solution path is required."
         else
             try
                 if Directory.Exists targetPath then
                     Directory.EnumerateFiles(targetPath, "*", SearchOption.AllDirectories)
-                    |> resolveCandidates isCandidate
+                    |> resolveCandidates cancellationToken isCandidate
                 else
                     let path = System.IO.Path.GetFullPath targetPath
 
@@ -111,11 +127,16 @@ module private SolutionStoreImplementation =
             | :? IOException -> internalFailure "solution.resolve_failed" "Failed to resolve the solution path."
             | :? UnauthorizedAccessException ->
                 internalFailure "solution.resolve_failed" "Failed to resolve the solution path."
+            | :? ArgumentException
+            | :? NotSupportedException
+            | :? PathTooLongException -> invalidInput "targetPath" "The solution path is invalid."
 
-    let resolveBackingSolution backingPath =
+    let resolveBackingSolution backingPath cancellationToken =
+        throwIfCancellationRequested cancellationToken
+
         if Directory.Exists backingPath then
             Directory.EnumerateFiles(backingPath, "*", SearchOption.AllDirectories)
-            |> resolveCandidates isSolution
+            |> resolveCandidates cancellationToken isSolution
         elif not (File.Exists backingPath) then
             notFound backingPath "The filter backing solution was not found."
         elif isSolution backingPath then
@@ -130,6 +151,7 @@ module private SolutionStoreImplementation =
     let readFilter filterPath caseSemantics cancellationToken =
         task {
             try
+                throwIfCancellationRequested cancellationToken
                 use stream = File.OpenRead filterPath
                 use! document = JsonDocument.ParseAsync(stream, cancellationToken = cancellationToken)
                 let root = document.RootElement
@@ -137,7 +159,8 @@ module private SolutionStoreImplementation =
                 let mutable path = Unchecked.defaultof<JsonElement>
 
                 if
-                    not (root.TryGetProperty("solution", &solution))
+                    root.ValueKind <> JsonValueKind.Object
+                    || not (root.TryGetProperty("solution", &solution))
                     || solution.ValueKind <> JsonValueKind.Object
                     || not (solution.TryGetProperty("path", &path))
                     || path.ValueKind <> JsonValueKind.String
@@ -156,7 +179,7 @@ module private SolutionStoreImplementation =
                         |> Option.map (fun value -> System.IO.Path.GetFullPath(value, filterDirectory))
                         |> Option.defaultWith (fun () -> invalidArg "filter" "A filter solution path is required.")
 
-                    match resolveBackingSolution backingPath with
+                    match resolveBackingSolution backingPath cancellationToken with
                     | Failure failure -> return Failure failure
                     | Success resolvedBacking ->
                         let mutable projects = Unchecked.defaultof<JsonElement>
@@ -183,9 +206,17 @@ module private SolutionStoreImplementation =
                                 let includedPaths =
                                     values
                                     |> Seq.choose (fun project ->
+                                        throwIfCancellationRequested cancellationToken
+
                                         project.GetString()
                                         |> Option.ofObj
-                                        |> Option.map (fun value -> System.IO.Path.GetFullPath(value, filterDirectory)))
+                                        |> Option.map (fun value ->
+                                            let backingDirectory =
+                                                System.IO.Path.GetDirectoryName resolvedBacking
+                                                |> Option.ofObj
+                                                |> Option.defaultValue (Directory.GetCurrentDirectory())
+
+                                            System.IO.Path.GetFullPath(value, backingDirectory)))
                                     |> Seq.toArray
 
                                 let included =
@@ -202,6 +233,9 @@ module private SolutionStoreImplementation =
                 return internalFailure "solution.filter_read_failed" "Failed to read the solution filter."
             | :? UnauthorizedAccessException ->
                 return internalFailure "solution.filter_read_failed" "Failed to read the solution filter."
+            | :? ArgumentException
+            | :? NotSupportedException
+            | :? PathTooLongException -> return invalidInput "filter" "The solution filter contains an invalid path."
         }
 
     let isExternal relativePath =
@@ -214,25 +248,25 @@ module private SolutionStoreImplementation =
         |> Option.ofObj
         |> Option.map (fun parent -> text (box parent.Path))
 
-    let folderNode descriptor (folder: SolutionFolderModel) =
+    let folderNode descriptor caseSemantics (folder: SolutionFolderModel) =
         WorkspaceNode.Create(
             descriptor,
             WorkspaceNodeKind.SolutionFolder,
-            NodeSemanticIdentity.Create $"folder:{folder.Path}",
+            NodeSemanticIdentity.Create $"folder:{pathIdentity caseSemantics folder.Path}",
             folder.ActualDisplayName,
             WorkspaceCapabilityProfile.Full
         )
 
-    let projectNode descriptor relativePath displayName filteredOut =
+    let projectNode descriptor caseSemantics relativePath displayName filteredOut =
         let kind, identity, profile, loadState =
             if filteredOut then
                 WorkspaceNodeKind.Placeholder,
-                $"filtered-out:{relativePath}",
+                $"filtered-out:{pathIdentity caseSemantics relativePath}",
                 WorkspaceCapabilityProfile.ReadOnly,
                 WorkspaceNodeLoadState.FilteredOut
             else
                 WorkspaceNodeKind.Project,
-                $"project:{relativePath}",
+                $"project:{pathIdentity caseSemantics relativePath}",
                 WorkspaceCapabilityProfile.UnknownProjectSystem,
                 WorkspaceNodeLoadState.Unhydrated
 
@@ -254,10 +288,12 @@ module private SolutionStoreImplementation =
           Dimension = rule.Dimension.ToString()
           ProjectValue = rule.ProjectValue }
 
-    let projectMappings (project: SolutionProjectModel) (model: SolutionModel) =
+    let projectMappings cancellationToken (project: SolutionProjectModel) (model: SolutionModel) =
         seq {
             for buildType in model.BuildTypes do
                 for platform in model.Platforms do
+                    throwIfCancellationRequested cancellationToken
+
                     let struct (buildTypeValue, platformValue, builds, deploys) =
                         project.GetProjectConfiguration(buildType, platform)
 
@@ -271,7 +307,42 @@ module private SolutionStoreImplementation =
         }
         |> ImmutableArray.CreateRange
 
-    let projectRoot (descriptor: WorkspaceDescriptor) (filter: FilterDefinition) (model: SolutionModel) =
+    let validateFilterProjects
+        (filter: FilterDefinition)
+        (caseSemantics: HostFileSystemCaseSemantics)
+        (model: SolutionModel)
+        (cancellationToken: CancellationToken)
+        =
+        match filter.IncludedProjects with
+        | None -> Success()
+        | Some included ->
+            let solutionDirectory =
+                System.IO.Path.GetDirectoryName filter.BackingSolutionPath
+                |> Option.ofObj
+                |> Option.defaultValue (Directory.GetCurrentDirectory())
+
+            let projects = HashSet<string>(comparer caseSemantics)
+
+            for project in model.SolutionProjects do
+                throwIfCancellationRequested cancellationToken
+
+                projects.Add(System.IO.Path.GetFullPath(project.FilePath, solutionDirectory))
+                |> ignore
+
+            if included |> Seq.exists (fun path -> not (projects.Contains path)) then
+                invalidInput "filter" "The solution filter includes a project that is not in the backing solution."
+            else
+                Success()
+
+    let projectRoot
+        (descriptor: WorkspaceDescriptor)
+        (caseSemantics: HostFileSystemCaseSemantics)
+        (filter: FilterDefinition)
+        (model: SolutionModel)
+        (cancellationToken: CancellationToken)
+        =
+        throwIfCancellationRequested cancellationToken
+
         let solutionDirectory =
             System.IO.Path.GetDirectoryName filter.BackingSolutionPath
             |> Option.ofObj
@@ -280,7 +351,9 @@ module private SolutionStoreImplementation =
         let folders =
             model.SolutionFolders
             |> Seq.map (fun (folder: SolutionFolderModel) ->
-                { Node = folderNode descriptor folder
+                throwIfCancellationRequested cancellationToken
+
+                { Node = folderNode descriptor caseSemantics folder
                   Path = text (box folder.Path)
                   ParentPath = parentFolderPath folder })
             |> Seq.sortWith (fun left right ->
@@ -290,16 +363,21 @@ module private SolutionStoreImplementation =
         let items =
             model.SolutionFolders
             |> Seq.collect (fun (folder: SolutionFolderModel) ->
+                throwIfCancellationRequested cancellationToken
+
                 (folder.Files
                  |> Option.ofObj
                  |> Option.map (fun files -> files :> seq<string>)
                  |> Option.defaultValue Seq.empty)
                 |> Seq.map (fun (file: string) ->
+                    throwIfCancellationRequested cancellationToken
+
                     { Node =
                         WorkspaceNode.Create(
                             descriptor,
                             WorkspaceNodeKind.SolutionItem,
-                            NodeSemanticIdentity.Create $"solution-item:{folder.Path}/{file}",
+                            NodeSemanticIdentity.Create
+                                $"solution-item:{pathIdentity caseSemantics folder.Path}/{pathIdentity caseSemantics file}",
                             System.IO.Path.GetFileName(file),
                             WorkspaceCapabilityProfile.Full
                         )
@@ -312,6 +390,8 @@ module private SolutionStoreImplementation =
         let projects =
             model.SolutionProjects
             |> Seq.map (fun (project: SolutionProjectModel) ->
+                throwIfCancellationRequested cancellationToken
+
                 let projectFilePath = project.FilePath
                 let absolutePath = System.IO.Path.GetFullPath(projectFilePath, solutionDirectory)
                 let relativePath = System.IO.Path.GetRelativePath(solutionDirectory, absolutePath)
@@ -320,7 +400,7 @@ module private SolutionStoreImplementation =
                     filter.IncludedProjects
                     |> Option.exists (fun included -> not (included.Contains absolutePath))
 
-                { Node = projectNode descriptor relativePath project.ActualDisplayName filteredOut
+                { Node = projectNode descriptor caseSemantics relativePath project.ActualDisplayName filteredOut
                   Path =
                     { AbsolutePath = WorkspaceArtifactPath.Create absolutePath
                       SolutionRelativePath = relativePath
@@ -337,7 +417,7 @@ module private SolutionStoreImplementation =
                      |> Option.defaultValue Seq.empty)
                     |> Seq.map ruleProjection
                     |> ImmutableArray.CreateRange
-                  ConfigurationMappings = projectMappings project model })
+                  ConfigurationMappings = projectMappings cancellationToken project model })
             |> Seq.sortWith (fun left right ->
                 StringComparer.Ordinal.Compare(left.Node.Identity.Value, right.Node.Identity.Value))
             |> ImmutableArray.CreateRange
@@ -345,6 +425,8 @@ module private SolutionStoreImplementation =
         let buildTypes =
             model.BuildTypes
             |> Seq.map (fun (value: string) ->
+                throwIfCancellationRequested cancellationToken
+
                 WorkspaceNode.Create(
                     descriptor,
                     WorkspaceNodeKind.Configuration,
@@ -359,6 +441,8 @@ module private SolutionStoreImplementation =
         let platforms =
             model.Platforms
             |> Seq.map (fun (value: string) ->
+                throwIfCancellationRequested cancellationToken
+
                 WorkspaceNode.Create(
                     descriptor,
                     WorkspaceNodeKind.Platform,
@@ -370,14 +454,17 @@ module private SolutionStoreImplementation =
                 StringComparer.Ordinal.Compare(left.Identity.Value, right.Identity.Value))
             |> ImmutableArray.CreateRange
 
-        let projectIds = Dictionary<string, NodeId>(StringComparer.Ordinal)
+        let projectIds = Dictionary<string, NodeId>(comparer caseSemantics)
 
         for project in projects do
+            throwIfCancellationRequested cancellationToken
             projectIds[project.Path.AbsolutePath.Value] <- project.Node.NodeId
 
         let dependencies =
             model.SolutionProjects
             |> Seq.collect (fun (project: SolutionProjectModel) ->
+                throwIfCancellationRequested cancellationToken
+
                 let projectFilePath = project.FilePath
                 let projectPath = System.IO.Path.GetFullPath(projectFilePath, solutionDirectory)
 
@@ -386,6 +473,8 @@ module private SolutionStoreImplementation =
                  |> Option.map (fun dependencies -> dependencies :> seq<SolutionProjectModel>)
                  |> Option.defaultValue Seq.empty)
                 |> Seq.map (fun (dependency: SolutionProjectModel) ->
+                    throwIfCancellationRequested cancellationToken
+
                     let dependencyFilePath = dependency.FilePath
 
                     let dependencyPath =
@@ -399,7 +488,7 @@ module private SolutionStoreImplementation =
                             descriptor,
                             WorkspaceNodeKind.Placeholder,
                             NodeSemanticIdentity.Create
-                                $"solution-dependency:{projectId.Value}:{dependsOnProjectId.Value}",
+                                $"solution-dependency:{pathIdentity caseSemantics projectPath}:{pathIdentity caseSemantics dependencyPath}",
                             $"{project.ActualDisplayName} depends on {dependency.ActualDisplayName}",
                             WorkspaceCapabilityProfile.ReadOnly
                         )
@@ -436,59 +525,72 @@ module private SolutionStoreImplementation =
 
     let openWorkspace targetPath cancellationToken =
         task {
-            match resolveTarget targetPath with
-            | Failure failure -> return Failure failure
-            | Success resolvedTarget ->
-                let caseSemantics = HostFileSystemCaseDetector.DetectFromExistingPath resolvedTarget
-                let targetFormat = format resolvedTarget
+            try
+                throwIfCancellationRequested cancellationToken
 
-                let! filter =
-                    if targetFormat = WorkspaceFormat.Slnf then
-                        readFilter resolvedTarget caseSemantics cancellationToken
-                    else
-                        Task.FromResult(
-                            Success
-                                { BackingSolutionPath = resolvedTarget
-                                  IncludedProjects = None }
-                        )
-
-                match filter with
+                match resolveTarget targetPath cancellationToken with
                 | Failure failure -> return Failure failure
-                | Success selectedFilter ->
-                    match
-                        SolutionSerializers.GetSerializerByMoniker selectedFilter.BackingSolutionPath
-                        |> Option.ofObj
-                    with
-                    | None -> return invalidInput "solution" "The backing solution must be a .sln or .slnx file."
-                    | Some serializer ->
-                        try
-                            let! model = serializer.OpenAsync(selectedFilter.BackingSolutionPath, cancellationToken)
+                | Success resolvedTarget ->
+                    throwIfCancellationRequested cancellationToken
+                    let caseSemantics = HostFileSystemCaseDetector.DetectFromExistingPath resolvedTarget
+                    let targetFormat = format resolvedTarget
 
-                            let descriptor =
-                                WorkspaceDescriptor.Create(
-                                    WorkspaceTargetPath.Create resolvedTarget,
-                                    caseSemantics,
-                                    targetFormat,
-                                    WorkspaceRevision.Create 0L,
-                                    WorkspaceAccess.ReadWrite
-                                )
+                    let! filter =
+                        if targetFormat = WorkspaceFormat.Slnf then
+                            readFilter resolvedTarget caseSemantics cancellationToken
+                        else
+                            Task.FromResult(
+                                Success
+                                    { BackingSolutionPath = resolvedTarget
+                                      IncludedProjects = None }
+                            )
 
-                            let root = projectRoot descriptor selectedFilter model
+                    match filter with
+                    | Failure failure -> return Failure failure
+                    | Success selectedFilter ->
+                        throwIfCancellationRequested cancellationToken
 
-                            return
-                                Success(
-                                    SolutionWorkspace.Create(
-                                        descriptor,
-                                        WorkspaceArtifactPath.Create selectedFilter.BackingSolutionPath,
-                                        root
-                                    )
-                                )
+                        match
+                            SolutionSerializers.GetSerializerByMoniker selectedFilter.BackingSolutionPath
+                            |> Option.ofObj
                         with
-                        | :? OperationCanceledException -> return cancelled ()
-                        | :? SolutionException -> return invalidInput "solution" "The solution file is malformed."
-                        | :? IOException -> return internalFailure "solution.open_failed" "Failed to read the solution."
-                        | :? UnauthorizedAccessException ->
-                            return internalFailure "solution.open_failed" "Failed to read the solution."
+                        | None -> return invalidInput "solution" "The backing solution must be a .sln or .slnx file."
+                        | Some serializer ->
+                            let! model = serializer.OpenAsync(selectedFilter.BackingSolutionPath, cancellationToken)
+                            throwIfCancellationRequested cancellationToken
+
+                            match validateFilterProjects selectedFilter caseSemantics model cancellationToken with
+                            | Failure failure -> return Failure failure
+                            | Success() ->
+                                let descriptor =
+                                    WorkspaceDescriptor.Create(
+                                        WorkspaceTargetPath.Create resolvedTarget,
+                                        caseSemantics,
+                                        targetFormat,
+                                        WorkspaceRevision.Create 0L,
+                                        WorkspaceAccess.ReadWrite
+                                    )
+
+                                let root =
+                                    projectRoot descriptor caseSemantics selectedFilter model cancellationToken
+
+                                return
+                                    Success(
+                                        SolutionWorkspace.Create(
+                                            descriptor,
+                                            WorkspaceArtifactPath.Create selectedFilter.BackingSolutionPath,
+                                            root
+                                        )
+                                    )
+            with
+            | :? OperationCanceledException -> return cancelled ()
+            | :? SolutionException -> return invalidInput "solution" "The solution file is malformed."
+            | :? IOException -> return internalFailure "solution.open_failed" "Failed to read the solution."
+            | :? UnauthorizedAccessException ->
+                return internalFailure "solution.open_failed" "Failed to read the solution."
+            | :? ArgumentException
+            | :? NotSupportedException
+            | :? PathTooLongException -> return invalidInput "targetPath" "The solution path is invalid."
         }
 
 [<AbstractClass; Sealed>]

@@ -31,6 +31,14 @@ module private Helpers =
 
         serializer.SaveAsync(path, model, CancellationToken.None)
 
+    let openModel path =
+        let serializer = SolutionSerializers.GetSerializerByMoniker path
+
+        if isNull serializer then
+            invalidOp $"No serializer supports {path}."
+
+        serializer.OpenAsync(path, CancellationToken.None)
+
     let success outcome =
         match outcome with
         | Success value -> value
@@ -87,15 +95,30 @@ type SolutionStoreTests() =
             Assert.Single root.Platforms |> ignore
             Assert.Single root.Dependencies |> ignore
 
+            let includedProject =
+                root.Projects |> Seq.find (fun project -> project.Node.Name = "Included")
+
+            let mapping = Assert.Single(includedProject.ConfigurationMappings)
+
+            Assert.Equal("Debug", mapping.SolutionBuildType)
+            Assert.Equal("Any CPU", mapping.SolutionPlatform)
+            Assert.Equal("Release", mapping.ProjectBuildType)
+            Assert.Equal((if extension = ".sln" then "Any CPU" else "AnyCPU"), mapping.ProjectPlatform)
+            Assert.True(mapping.Builds)
+            Assert.False(mapping.Deploys)
+
             Assert.Contains(
-                (root.Projects |> Seq.find (fun project -> project.Node.Name = "Included")).ConfigurationRules,
+                includedProject.ConfigurationRules,
                 fun rule -> rule.Dimension = "BuildType" && rule.ProjectValue = "Release"
             )
 
-            Assert.Single(
-                (root.Projects |> Seq.find (fun project -> project.Node.Name = "Included")).ConfigurationMappings
-            )
-            |> ignore
+            let dependency = Assert.Single(root.Dependencies)
+
+            let externalProject =
+                root.Projects |> Seq.find (fun project -> project.Path.IsExternal)
+
+            Assert.Equal(includedProject.Node.NodeId.Value, dependency.ProjectId.Value)
+            Assert.Equal(externalProject.Node.NodeId.Value, dependency.DependsOnProjectId.Value)
 
             Assert.All(
                 root.Projects,
@@ -108,7 +131,7 @@ type SolutionStoreTests() =
             Helpers.deleteDirectory directory
 
     [<Fact>]
-    member _.``filter resolves backing and projects included and excluded paths relative to filter``() =
+    member _.``filter resolves backing relative to filter and projects relative to backing solution``() =
         let directory = Helpers.temporaryDirectory ()
 
         try
@@ -129,7 +152,7 @@ type SolutionStoreTests() =
                 {
                   "solution": {
                     "path": "../solution/Golden.slnx",
-                    "projects": [ "../solution/src/Included.csproj" ]
+                    "projects": [ "src/Included.csproj" ]
                   }
                 }
                 """
@@ -190,6 +213,193 @@ type SolutionStoreTests() =
             match SolutionStore.OpenAsync(missing).Result with
             | Failure(NotFound(target, _)) -> Assert.Equal(Path.Combine(directory, "Absent.sln"), target)
             | _ -> failwith "Expected missing backing solution."
+        finally
+            Helpers.deleteDirectory directory
+
+    [<Fact>]
+    member _.``filter scalar array and invalid paths return typed invalid input``() =
+        let directory = Helpers.temporaryDirectory ()
+
+        try
+            let solutionPath = Path.Combine(directory, "Golden.slnx")
+            Helpers.save solutionPath (SolutionModel()) |> _.GetAwaiter().GetResult()
+
+            let assertInvalid (name: string) (content: string) =
+                let filter = Path.Combine(directory, name)
+                File.WriteAllText(filter, content)
+
+                match SolutionStore.OpenAsync(filter).Result with
+                | Failure(InvalidInput(input, _)) -> Assert.Equal("filter", input)
+                | _ -> failwith "Expected invalid filter input."
+
+            assertInvalid "Scalar.slnf" "1"
+            assertInvalid "Array.slnf" "[]"
+            assertInvalid "InvalidSolutionPath.slnf" "{ \"solution\": { \"path\": \"\\u0000\" } }"
+
+            assertInvalid
+                "InvalidProjectPath.slnf"
+                "{ \"solution\": { \"path\": \"Golden.slnx\", \"projects\": [ \"\\u0000\" ] } }"
+
+            assertInvalid
+                "UnknownProject.slnf"
+                "{ \"solution\": { \"path\": \"Golden.slnx\", \"projects\": [ \"Missing.csproj\" ] } }"
+        finally
+            Helpers.deleteDirectory directory
+
+    [<Theory>]
+    [<InlineData(".sln")>]
+    [<InlineData(".slnx")>]
+    member _.``serializer round trips solution projection semantics``(extension: string) =
+        let directory = Helpers.temporaryDirectory ()
+
+        try
+            let source = Path.Combine(directory, $"RoundTrip{extension}")
+            let serialized = Path.Combine(directory, $"RoundTrip.Serialized{extension}")
+            let model = SolutionModel()
+            let folder = model.AddFolder "/src/"
+            folder.AddFile "Directory.Build.props"
+            let project = model.AddProject("src/Project.csproj", "Project", folder)
+            let dependency = model.AddProject("src/Dependency.csproj", "Dependency", null)
+            project.AddDependency dependency
+            model.AddBuildType "Debug"
+            model.AddPlatform "Any CPU"
+
+            project.AddProjectConfigurationRule(
+                ConfigurationRule(BuildDimension.BuildType, "Debug", "Any CPU", "Release")
+            )
+
+            if extension = ".slnx" then
+                model.Description <- "Serializer-supported description"
+
+            Helpers.save source model |> _.GetAwaiter().GetResult()
+            let loaded = Helpers.openModel source |> _.GetAwaiter().GetResult()
+            Helpers.save serialized loaded |> _.GetAwaiter().GetResult()
+            let reopened = Helpers.openModel serialized |> _.GetAwaiter().GetResult()
+            let workspace = SolutionStore.OpenAsync(serialized).Result |> Helpers.success
+
+            Assert.NotNull(reopened.FindFolder "/src/")
+            Assert.Equal(2, reopened.SolutionProjects.Count)
+
+            Assert.Single(
+                (reopened.SolutionProjects
+                 |> Seq.find (fun project -> project.ActualDisplayName = "Project"))
+                    .Dependencies
+            )
+            |> ignore
+
+            Assert.Contains("Debug", reopened.BuildTypes)
+            Assert.Contains("Any CPU", reopened.Platforms)
+            Assert.Single workspace.RootProjection.Folders |> ignore
+            Assert.Single workspace.RootProjection.Items |> ignore
+            Assert.Single workspace.RootProjection.Dependencies |> ignore
+
+            if extension = ".slnx" then
+                Assert.Equal("Serializer-supported description", reopened.Description)
+        finally
+            Helpers.deleteDirectory directory
+
+    [<Fact>]
+    member _.``case detector distinguishes case aliases from distinct siblings``() =
+        let directory = Helpers.temporaryDirectory ()
+
+        try
+            let upper = Path.Combine(directory, "One.slnx")
+            let lower = Path.Combine(directory, "one.slnx")
+            File.WriteAllText(upper, String.Empty)
+            File.WriteAllText(lower, String.Empty)
+
+            let matchingEntries =
+                Directory.EnumerateFileSystemEntries(directory)
+                |> Seq.filter (fun entry ->
+                    String.Equals(Path.GetFileName(entry), "One.slnx", StringComparison.OrdinalIgnoreCase))
+                |> Seq.length
+
+            let expected =
+                if matchingEntries > 1 then
+                    HostFileSystemCaseSemantics.Sensitive
+                else
+                    HostFileSystemCaseSemantics.Insensitive
+
+            Assert.Equal(expected, HostFileSystemCaseDetector.DetectFromExistingPath upper)
+            Assert.Equal(expected, HostFileSystemCaseDetector.DetectFromExistingPath lower)
+
+            let upperDirectory = Directory.CreateDirectory(Path.Combine(directory, "Folder"))
+            Directory.CreateDirectory(Path.Combine(directory, "folder")) |> ignore
+
+            let matchingDirectories =
+                Directory.EnumerateFileSystemEntries(directory)
+                |> Seq.filter (fun entry ->
+                    String.Equals(Path.GetFileName(entry), "Folder", StringComparison.OrdinalIgnoreCase))
+                |> Seq.length
+
+            let directoryExpected =
+                if matchingDirectories > 1 then
+                    HostFileSystemCaseSemantics.Sensitive
+                else
+                    HostFileSystemCaseSemantics.Insensitive
+
+            Assert.Equal(directoryExpected, HostFileSystemCaseDetector.DetectFromExistingPath upperDirectory.FullName)
+        finally
+            Helpers.deleteDirectory directory
+
+    [<Fact>]
+    member _.``store applies detected case semantics to project identity and filter membership``() =
+        let directory = Helpers.temporaryDirectory ()
+
+        try
+            let solution = Path.Combine(directory, "Case.slnx")
+            let filter = Path.Combine(directory, "Case.slnf")
+            let model = SolutionModel()
+            model.AddProject("src/Case.csproj", "Case", null) |> ignore
+            Helpers.save solution model |> _.GetAwaiter().GetResult()
+
+            let semantics = HostFileSystemCaseDetector.DetectFromExistingPath solution
+            let workspace = SolutionStore.OpenAsync(solution).Result |> Helpers.success
+            let identity = (Assert.Single workspace.RootProjection.Projects).Node.Identity.Value
+
+            if semantics = HostFileSystemCaseSemantics.Sensitive then
+                Assert.Equal("project:src/Case.csproj", identity)
+            else
+                Assert.Equal("project:SRC/CASE.CSPROJ", identity)
+
+            File.WriteAllText(
+                filter,
+                "{ \"solution\": { \"path\": \"Case.slnx\", \"projects\": [ \"SRC/CASE.CSPROJ\" ] } }"
+            )
+
+            if semantics = HostFileSystemCaseSemantics.Sensitive then
+                match SolutionStore.OpenAsync(filter).Result with
+                | Failure(InvalidInput(input, _)) -> Assert.Equal("filter", input)
+                | _ -> failwith "Expected a case-sensitive filter mismatch."
+            else
+                let filtered = SolutionStore.OpenAsync(filter).Result |> Helpers.success
+
+                let included =
+                    filtered.RootProjection.Projects
+                    |> Seq.filter (fun project -> not project.IsFilteredOut)
+                    |> Seq.length
+
+                Assert.Equal(1, included)
+        finally
+            Helpers.deleteDirectory directory
+
+    [<Fact>]
+    member _.``pre-cancelled operations return typed cancellation before resolution``() =
+        let directory = Helpers.temporaryDirectory ()
+
+        try
+            let solution = Path.Combine(directory, "Golden.slnx")
+            Helpers.save solution (SolutionModel()) |> _.GetAwaiter().GetResult()
+            use cancellation = new CancellationTokenSource()
+            cancellation.Cancel()
+
+            let assertCancelled target =
+                match SolutionStore.OpenAsync(target, cancellation.Token).Result with
+                | Failure(Cancelled(_, _)) -> ()
+                | _ -> failwith "Expected cancellation."
+
+            assertCancelled solution
+            assertCancelled directory
         finally
             Helpers.deleteDirectory directory
 

@@ -20,7 +20,7 @@ module private LegacyCompatibilityEditorImplementation =
         { ExitCode = 1; Message = Some message }
 
     let resolveSolution (targetPath: string) =
-        match SolutionStoreImplementation.resolveTarget targetPath with
+        match SolutionStoreImplementation.resolveTarget targetPath CancellationToken.None with
         | WorkspaceOutcome.Failure _ -> Error "Solution file could not be resolved."
         | WorkspaceOutcome.Success path when SolutionStoreImplementation.isSolution path -> Ok path
         | WorkspaceOutcome.Success _ -> Error "Expected a .sln or .slnx solution file."

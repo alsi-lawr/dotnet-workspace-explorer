@@ -62,7 +62,17 @@ type HostFileSystemCaseDetector private () =
                 let alternatePath = Path.Combine(parent, alternate)
 
                 if File.Exists alternatePath || Directory.Exists alternatePath then
-                    HostFileSystemCaseSemantics.Insensitive
+                    let matchingEntries =
+                        Directory.EnumerateFileSystemEntries(parent)
+                        |> Seq.filter (fun entry ->
+                            String.Equals(Path.GetFileName entry, name, StringComparison.OrdinalIgnoreCase))
+                        |> Seq.truncate 2
+                        |> Seq.length
+
+                    if matchingEntries > 1 then
+                        HostFileSystemCaseSemantics.Sensitive
+                    else
+                        HostFileSystemCaseSemantics.Insensitive
                 else
                     HostFileSystemCaseSemantics.Sensitive
         | _ -> HostFileSystemCaseSemantics.Sensitive
