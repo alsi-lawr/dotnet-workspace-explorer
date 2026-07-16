@@ -423,20 +423,35 @@ module private Verify =
                 | Failure failure -> Error failure
         }
 
-    let prepareSolution (target: string option) cancellationToken =
+    let prepareSolution
+        (target: string option)
+        (operation: SolutionOperation)
+        (operands: string list)
+        cancellationToken
+        =
         task {
-            match target with
-            | Some path when path.EndsWith(".slnf", StringComparison.OrdinalIgnoreCase) ->
-                return Error(Failure.unsupported ".slnf workspaces are read-only and cannot be mutated.")
-            | _ ->
-                let! workspace = openSolution target cancellationToken
+            if
+                (operation = Add || operation = Remove)
+                && (List.isEmpty operands
+                    || (operands
+                        |> List.exists (fun operand ->
+                            operand.IndexOfAny([| '*'; '?' |]) >= 0
+                            && List.isEmpty (Paths.expandSolutionOperand operand))))
+            then
+                return Error(Failure.invalid "Solution add/remove requires one or more matching project operands.")
+            else
+                match target with
+                | Some path when path.EndsWith(".slnf", StringComparison.OrdinalIgnoreCase) ->
+                    return Error(Failure.unsupported ".slnf workspaces are read-only and cannot be mutated.")
+                | _ ->
+                    let! workspace = openSolution target cancellationToken
 
-                return
-                    match workspace with
-                    | Error failure -> Error failure
-                    | Ok workspace when workspace.WorkspaceDescriptor.IsReadOnly ->
-                        Error(Failure.unsupported ".slnf workspaces are read-only and cannot be mutated.")
-                    | Ok workspace -> Ok workspace
+                    return
+                        match workspace with
+                        | Error failure -> Error failure
+                        | Ok workspace when workspace.WorkspaceDescriptor.IsReadOnly ->
+                            Error(Failure.unsupported ".slnf workspaces are read-only and cannot be mutated.")
+                        | Ok workspace -> Ok workspace
         }
 
     let private solutionProjects (workspace: SolutionWorkspace) =
@@ -743,8 +758,8 @@ module internal Broker =
                 let! prepared =
                     task {
                         match command with
-                        | Solution(target, Some(Add | Remove | Migrate), _, false) ->
-                            let! workspace = Verify.prepareSolution target cancellationToken
+                        | Solution(target, Some(operation as (Add | Remove | Migrate)), operands, false) ->
+                            let! workspace = Verify.prepareSolution target operation operands cancellationToken
                             return workspace |> Result.map ignore
                         | _ -> return Ok()
                     }
