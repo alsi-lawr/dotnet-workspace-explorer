@@ -17,13 +17,16 @@ module Program =
         let jsonMode = arguments |> Array.tryHead = Some "--json"
 
         let result =
-            Broker
-                .ExecuteAsync(
-                    arguments,
-                    (if jsonMode then Json else Human(Console.Out, Console.Error)),
-                    cancellation.Token
-                )
-                .GetAwaiter()
-                .GetResult()
+            try
+                Broker
+                    .ExecuteAsync(
+                        arguments,
+                        (if jsonMode then Json else Human(Console.Out, Console.Error)),
+                        cancellation.Token
+                    )
+                    .GetAwaiter()
+                    .GetResult()
+            with _ ->
+                Broker.InternalFailure()
 
         Broker.Render result jsonMode Console.Out Console.Error

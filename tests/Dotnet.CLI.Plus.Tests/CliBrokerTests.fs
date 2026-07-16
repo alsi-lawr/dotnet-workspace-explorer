@@ -94,6 +94,27 @@ type CliBrokerTests() =
         Assert.False(result.Success)
         Assert.Equal("unsupported_capability", result.Diagnostics.Head.DiagnosticCode.Value)
 
+    [<Theory>]
+    [<InlineData(".sln", "directory")>]
+    [<InlineData(".slnx", "dir")>]
+    member _.``legacy directory aliases update sln formats``(extension: string, alias: string) =
+        let directory = Helpers.temporaryDirectory ()
+
+        try
+            let solution = Path.Combine(directory, $"Demo{extension}")
+            let folder = Directory.CreateDirectory(Path.Combine(directory, "src", "nested"))
+            Helpers.saveSolution solution
+
+            let result =
+                Broker
+                    .ExecuteAsync([| "sln"; solution; "add"; alias; folder.FullName |], Json, CancellationToken.None)
+                    .Result
+
+            Assert.True(result.Success)
+            Assert.Equal("solution", result.CommandId)
+        finally
+            Helpers.delete directory
+
     [<Fact>]
     member _.``zero child exit with failed verification renders process exit one``() =
         let result =

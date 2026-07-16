@@ -642,13 +642,35 @@ module internal Broker =
     let private failed command (failure: WorkspaceFailure) exit child output error =
         result command false None [ failure.Diagnostic ] exit child output error
 
+    let private legacyDirectoryAdd raw cancellationToken =
+        task {
+            match raw with
+            | ("solution" | "sln") :: solutionPath :: "add" :: ("directory" | "dir") :: directoryPath :: [] ->
+                let! legacy =
+                    LegacySolutionCompatibilityEditor.AddDirectoryAsync(solutionPath, directoryPath, cancellationToken)
+
+                if legacy.ExitCode <> 0 then
+                    return Some(failed "solution" (Failure.external legacy.ExitCode) (Some legacy.ExitCode) [] "" "")
+                else
+                    let! refreshed = Verify.verifySolution (Some solutionPath) None [] cancellationToken
+
+                    return
+                        match refreshed with
+                        | Ok revision -> Some(result "solution" true revision [] (Some 0) [] "" "")
+                        | Error failure -> Some(failed "solution" failure (Some 0) [] "" "")
+            | _ -> return None
+        }
+
     let execute arguments host mode cancellationToken =
         task {
             let _, raw, parsed = Grammar.parse arguments
 
-            match parsed with
-            | Error failure -> return failed "" failure None [] "" ""
-            | Ok command ->
+            let! legacy = legacyDirectoryAdd raw cancellationToken
+
+            match legacy, parsed with
+            | Some result, _ -> return result
+            | None, Error failure -> return failed "" failure None [] "" ""
+            | None, Ok command ->
                 let commandId = Grammar.commandId command
 
                 let child =
@@ -718,6 +740,9 @@ module internal Broker =
 
     let ExecuteAsync (arguments: string array, mode: BrokerMode, cancellationToken: CancellationToken) =
         execute arguments (productionHost ()) mode cancellationToken
+
+    let InternalFailure () =
+        failed "" (Failure.internalFailure "The CLI broker encountered an internal failure.") None [] "" ""
 
     let Render (result: BrokerResult) jsonMode (output: TextWriter) (error: TextWriter) =
         let diagnostic (value: WorkspaceDiagnostic) =
