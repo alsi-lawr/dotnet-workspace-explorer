@@ -1,4 +1,6 @@
 using System.Collections.Immutable;
+using Dotnet.CLI.Plus.Core;
+using Microsoft.Build.Construction;
 using Microsoft.Build.Evaluation;
 using Microsoft.Build.Exceptions;
 
@@ -6,87 +8,108 @@ namespace Dotnet.CLI.Plus.MSBuild;
 
 internal sealed class WorkerEvaluator : IDisposable
 {
-    private const int CacheCapacity = 64;
+    private const int DefaultCacheCapacity = 64;
+    private static readonly StringComparer PathComparer = OperatingSystem.IsWindows()
+        ? StringComparer.OrdinalIgnoreCase
+        : StringComparer.Ordinal;
+
+    private readonly int cacheCapacity;
     private readonly ProjectCollection collection = new();
-    private readonly Dictionary<string, CacheEntry> cache = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, CacheEntry> cache;
     private readonly LinkedList<string> recency = new();
 
-    public EvaluationOutcome Evaluate(string requestedProjectPath)
+    internal WorkerEvaluator(int cacheCapacity = DefaultCacheCapacity)
     {
-        var projectPath = Path.GetFullPath(requestedProjectPath);
-        if (!File.Exists(projectPath))
+        if (cacheCapacity < 1)
         {
-            return new EvaluationOutcome.Failure(
-                "msbuild.project_not_found",
+            throw new ArgumentOutOfRangeException(nameof(cacheCapacity));
+        }
+
+        this.cacheCapacity = cacheCapacity;
+        cache = new Dictionary<string, CacheEntry>(PathComparer);
+    }
+
+    internal int CachedProjectCount => cache.Count;
+
+    internal WorkspaceOutcome<EvaluationSnapshot> Evaluate(
+        WorkspaceArtifactPath requestedProjectPath
+    )
+    {
+        var projectPath = WorkspaceArtifactPath.Create(requestedProjectPath.Value);
+        if (!File.Exists(projectPath.Value))
+        {
+            return CoreOutcomes.NotFound<EvaluationSnapshot>(
+                projectPath,
+                MsBuildDiagnosticCodes.ProjectNotFound,
                 "The project file was not found."
             );
         }
 
-        if (cache.TryGetValue(projectPath, out var cached))
+        if (cache.TryGetValue(projectPath.Value, out var cached))
         {
             Touch(cached);
-            return new EvaluationOutcome.Success(cached.Snapshot);
+            return CoreOutcomes.Success(cached.Snapshot);
         }
 
         try
         {
-            var outer = Load(projectPath, EvaluationDimension.Outer);
-            var targetFrameworks = TargetFrameworks(outer);
-            var dimensions =
-                targetFrameworks.Length == 0
-                    ? ImmutableArray.Create(EvaluationDimension.Outer)
-                    : targetFrameworks
-                        .Select(static framework => new EvaluationDimension(framework))
-                        .ToImmutableArray();
-            var projects = dimensions
-                .Select(dimension => Load(projectPath, dimension))
-                .ToImmutableArray();
-            var snapshot = Materialize(projectPath, outer, projects, targetFrameworks);
-            Add(projectPath, snapshot, projects.Append(outer).Distinct().ToImmutableArray());
-            return new EvaluationOutcome.Success(snapshot);
+            var outer = Load(projectPath.Value, null);
+            var targetFrameworks = GetTargetFrameworks(outer);
+            var loaded = ImmutableArray.CreateBuilder<Project>(targetFrameworks.Length + 1);
+            loaded.Add(outer);
+            loaded.AddRange(
+                targetFrameworks.Select(framework => Load(projectPath.Value, framework))
+            );
+            var projects = loaded.MoveToImmutable();
+            var snapshot = Materialize(projectPath, projects, targetFrameworks);
+            Add(projectPath.Value, snapshot, projects);
+            return CoreOutcomes.Success(snapshot);
         }
         catch (InvalidProjectFileException)
         {
-            return new EvaluationOutcome.Failure(
-                "msbuild.evaluation_failed",
-                "MSBuild could not evaluate the project."
+            return CoreOutcomes.InvalidInput<EvaluationSnapshot>(
+                "projectPath",
+                MsBuildDiagnosticCodes.ProjectMalformed,
+                "MSBuild could not evaluate the project because the project or selected SDK is incompatible.",
+                projectPath
             );
         }
         catch (IOException)
         {
-            return new EvaluationOutcome.Failure(
-                "msbuild.evaluation_failed",
+            return CoreOutcomes.Internal<EvaluationSnapshot>(
+                MsBuildDiagnosticCodes.EvaluationFailed,
                 "MSBuild could not read the project."
             );
         }
         catch (UnauthorizedAccessException)
         {
-            return new EvaluationOutcome.Failure(
-                "msbuild.evaluation_failed",
+            return CoreOutcomes.Internal<EvaluationSnapshot>(
+                MsBuildDiagnosticCodes.EvaluationFailed,
                 "MSBuild could not read the project."
-            );
-        }
-        catch (ArgumentException)
-        {
-            return new EvaluationOutcome.Failure(
-                "msbuild.evaluation_failed",
-                "MSBuild could not evaluate the project."
             );
         }
     }
 
-    public InvalidationResult Invalidate(IEnumerable<string> paths)
+    internal InvalidationResult Invalidate(ImmutableArray<WorkspaceArtifactPath> changedPaths)
     {
-        var changed = paths.Select(Path.GetFullPath).ToImmutableHashSet(StringComparer.Ordinal);
         var invalidated = cache
-            .Values.Where(entry => entry.WatchInputs.Any(changed.Contains))
-            .Select(entry => entry.ProjectPath)
-            .OrderBy(static path => path, StringComparer.Ordinal)
+            .Values.Where(entry => changedPaths.Any(path => Affects(entry, path.Value)))
+            .Select(entry => entry.Snapshot.ProjectPath)
+            .OrderBy(path => path.Value, PathComparer)
             .ToImmutableArray();
 
         foreach (var projectPath in invalidated)
         {
-            Remove(projectPath);
+            Remove(projectPath.Value);
+        }
+
+        if (!invalidated.IsDefaultOrEmpty)
+        {
+            collection.UnloadAllProjects();
+            foreach (var projectPath in cache.Keys.ToArray())
+            {
+                cache[projectPath] = cache[projectPath] with { Projects = [] };
+            }
         }
 
         return new InvalidationResult(invalidated);
@@ -96,10 +119,7 @@ internal sealed class WorkerEvaluator : IDisposable
     {
         foreach (var entry in cache.Values)
         {
-            foreach (var project in entry.Projects)
-            {
-                collection.UnloadProject(project);
-            }
+            Unload(entry);
         }
 
         cache.Clear();
@@ -107,15 +127,14 @@ internal sealed class WorkerEvaluator : IDisposable
         collection.Dispose();
     }
 
-    private Project Load(string projectPath, EvaluationDimension dimension)
+    private Project Load(string projectPath, TargetFramework? targetFramework)
     {
-        var properties =
-            dimension == EvaluationDimension.Outer
-                ? null
-                : new Dictionary<string, string>(StringComparer.Ordinal)
-                {
-                    ["TargetFramework"] = dimension.TargetFramework,
-                };
+        var properties = targetFramework is null
+            ? null
+            : new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["TargetFramework"] = targetFramework.Value.Value,
+            };
         return new Project(
             projectPath,
             properties,
@@ -126,52 +145,102 @@ internal sealed class WorkerEvaluator : IDisposable
     }
 
     private static EvaluationSnapshot Materialize(
-        string projectPath,
-        Project outer,
+        WorkspaceArtifactPath projectPath,
         ImmutableArray<Project> projects,
-        ImmutableArray<string> targetFrameworks
+        ImmutableArray<TargetFramework> targetFrameworks
     )
     {
-        var allProperties = projects
+        var dimensions = ImmutableArray.CreateBuilder<EvaluationDimensionSnapshot>(projects.Length);
+        dimensions.Add(MaterializeDimension(projectPath, projects[0], null));
+
+        for (var index = 0; index < targetFrameworks.Length; index++)
+        {
+            dimensions.Add(
+                MaterializeDimension(projectPath, projects[index + 1], targetFrameworks[index])
+            );
+        }
+
+        var imports = projects
             .SelectMany(project =>
-                project.AllEvaluatedProperties.Select(property => new EvaluatedProperty(
-                    property.Name,
-                    property.EvaluatedValue
-                ))
+                project.Imports.Select(import => import.ImportedProject.FullPath)
             )
-            .DistinctBy(static property => (property.Name, property.Value))
-            .OrderBy(static property => property.Name, StringComparer.Ordinal)
-            .ThenBy(static property => property.Value, StringComparer.Ordinal)
+            .Append(projectPath.Value)
+            .Select(WorkspaceArtifactPath.Create)
+            .DistinctBy(path => path.Value, PathComparer)
+            .OrderBy(path => path.Value, PathComparer)
             .ToImmutableArray();
-        var allItems = projects
-            .SelectMany(
-                (project, index) =>
-                    project.AllEvaluatedItems.Select(item =>
-                        Item(
-                            projectPath,
-                            item,
-                            targetFrameworks.Length == 0
-                                ? EvaluationDimension.Outer
-                                : new EvaluationDimension(targetFrameworks[index])
-                        )
-                    )
-            )
-            .OrderBy(static item => item.Dimension.TargetFramework, StringComparer.Ordinal)
-            .ThenBy(static item => item.ItemType, StringComparer.Ordinal)
-            .ThenBy(static item => item.EvaluatedInclude, StringComparer.Ordinal)
+        var watchInputs = imports
+            .Concat(DirectoryInputs(projectPath.Value))
+            .DistinctBy(path => path.Value, PathComparer)
+            .OrderBy(path => path.Value, PathComparer)
             .ToImmutableArray();
-        var projectReferences = References(projectPath, projects, "ProjectReference");
-        var references = References(projectPath, projects, "Reference");
-        var centralVersions = projects
-            .SelectMany(project => project.GetItems("PackageVersion"))
-            .GroupBy(static item => item.EvaluatedInclude, StringComparer.Ordinal)
+        var globRoots = projects
+            .SelectMany(project => GlobRoots(projectPath.Value, project))
+            .DistinctBy(path => path.Value, PathComparer)
+            .OrderBy(path => path.Value, PathComparer)
+            .ToImmutableArray();
+        var profile = IsManagedSdkProject(projects[0])
+            ? WorkspaceCapabilityProfile.Full
+            : WorkspaceCapabilityProfile.UnknownProjectSystem;
+        var capabilities =
+            profile == WorkspaceCapabilityProfile.Full
+                ? ImmutableArray.Create(WorkspaceCapabilityId.Read, WorkspaceCapabilityId.Write)
+                : ImmutableArray.Create(WorkspaceCapabilityId.Read);
+        var diagnostics = File.Exists(
+            Path.Combine(Path.GetDirectoryName(projectPath.Value)!, "obj", "project.assets.json")
+        )
+            ? ImmutableArray<WorkspaceDiagnostic>.Empty
+            : ImmutableArray.Create(
+                CoreOutcomes.Diagnostic(
+                    MsBuildDiagnosticCodes.AssetsMissing,
+                    "Restore assets are missing; evaluation did not run restore.",
+                    projectPath,
+                    true,
+                    WorkspaceDiagnosticSeverity.Warning
+                )
+            );
+
+        return new EvaluationSnapshot(
+            projectPath,
+            dimensions.MoveToImmutable(),
+            imports,
+            watchInputs,
+            globRoots,
+            profile,
+            capabilities,
+            diagnostics
+        );
+    }
+
+    private static EvaluationDimensionSnapshot MaterializeDimension(
+        WorkspaceArtifactPath projectPath,
+        Project project,
+        TargetFramework? targetFramework
+    )
+    {
+        var properties = project
+            .AllEvaluatedProperties.Select(property => new EvaluatedProperty(
+                property.Name,
+                property.EvaluatedValue
+            ))
+            .OrderBy(property => property.Name, StringComparer.Ordinal)
+            .ThenBy(property => property.Value, StringComparer.Ordinal)
+            .ToImmutableArray();
+        var items = project
+            .AllEvaluatedItems.Select(item => MaterializeItem(projectPath.Value, item))
+            .OrderBy(item => item.ItemType, StringComparer.Ordinal)
+            .ThenBy(item => item.EvaluatedInclude, StringComparer.Ordinal)
+            .ToImmutableArray();
+        var centralVersions = project
+            .GetItems("PackageVersion")
+            .GroupBy(item => item.EvaluatedInclude, StringComparer.Ordinal)
             .ToDictionary(
-                static group => group.Key,
-                static group => EmptyToNull(group.Last().GetMetadataValue("Version")),
+                group => group.Key,
+                group => EmptyToNull(group.Last().GetMetadataValue("Version")),
                 StringComparer.Ordinal
             );
-        var packages = projects
-            .SelectMany(project => project.GetItems("PackageReference"))
+        var packages = project
+            .GetItems("PackageReference")
             .Select(item => new EvaluatedPackage(
                 item.EvaluatedInclude,
                 EmptyToNull(item.GetMetadataValue("Version"))
@@ -182,115 +251,97 @@ internal sealed class WorkerEvaluator : IDisposable
                     )
             ))
             .Distinct()
-            .OrderBy(static package => package.Id, StringComparer.Ordinal)
-            .ThenBy(static package => package.Version, StringComparer.Ordinal)
+            .OrderBy(package => package.Id, StringComparer.Ordinal)
+            .ThenBy(package => package.Version, StringComparer.Ordinal)
             .ToImmutableArray();
-        var analyzers = projects
-            .SelectMany(project => project.GetItems("Analyzer"))
-            .Select(item => Resolve(projectPath, item.EvaluatedInclude))
-            .Where(static path => path is not null)
-            .Cast<string>()
-            .Distinct(StringComparer.Ordinal)
-            .OrderBy(static path => path, StringComparer.Ordinal)
+        var analyzers = project
+            .GetItems("Analyzer")
+            .Select(item => Resolve(projectPath.Value, item.EvaluatedInclude))
+            .Where(path => path is not null)
+            .Cast<WorkspaceArtifactPath>()
+            .DistinctBy(path => path.Value, PathComparer)
+            .OrderBy(path => path.Value, PathComparer)
             .ToImmutableArray();
-        var imports = projects
-            .Append(outer)
-            .SelectMany(project =>
-                project.Imports.Select(import => import.ImportedProject.FullPath)
-            )
-            .Append(projectPath)
-            .Select(Path.GetFullPath)
-            .Distinct(StringComparer.Ordinal)
-            .OrderBy(static path => path, StringComparer.Ordinal)
-            .ToImmutableArray();
-        var watchInputs = imports
-            .Concat(DirectoryInputs(projectPath))
-            .Distinct(StringComparer.Ordinal)
-            .OrderBy(static path => path, StringComparer.Ordinal)
-            .ToImmutableArray();
-        var globRoots = new[] { Path.GetDirectoryName(projectPath)! }
-            .Concat(
-                allItems
-                    .Select(item => item.ResolvedPath)
-                    .Where(static path => path is not null)
-                    .Select(path => Path.GetDirectoryName(path!)!)
-            )
-            .Where(static path => path is not null)
-            .Cast<string>()
-            .Distinct(StringComparer.Ordinal)
-            .OrderBy(static path => path, StringComparer.Ordinal)
-            .ToImmutableArray();
-        var profile = IsManagedSdkProject(outer)
-            ? MsBuildCapabilityProfile.Full
-            : MsBuildCapabilityProfile.UnknownProjectSystem;
-        var capabilities =
-            profile == MsBuildCapabilityProfile.Full
-                ? ImmutableArray.Create("workspace.read", "workspace.write")
-                : ImmutableArray.Create("workspace.read");
-        var diagnostics = File.Exists(
-            Path.Combine(Path.GetDirectoryName(projectPath)!, "obj", "project.assets.json")
-        )
-            ? ImmutableArray<MsBuildDiagnostic>.Empty
-            : ImmutableArray.Create(
-                new MsBuildDiagnostic(
-                    "msbuild.assets_missing",
-                    "Restore assets are missing; evaluation did not run restore.",
-                    true
-                )
-            );
 
-        return new EvaluationSnapshot(
-            projectPath,
-            allProperties,
-            allItems,
-            projectReferences,
-            references,
+        return new EvaluationDimensionSnapshot(
+            targetFramework,
+            properties,
+            items,
+            References(projectPath.Value, project, "ProjectReference"),
+            References(projectPath.Value, project, "Reference"),
             packages,
-            targetFrameworks,
-            analyzers,
-            imports,
-            watchInputs,
-            globRoots,
-            profile,
-            capabilities,
-            diagnostics
+            analyzers
         );
     }
 
-    private static EvaluatedItem Item(
-        string projectPath,
-        ProjectItem item,
-        EvaluationDimension dimension
-    ) =>
+    private static string PropertyValue(ProjectProperty property)
+    {
+        try
+        {
+            return property.EvaluatedValue;
+        }
+        catch (InvalidProjectFileException)
+        {
+            return property.UnevaluatedValue;
+        }
+    }
+
+    private static EvaluatedItem MaterializeItem(string projectPath, ProjectItem item) =>
         new(
             item.ItemType,
-            item.EvaluatedInclude,
-            Resolve(projectPath, item.EvaluatedInclude),
+            ItemInclude(item),
+            Resolve(projectPath, ItemInclude(item)),
             item.Metadata.Select(metadata => new EvaluatedMetadata(
                     metadata.Name,
-                    metadata.EvaluatedValue
+                    MetadataValue(metadata)
                 ))
-                .OrderBy(static metadata => metadata.Name, StringComparer.Ordinal)
-                .ToImmutableArray(),
-            dimension
+                .OrderBy(metadata => metadata.Name, StringComparer.Ordinal)
+                .ToImmutableArray()
         );
+
+    private static string ItemInclude(ProjectItem item)
+    {
+        try
+        {
+            return item.EvaluatedInclude;
+        }
+        catch (InvalidProjectFileException)
+        {
+            return item.UnevaluatedInclude;
+        }
+    }
+
+    private static string MetadataValue(ProjectMetadata metadata)
+    {
+        try
+        {
+            return metadata.EvaluatedValue;
+        }
+        catch (InvalidProjectFileException)
+        {
+            return metadata.UnevaluatedValue;
+        }
+    }
 
     private static ImmutableArray<EvaluatedReference> References(
         string projectPath,
-        IEnumerable<Project> projects,
+        Project project,
         string itemType
     ) =>
-        projects
-            .SelectMany(project => project.GetItems(itemType))
+        project
+            .GetItems(itemType)
             .Select(item => new EvaluatedReference(
                 item.EvaluatedInclude,
-                Resolve(projectPath, item.EvaluatedInclude)
+                Resolve(
+                    projectPath,
+                    EmptyToNull(item.GetMetadataValue("HintPath")) ?? item.EvaluatedInclude
+                )
             ))
             .Distinct()
-            .OrderBy(static reference => reference.Include, StringComparer.Ordinal)
+            .OrderBy(reference => reference.Include, StringComparer.Ordinal)
             .ToImmutableArray();
 
-    private static ImmutableArray<string> TargetFrameworks(Project project) =>
+    private static ImmutableArray<TargetFramework> GetTargetFrameworks(Project project) =>
         project
             .GetPropertyValue("TargetFrameworks")
             .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -303,10 +354,11 @@ internal sealed class WorkerEvaluator : IDisposable
                     )
             )
             .Distinct(StringComparer.Ordinal)
-            .OrderBy(static framework => framework, StringComparer.Ordinal)
+            .OrderBy(framework => framework, StringComparer.Ordinal)
+            .Select(framework => new TargetFramework(framework))
             .ToImmutableArray();
 
-    private static IEnumerable<string> DirectoryInputs(string projectPath)
+    private static IEnumerable<WorkspaceArtifactPath> DirectoryInputs(string projectPath)
     {
         for (
             var directory = new DirectoryInfo(Path.GetDirectoryName(projectPath)!);
@@ -326,10 +378,65 @@ internal sealed class WorkerEvaluator : IDisposable
                 var candidate = Path.Combine(directory.FullName, name);
                 if (File.Exists(candidate))
                 {
-                    yield return Path.GetFullPath(candidate);
+                    yield return WorkspaceArtifactPath.Create(candidate);
                 }
             }
         }
+    }
+
+    private static IEnumerable<WorkspaceArtifactPath> GlobRoots(string projectPath, Project project)
+    {
+        var projectDirectory = Path.GetDirectoryName(projectPath)!;
+        var roots = project
+            .Imports.Select(import => import.ImportedProject)
+            .Append(project.Xml)
+            .SelectMany(root => root.Items)
+            .SelectMany(item => ExpandedIncludes(project, item))
+            .Where(include => include.IndexOfAny(['*', '?']) >= 0)
+            .Select(include => GlobRoot(projectDirectory, include));
+
+        foreach (var root in roots)
+        {
+            yield return WorkspaceArtifactPath.Create(root);
+        }
+    }
+
+    private static IEnumerable<string> ExpandedIncludes(Project project, ProjectItemElement item)
+    {
+        if (
+            item.Include.IndexOfAny(['*', '?']) < 0
+            && !item.Include.Contains("$(", StringComparison.Ordinal)
+        )
+        {
+            return [];
+        }
+
+        try
+        {
+            var expanded = project.ExpandString(item.Include);
+            return expanded.Split(
+                ';',
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries
+            );
+        }
+        catch (InvalidProjectFileException)
+        {
+            return item.Include.Split(
+                ';',
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries
+            );
+        }
+    }
+
+    private static string GlobRoot(string projectDirectory, string include)
+    {
+        var wildcard = include.IndexOfAny(['*', '?']);
+        var separator = include.LastIndexOfAny(
+            [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+            wildcard
+        );
+        var prefix = separator < 0 ? string.Empty : include[..separator];
+        return Path.GetFullPath(prefix, projectDirectory);
     }
 
     private static bool IsManagedSdkProject(Project project) =>
@@ -339,9 +446,9 @@ internal sealed class WorkerEvaluator : IDisposable
             StringComparison.OrdinalIgnoreCase
         ) && Path.GetExtension(project.FullPath) is ".csproj" or ".fsproj" or ".vbproj";
 
-    private static string? Resolve(string projectPath, string include)
+    private static WorkspaceArtifactPath? Resolve(string projectPath, string include)
     {
-        if (string.IsNullOrWhiteSpace(include) || include.Contains("$", StringComparison.Ordinal))
+        if (string.IsNullOrWhiteSpace(include) || include.Contains('$'))
         {
             return null;
         }
@@ -350,8 +457,30 @@ internal sealed class WorkerEvaluator : IDisposable
             ? include
             : Path.Combine(Path.GetDirectoryName(projectPath)!, include);
         return File.Exists(candidate) || Directory.Exists(candidate)
-            ? Path.GetFullPath(candidate)
+            ? WorkspaceArtifactPath.Create(candidate)
             : null;
+    }
+
+    private static bool Affects(CacheEntry entry, string changedPath)
+    {
+        if (entry.Snapshot.WatchInputs.Any(path => PathComparer.Equals(path.Value, changedPath)))
+        {
+            return true;
+        }
+
+        return entry.Snapshot.GlobRoots.Any(root => IsDescendant(root.Value, changedPath));
+    }
+
+    private static bool IsDescendant(string root, string candidate)
+    {
+        var relative = Path.GetRelativePath(root, candidate);
+        return !Path.IsPathRooted(relative)
+            && relative != ".."
+            && !relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+            && !relative.StartsWith(
+                $"..{Path.AltDirectorySeparatorChar}",
+                StringComparison.Ordinal
+            );
     }
 
     private static string? EmptyToNull(string value) =>
@@ -363,16 +492,13 @@ internal sealed class WorkerEvaluator : IDisposable
         ImmutableArray<Project> projects
     )
     {
-        if (cache.Count == CacheCapacity)
+        if (cache.Count == cacheCapacity)
         {
             Remove(recency.Last!.Value);
         }
 
         var node = recency.AddFirst(projectPath);
-        cache.Add(
-            projectPath,
-            new CacheEntry(projectPath, snapshot, snapshot.WatchInputs, projects, node)
-        );
+        cache.Add(projectPath, new CacheEntry(snapshot, projects, node));
     }
 
     private void Touch(CacheEntry entry)
@@ -389,6 +515,11 @@ internal sealed class WorkerEvaluator : IDisposable
         }
 
         recency.Remove(entry.RecencyNode);
+        Unload(entry);
+    }
+
+    private void Unload(CacheEntry entry)
+    {
         foreach (var project in entry.Projects)
         {
             collection.UnloadProject(project);
@@ -396,9 +527,7 @@ internal sealed class WorkerEvaluator : IDisposable
     }
 
     private sealed record CacheEntry(
-        string ProjectPath,
         EvaluationSnapshot Snapshot,
-        ImmutableArray<string> WatchInputs,
         ImmutableArray<Project> Projects,
         LinkedListNode<string> RecencyNode
     );

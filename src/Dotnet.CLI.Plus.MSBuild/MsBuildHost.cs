@@ -4,9 +4,12 @@ using Microsoft.Build.Locator;
 
 namespace Dotnet.CLI.Plus.MSBuild;
 
-public static class MsBuildHost
+internal static class MsBuildHost
 {
-    public static Task<int> RunAsync(string toolsetPath, CancellationToken cancellationToken) =>
+    private const int InvalidToolsetExitCode = 66;
+    private const int ToolsetLoadExitCode = 70;
+
+    internal static Task<int> RunAsync(string toolsetPath, CancellationToken cancellationToken) =>
         RegisterThenRunAsync(Path.GetFullPath(toolsetPath), cancellationToken);
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -17,99 +20,125 @@ public static class MsBuildHost
     {
         if (!Directory.Exists(toolsetPath))
         {
-            return Task.FromResult(2);
+            Console.Error.WriteLine("msbuild-host:toolset-not-found");
+            return Task.FromResult(InvalidToolsetExitCode);
         }
 
-        if (!MSBuildLocator.IsRegistered)
+        try
         {
-            MSBuildLocator.RegisterMSBuildPath(toolsetPath);
+            if (!MSBuildLocator.IsRegistered)
+            {
+                MSBuildLocator.RegisterMSBuildPath(toolsetPath);
+            }
+        }
+        catch (ArgumentException)
+        {
+            Console.Error.WriteLine("msbuild-host:locator-registration-failed");
+            return Task.FromResult(ToolsetLoadExitCode);
+        }
+        catch (InvalidOperationException)
+        {
+            Console.Error.WriteLine("msbuild-host:locator-registration-failed");
+            return Task.FromResult(ToolsetLoadExitCode);
         }
 
         return RunRegisteredAsync(cancellationToken);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static Task<int> RunRegisteredAsync(CancellationToken cancellationToken) =>
-        WorkerServer.RunAsync(cancellationToken);
+    private static async Task<int> RunRegisteredAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await WorkerServer.RunAsync(cancellationToken);
+        }
+        catch (FileLoadException)
+        {
+            Console.Error.WriteLine("msbuild-host:toolset-load-failed");
+            return ToolsetLoadExitCode;
+        }
+        catch (FileNotFoundException)
+        {
+            Console.Error.WriteLine("msbuild-host:toolset-load-failed");
+            return ToolsetLoadExitCode;
+        }
+        catch (TypeLoadException)
+        {
+            Console.Error.WriteLine("msbuild-host:toolset-load-failed");
+            return ToolsetLoadExitCode;
+        }
+    }
 }
 
 internal static class WorkerServer
 {
     internal static async Task<int> RunAsync(CancellationToken cancellationToken)
     {
+        var frameLimit = RpcCodec.secureLimits.MaximumValueBytes;
         using var evaluator = new WorkerEvaluator();
-        var result = await RpcHost.RunAsync(
+        return await RpcHost.RunAsync(
             WorkerProtocol.Profile,
             Console.OpenStandardInput(),
             Console.OpenStandardOutput(),
             Console.Error,
+            new Func<int>(() => frameLimit),
             new Func<RpcValue, CancellationToken, Task<RpcInteropResponse>>(
-                (parameters, _) => Task.FromResult(WorkerProtocol.Initialize(parameters))
+                (parameters, _) =>
+                    Task.FromResult(
+                        WorkerProtocol.Initialize(parameters, value => frameLimit = value)
+                    )
             ),
             new Func<string, RpcValue, CancellationToken, Task<RpcInteropResponse>>(
                 (method, parameters, _) => Task.FromResult(Dispatch(evaluator, method, parameters))
             ),
             cancellationToken
         );
-        return result;
     }
 
     private static RpcInteropResponse Dispatch(
         WorkerEvaluator evaluator,
         string method,
         RpcValue parameters
-    ) =>
-        method switch
+    )
+    {
+        try
         {
-            "msbuild/evaluate" => Evaluate(evaluator, parameters),
-            "msbuild/invalidate" => Invalidate(evaluator, parameters),
-            "shutdown" => RpcInteropResponse.Ok(
-                WorkerProtocol.Map(("accepted", RpcValue.NewBoolean(true))),
-                true
-            ),
-            _ => RpcInteropResponse.Fail(RpcErrors.unknownMethod(method)),
-        };
+            return method switch
+            {
+                "msbuild/evaluate" => Evaluate(evaluator, parameters),
+                "msbuild/invalidate" => Invalidate(evaluator, parameters),
+                "shutdown" => Shutdown(parameters),
+                _ => RpcInteropResponse.Fail(RpcErrors.unknownMethod(method)),
+            };
+        }
+        catch (ArgumentException)
+        {
+            return RpcInteropResponse.Fail(
+                RpcErrors.invalidParams("The request parameters are malformed.")
+            );
+        }
+    }
 
     private static RpcInteropResponse Evaluate(WorkerEvaluator evaluator, RpcValue parameters)
     {
-        if (!WorkerProtocol.TryProjectPath(parameters, out var projectPath))
-        {
-            return RpcInteropResponse.Fail(
-                RpcErrors.invalidParams("The evaluate parameters are malformed.")
-            );
-        }
-
-        return evaluator.Evaluate(projectPath) switch
-        {
-            EvaluationOutcome.Success success => RpcInteropResponse.Ok(
-                SnapshotCodec.Encode(success.Snapshot),
-                false
-            ),
-            EvaluationOutcome.Failure failure => RpcInteropResponse.Fail(
-                RpcErrors.create(failure.Code, failure.Message, null)
-            ),
-            _ => RpcInteropResponse.Fail(RpcErrors.internalError),
-        };
+        var projectPath = WorkerProtocol.DecodeProjectPath(parameters);
+        var outcome = evaluator.Evaluate(projectPath);
+        return CoreOutcomes.TrySuccess(outcome, out var snapshot, out var failure)
+            ? RpcInteropResponse.Ok(SnapshotCodec.Encode(snapshot!), false)
+            : RpcInteropResponse.Fail(CoreOutcomes.ToRpcError(failure!));
     }
 
-    private static RpcInteropResponse Invalidate(WorkerEvaluator evaluator, RpcValue parameters)
-    {
-        if (!WorkerProtocol.TryPaths(parameters, out var paths))
-        {
-            return RpcInteropResponse.Fail(
-                RpcErrors.invalidParams("The invalidate parameters are malformed.")
-            );
-        }
-
-        var result = evaluator.Invalidate(paths);
-        return RpcInteropResponse.Ok(
-            WorkerProtocol.Map(
-                (
-                    "invalidatedProjects",
-                    WorkerProtocol.Array(result.InvalidatedProjects, RpcValue.NewString)
-                )
+    private static RpcInteropResponse Invalidate(WorkerEvaluator evaluator, RpcValue parameters) =>
+        RpcInteropResponse.Ok(
+            WorkerProtocol.EncodeInvalidation(
+                evaluator.Invalidate(WorkerProtocol.DecodePaths(parameters))
             ),
             false
         );
+
+    private static RpcInteropResponse Shutdown(RpcValue parameters)
+    {
+        WorkerProtocol.ValidateShutdownRequest(parameters);
+        return RpcInteropResponse.Ok(WorkerProtocol.ShutdownResult, true);
     }
 }

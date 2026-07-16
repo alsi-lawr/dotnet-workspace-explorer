@@ -4,11 +4,7 @@
         <IsTestProject>true</IsTestProject>
     </PropertyGroup>
     <ItemGroup>
-        <Compile Include="AssemblyInfo.fs" />
-        <Compile Include="MsBuildHostTests.fs" />
-    </ItemGroup>
-    <ItemGroup>
-        <PackageReference Include="FSharp.Core" />
+        <PackageReference Include="Microsoft.Build.Locator" PrivateAssets="all" />
         <PackageReference Include="Microsoft.NET.Test.Sdk" />
         <PackageReference Include="xunit" />
         <PackageReference Include="xunit.runner.visualstudio">
@@ -17,10 +13,6 @@
         </PackageReference>
     </ItemGroup>
     <ItemGroup>
-        <ProjectReference Include="../../src/Dotnet.CLI.Plus/Dotnet.CLI.Plus.fsproj" />
-        <ProjectReference Include="../../src/Dotnet.CLI.Plus.Core/Dotnet.CLI.Plus.Core.fsproj" />
         <ProjectReference Include="../../src/Dotnet.CLI.Plus.MSBuild/Dotnet.CLI.Plus.MSBuild.csproj" />
-        <ProjectReference Include="../../src/Dotnet.CLI.Plus.Transport/Dotnet.CLI.Plus.Transport.fsproj" />
-        <ProjectReference Include="../Dotnet.CLI.Plus.FakeHost/Dotnet.CLI.Plus.FakeHost.fsproj" />
     </ItemGroup>
 </Project>

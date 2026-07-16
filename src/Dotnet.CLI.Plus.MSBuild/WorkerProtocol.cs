@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using Dotnet.CLI.Plus.Core;
 using Dotnet.CLI.Plus.Transport;
 
 namespace Dotnet.CLI.Plus.MSBuild;
@@ -22,60 +23,40 @@ internal static class WorkerProtocol
     internal static RpcValue Array<T>(IEnumerable<T> values, Func<T, RpcValue> encode) =>
         RpcValueModule.array(values.Select(encode));
 
-    internal static RpcInteropResponse Initialize(RpcValue parameters)
+    internal static RpcInteropResponse Initialize(RpcValue parameters, Action<int> setFrameLimit)
     {
         try
         {
-            var fields = RpcValueModule.requireMap("parameters", parameters);
-            RpcValueModule.ensureOnly(
+            var fields = ExactMap(
                 "parameters",
-                ["protocolVersion", "profile", "limits"],
-                fields
+                parameters,
+                ["profile", "protocolVersion", "limits"]
             );
-            var profile = RpcValueModule.requireString(
-                "profile",
-                RpcValueModule.requireField("profile", fields)
-            );
-            var version = RpcValueModule.requireMap(
+            var version = ExactMap(
                 "protocolVersion",
-                RpcValueModule.requireField("protocolVersion", fields)
+                Field(fields, "protocolVersion"),
+                ["major", "minor"]
             );
-            var major = RpcValueModule.requireInteger(
-                "major",
-                RpcValueModule.requireField("major", version)
-            );
-
-            if (!StringComparer.Ordinal.Equals(profile, ProfileName) || major != ProtocolMajor)
+            var limits = ExactMap("limits", Field(fields, "limits"), ["maxFrameBytes"]);
+            var requestedLimit = Integer(limits, "maxFrameBytes");
+            if (
+                !StringComparer.Ordinal.Equals(String(fields, "profile"), ProfileName)
+                || Integer(version, "major") != ProtocolMajor
+                || Integer(version, "minor") < ProtocolMinor
+                || requestedLimit < 1
+                || requestedLimit > RpcCodec.secureLimits.MaximumValueBytes
+            )
             {
                 return RpcInteropResponse.Fail(
                     RpcErrors.invalidParams(
-                        "The requested private protocol profile is not supported."
+                        "The requested private protocol profile or limits are unsupported."
                     )
                 );
             }
 
-            return RpcInteropResponse.Ok(
-                Map(
-                    ("profile", RpcValue.NewString(ProfileName)),
-                    (
-                        "protocolVersion",
-                        Map(
-                            ("major", RpcValue.NewInteger(ProtocolMajor)),
-                            ("minor", RpcValue.NewInteger(ProtocolMinor))
-                        )
-                    ),
-                    (
-                        "limits",
-                        Map(
-                            (
-                                "maxFrameBytes",
-                                RpcValue.NewInteger(RpcCodec.secureLimits.MaximumValueBytes)
-                            )
-                        )
-                    )
-                ),
-                false
-            );
+            var negotiatedLimit = checked((int)requestedLimit);
+            setFrameLimit(negotiatedLimit);
+            return RpcInteropResponse.Ok(InitializePayload(negotiatedLimit), false);
         }
         catch (ArgumentException)
         {
@@ -83,43 +64,131 @@ internal static class WorkerProtocol
                 RpcErrors.invalidParams("The initialize parameters are malformed.")
             );
         }
-    }
-
-    internal static bool TryProjectPath(RpcValue parameters, out string projectPath)
-    {
-        try
+        catch (OverflowException)
         {
-            var fields = RpcValueModule.requireMap("parameters", parameters);
-            RpcValueModule.ensureOnly("parameters", ["projectPath"], fields);
-            projectPath = RpcValueModule.requireString(
-                "projectPath",
-                RpcValueModule.requireField("projectPath", fields)
+            return RpcInteropResponse.Fail(
+                RpcErrors.invalidParams("The initialize parameters are malformed.")
             );
-            return !string.IsNullOrWhiteSpace(projectPath);
-        }
-        catch (ArgumentException)
-        {
-            projectPath = string.Empty;
-            return false;
         }
     }
 
-    internal static bool TryPaths(RpcValue parameters, out ImmutableArray<string> paths)
+    internal static RpcValue InitializeRequest(int maximumFrameBytes) =>
+        InitializePayload(maximumFrameBytes);
+
+    internal static int DecodeInitializeResult(RpcValue value)
     {
-        try
+        var fields = ExactMap("initializeResult", value, ["profile", "protocolVersion", "limits"]);
+        var version = ExactMap(
+            "protocolVersion",
+            Field(fields, "protocolVersion"),
+            ["major", "minor"]
+        );
+        var limits = ExactMap("limits", Field(fields, "limits"), ["maxFrameBytes"]);
+        var maximumFrameBytes = Integer(limits, "maxFrameBytes");
+        if (
+            !StringComparer.Ordinal.Equals(String(fields, "profile"), ProfileName)
+            || Integer(version, "major") != ProtocolMajor
+            || Integer(version, "minor") != ProtocolMinor
+            || maximumFrameBytes < 1
+            || maximumFrameBytes > RpcCodec.secureLimits.MaximumValueBytes
+        )
         {
-            var fields = RpcValueModule.requireMap("parameters", parameters);
-            RpcValueModule.ensureOnly("parameters", ["paths"], fields);
-            paths = RpcValueModule
-                .requireArray("paths", RpcValueModule.requireField("paths", fields))
-                .Select(value => RpcValueModule.requireString("paths", value))
-                .ToImmutableArray();
-            return true;
+            throw new ArgumentException(
+                "The worker initialize response is incompatible.",
+                nameof(value)
+            );
         }
-        catch (ArgumentException)
+
+        return checked((int)maximumFrameBytes);
+    }
+
+    internal static WorkspaceArtifactPath DecodeProjectPath(RpcValue parameters)
+    {
+        var fields = ExactMap("parameters", parameters, ["projectPath"]);
+        return WorkspaceArtifactPath.Create(String(fields, "projectPath"));
+    }
+
+    internal static ImmutableArray<WorkspaceArtifactPath> DecodePaths(RpcValue parameters)
+    {
+        var fields = ExactMap("parameters", parameters, ["paths"]);
+        return RpcValueModule
+            .requireArray("paths", Field(fields, "paths"))
+            .Select(value =>
+                WorkspaceArtifactPath.Create(RpcValueModule.requireString("path", value))
+            )
+            .ToImmutableArray();
+    }
+
+    internal static RpcValue EncodeInvalidation(InvalidationResult result) =>
+        Map(
+            (
+                "invalidatedProjects",
+                Array(result.InvalidatedProjects, path => RpcValue.NewString(path.Value))
+            )
+        );
+
+    internal static InvalidationResult DecodeInvalidation(RpcValue value)
+    {
+        var fields = ExactMap("invalidationResult", value, ["invalidatedProjects"]);
+        return new InvalidationResult(
+            RpcValueModule
+                .requireArray("invalidatedProjects", Field(fields, "invalidatedProjects"))
+                .Select(path =>
+                    WorkspaceArtifactPath.Create(RpcValueModule.requireString("path", path))
+                )
+                .ToImmutableArray()
+        );
+    }
+
+    internal static RpcValue ShutdownResult => Map(("accepted", RpcValue.NewBoolean(true)));
+
+    internal static void ValidateShutdownRequest(RpcValue parameters) =>
+        _ = ExactMap("parameters", parameters, []);
+
+    internal static void ValidateShutdownResult(RpcValue value)
+    {
+        var fields = ExactMap("shutdownResult", value, ["accepted"]);
+        if (Field(fields, "accepted") is not RpcValue.Boolean accepted || !accepted.Item)
         {
-            paths = [];
-            return false;
+            throw new ArgumentException("The worker rejected shutdown.", nameof(value));
         }
     }
+
+    internal static ImmutableDictionary<string, RpcValue> ExactMap(
+        string name,
+        RpcValue value,
+        params string[] expected
+    )
+    {
+        var fields = RpcValueModule.requireMap(name, value);
+        RpcValueModule.ensureOnly(name, expected, fields);
+        foreach (var field in expected)
+        {
+            _ = Field(fields, field);
+        }
+
+        return fields;
+    }
+
+    internal static RpcValue Field(ImmutableDictionary<string, RpcValue> fields, string name) =>
+        RpcValueModule.requireField(name, fields);
+
+    internal static string String(ImmutableDictionary<string, RpcValue> fields, string name) =>
+        RpcValueModule.requireString(name, Field(fields, name));
+
+    private static long Integer(ImmutableDictionary<string, RpcValue> fields, string name) =>
+        RpcValueModule.requireInteger(name, Field(fields, name));
+
+    private static RpcValue InitializePayload(int maximumFrameBytes) =>
+        Map(
+            ("profile", RpcValue.NewString(ProfileName)),
+            (
+                "protocolVersion",
+                Map(
+                    ("major", RpcValue.NewInteger(ProtocolMajor)),
+                    ("minor", RpcValue.NewInteger(ProtocolMinor))
+                )
+            ),
+            ("limits", Map(("maxFrameBytes", RpcValue.NewInteger(maximumFrameBytes))))
+        );
 }

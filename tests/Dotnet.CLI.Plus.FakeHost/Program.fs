@@ -38,6 +38,14 @@ module Program =
         | _, Some "failure" ->
             Console.Error.Write("failure")
             23
+        | _, Some "stderr-flood" ->
+            let block = String('x', 4096)
+
+            for _ in 1..256 do
+                Console.Error.Write block
+
+            Console.Error.Flush()
+            71
         | _, Some "marker" ->
             match setting "DOTNET_PLUS_FAKE_HOST_MARKER" with
             | Some path -> File.WriteAllText(path, "started")

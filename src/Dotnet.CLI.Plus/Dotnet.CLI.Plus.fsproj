@@ -16,6 +16,7 @@
         <ProjectReference Include="../Dotnet.CLI.Plus.Transport/Dotnet.CLI.Plus.Transport.fsproj" />
         <ProjectReference Include="../Dotnet.CLI.Plus.MSBuild/Dotnet.CLI.Plus.MSBuild.csproj" />
         <PackageReference Include="FSharp.Core" />
+        <PackageReference Include="Microsoft.Build.Locator" IncludeAssets="runtime" />
         <PackageReference Include="Microsoft.NET.StringTools" ExcludeAssets="runtime" PrivateAssets="all" />
     </ItemGroup>
 

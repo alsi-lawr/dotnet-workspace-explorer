@@ -18,6 +18,7 @@
     <Folder Name="/tests/">
         <Project Path="tests/Dotnet.CLI.Plus.FakeHost/Dotnet.CLI.Plus.FakeHost.fsproj" />
         <Project Path="tests/Dotnet.CLI.Plus.MSBuild.Tests/Dotnet.CLI.Plus.MSBuild.Tests.fsproj" />
+        <Project Path="tests/Dotnet.CLI.Plus.MSBuild.Worker.Tests/Dotnet.CLI.Plus.MSBuild.Worker.Tests.csproj" />
         <Project Path="tests/Dotnet.CLI.Plus.Core.Tests/Dotnet.CLI.Plus.Core.Tests.fsproj" />
         <Project Path="tests/Dotnet.CLI.Plus.Solution.Tests/Dotnet.CLI.Plus.Solution.Tests.fsproj" />
         <Project Path="tests/Dotnet.CLI.Plus.Transport.Tests/Dotnet.CLI.Plus.Transport.Tests.fsproj" />

@@ -1,13 +1,7 @@
 using System.Collections.Immutable;
+using Dotnet.CLI.Plus.Core;
 
 namespace Dotnet.CLI.Plus.MSBuild;
-
-public enum MsBuildCapabilityProfile
-{
-    Full,
-    ReadOnly,
-    UnknownProjectSystem,
-}
 
 public enum MsBuildInvalidationKind
 {
@@ -16,14 +10,17 @@ public enum MsBuildInvalidationKind
     ToolsetSelection,
 }
 
-public sealed record ToolsetSelection(string SdkVersion, string ToolsetPath, string? GlobalJsonPath)
+public readonly record struct TargetFramework
 {
-    public string Key => ToolsetPath;
-}
+    public TargetFramework(string value)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(value);
+        Value = value;
+    }
 
-public sealed record EvaluationDimension(string TargetFramework)
-{
-    public static readonly EvaluationDimension Outer = new(string.Empty);
+    public string Value { get; }
+
+    public override string ToString() => Value;
 }
 
 public sealed record EvaluatedProperty(string Name, string Value);
@@ -33,42 +30,49 @@ public sealed record EvaluatedMetadata(string Name, string Value);
 public sealed record EvaluatedItem(
     string ItemType,
     string EvaluatedInclude,
-    string? ResolvedPath,
-    ImmutableArray<EvaluatedMetadata> Metadata,
-    EvaluationDimension Dimension
+    WorkspaceArtifactPath? ResolvedPath,
+    ImmutableArray<EvaluatedMetadata> Metadata
 );
 
-public sealed record EvaluatedReference(string Include, string? ResolvedPath);
+public sealed record EvaluatedReference(string Include, WorkspaceArtifactPath? ResolvedPath);
 
 public sealed record EvaluatedPackage(string Id, string? Version);
 
-public sealed record MsBuildDiagnostic(string Code, string Message, bool IsTransient);
-
-public sealed record EvaluationSnapshot(
-    string ProjectPath,
+public sealed record EvaluationDimensionSnapshot(
+    TargetFramework? TargetFramework,
     ImmutableArray<EvaluatedProperty> Properties,
     ImmutableArray<EvaluatedItem> Items,
     ImmutableArray<EvaluatedReference> ProjectReferences,
     ImmutableArray<EvaluatedReference> References,
     ImmutableArray<EvaluatedPackage> Packages,
-    ImmutableArray<string> TargetFrameworks,
-    ImmutableArray<string> Analyzers,
-    ImmutableArray<string> Imports,
-    ImmutableArray<string> WatchInputs,
-    ImmutableArray<string> GlobRoots,
-    MsBuildCapabilityProfile CapabilityProfile,
-    ImmutableArray<string> Capabilities,
-    ImmutableArray<MsBuildDiagnostic> Diagnostics
+    ImmutableArray<WorkspaceArtifactPath> Analyzers
+)
+{
+    public bool IsOuterBuild => TargetFramework is null;
+}
+
+public sealed record EvaluationSnapshot(
+    WorkspaceArtifactPath ProjectPath,
+    ImmutableArray<EvaluationDimensionSnapshot> Dimensions,
+    ImmutableArray<WorkspaceArtifactPath> Imports,
+    ImmutableArray<WorkspaceArtifactPath> WatchInputs,
+    ImmutableArray<WorkspaceArtifactPath> GlobRoots,
+    WorkspaceCapabilityProfile CapabilityProfile,
+    ImmutableArray<WorkspaceCapabilityId> Capabilities,
+    ImmutableArray<WorkspaceDiagnostic> Diagnostics
 );
 
-public sealed record InvalidationResult(ImmutableArray<string> InvalidatedProjects);
+internal sealed record ToolsetSelection(
+    string SdkVersion,
+    WorkspaceArtifactPath ToolsetPath,
+    WorkspaceArtifactPath? GlobalJsonPath
+);
 
-public abstract record EvaluationOutcome
-{
-    private EvaluationOutcome() { }
+internal sealed record WorkspaceBinding(
+    WorkspaceArtifactPath WorkspacePath,
+    ToolsetSelection Toolset
+);
 
-    public sealed record Success(EvaluationSnapshot Snapshot) : EvaluationOutcome;
-
-    public sealed record Failure(string Code, string Message, bool IsCancelled = false)
-        : EvaluationOutcome;
-}
+internal sealed record InvalidationResult(
+    ImmutableArray<WorkspaceArtifactPath> InvalidatedProjects
+);

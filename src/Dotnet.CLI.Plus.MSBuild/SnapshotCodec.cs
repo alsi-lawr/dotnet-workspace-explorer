@@ -1,17 +1,68 @@
 using System.Collections.Immutable;
+using Dotnet.CLI.Plus.Core;
 using Dotnet.CLI.Plus.Transport;
 
 namespace Dotnet.CLI.Plus.MSBuild;
 
 internal static class SnapshotCodec
 {
+    private static readonly string[] SnapshotFields =
+    [
+        "projectPath",
+        "dimensions",
+        "imports",
+        "watchInputs",
+        "globRoots",
+        "capabilityProfile",
+        "capabilities",
+        "diagnostics",
+    ];
+
     internal static RpcValue Encode(EvaluationSnapshot snapshot) =>
         WorkerProtocol.Map(
-            ("projectPath", RpcValue.NewString(snapshot.ProjectPath)),
+            ("projectPath", RpcValue.NewString(snapshot.ProjectPath.Value)),
+            ("dimensions", WorkerProtocol.Array(snapshot.Dimensions, EncodeDimension)),
+            ("imports", Paths(snapshot.Imports)),
+            ("watchInputs", Paths(snapshot.WatchInputs)),
+            ("globRoots", Paths(snapshot.GlobRoots)),
+            ("capabilityProfile", RpcValue.NewString(snapshot.CapabilityProfile.ToString())),
+            (
+                "capabilities",
+                WorkerProtocol.Array(
+                    snapshot.Capabilities,
+                    capability => RpcValue.NewString(capability.Value)
+                )
+            ),
+            ("diagnostics", WorkerProtocol.Array(snapshot.Diagnostics, EncodeDiagnostic))
+        );
+
+    internal static EvaluationSnapshot Decode(RpcValue value)
+    {
+        var fields = WorkerProtocol.ExactMap("snapshot", value, SnapshotFields);
+        return new EvaluationSnapshot(
+            WorkspaceArtifactPath.Create(WorkerProtocol.String(fields, "projectPath")),
+            Values(fields, "dimensions", DecodeDimension),
+            Paths(fields, "imports"),
+            Paths(fields, "watchInputs"),
+            Paths(fields, "globRoots"),
+            ParseProfile(WorkerProtocol.String(fields, "capabilityProfile")),
+            Values(fields, "capabilities", DecodeCapability),
+            Values(fields, "diagnostics", DecodeDiagnostic)
+        );
+    }
+
+    private static RpcValue EncodeDimension(EvaluationDimensionSnapshot dimension) =>
+        WorkerProtocol.Map(
+            (
+                "targetFramework",
+                dimension.TargetFramework is { } framework
+                    ? RpcValue.NewString(framework.Value)
+                    : RpcValue.Nil
+            ),
             (
                 "properties",
                 WorkerProtocol.Array(
-                    snapshot.Properties,
+                    dimension.Properties,
                     property =>
                         WorkerProtocol.Map(
                             ("name", RpcValue.NewString(property.Name)),
@@ -19,180 +70,216 @@ internal static class SnapshotCodec
                         )
                 )
             ),
+            ("items", WorkerProtocol.Array(dimension.Items, EncodeItem)),
             (
-                "items",
-                WorkerProtocol.Array(
-                    snapshot.Items,
-                    item =>
-                        WorkerProtocol.Map(
-                            ("itemType", RpcValue.NewString(item.ItemType)),
-                            ("include", RpcValue.NewString(item.EvaluatedInclude)),
-                            ("resolvedPath", Optional(item.ResolvedPath)),
-                            ("dimension", RpcValue.NewString(item.Dimension.TargetFramework)),
-                            (
-                                "metadata",
-                                WorkerProtocol.Array(
-                                    item.Metadata,
-                                    metadata =>
-                                        WorkerProtocol.Map(
-                                            ("name", RpcValue.NewString(metadata.Name)),
-                                            ("value", RpcValue.NewString(metadata.Value))
-                                        )
-                                )
-                            )
-                        )
-                )
+                "projectReferences",
+                WorkerProtocol.Array(dimension.ProjectReferences, EncodeReference)
             ),
-            ("projectReferences", References(snapshot.ProjectReferences)),
-            ("references", References(snapshot.References)),
+            ("references", WorkerProtocol.Array(dimension.References, EncodeReference)),
             (
                 "packages",
                 WorkerProtocol.Array(
-                    snapshot.Packages,
+                    dimension.Packages,
                     package =>
                         WorkerProtocol.Map(
                             ("id", RpcValue.NewString(package.Id)),
-                            ("version", Optional(package.Version))
+                            ("version", OptionalString(package.Version))
                         )
                 )
             ),
-            (
-                "targetFrameworks",
-                WorkerProtocol.Array(snapshot.TargetFrameworks, RpcValue.NewString)
-            ),
-            ("analyzers", WorkerProtocol.Array(snapshot.Analyzers, RpcValue.NewString)),
-            ("imports", WorkerProtocol.Array(snapshot.Imports, RpcValue.NewString)),
-            ("watchInputs", WorkerProtocol.Array(snapshot.WatchInputs, RpcValue.NewString)),
-            ("globRoots", WorkerProtocol.Array(snapshot.GlobRoots, RpcValue.NewString)),
-            ("capabilityProfile", RpcValue.NewString(snapshot.CapabilityProfile.ToString())),
-            ("capabilities", WorkerProtocol.Array(snapshot.Capabilities, RpcValue.NewString)),
-            (
-                "diagnostics",
-                WorkerProtocol.Array(
-                    snapshot.Diagnostics,
-                    diagnostic =>
-                        WorkerProtocol.Map(
-                            ("code", RpcValue.NewString(diagnostic.Code)),
-                            ("message", RpcValue.NewString(diagnostic.Message)),
-                            ("transient", RpcValue.NewBoolean(diagnostic.IsTransient))
-                        )
-                )
-            )
+            ("analyzers", Paths(dimension.Analyzers))
         );
 
-    internal static EvaluationSnapshot Decode(RpcValue value)
+    private static EvaluationDimensionSnapshot DecodeDimension(RpcValue value)
     {
-        var fields = RpcValueModule.requireMap("snapshot", value);
-        RpcValueModule.ensureOnly(
-            "snapshot",
+        var fields = WorkerProtocol.ExactMap(
+            "dimension",
+            value,
             [
-                "projectPath",
+                "targetFramework",
                 "properties",
                 "items",
                 "projectReferences",
                 "references",
                 "packages",
-                "targetFrameworks",
                 "analyzers",
-                "imports",
-                "watchInputs",
-                "globRoots",
-                "capabilityProfile",
-                "capabilities",
-                "diagnostics",
-            ],
-            fields
+            ]
         );
-        return new EvaluationSnapshot(
-            RequiredString(fields, "projectPath"),
-            Values(fields, "properties", Property),
-            Values(fields, "items", Item),
-            Values(fields, "projectReferences", Reference),
-            Values(fields, "references", Reference),
-            Values(fields, "packages", Package),
-            Strings(fields, "targetFrameworks"),
-            Strings(fields, "analyzers"),
-            Strings(fields, "imports"),
-            Strings(fields, "watchInputs"),
-            Strings(fields, "globRoots"),
-            Enum.Parse<MsBuildCapabilityProfile>(
-                RequiredString(fields, "capabilityProfile"),
-                false
-            ),
-            Strings(fields, "capabilities"),
-            Values(fields, "diagnostics", Diagnostic)
+        var targetFramework = OptionalString(fields, "targetFramework");
+        return new EvaluationDimensionSnapshot(
+            targetFramework is null ? null : new TargetFramework(targetFramework),
+            Values(fields, "properties", DecodeProperty),
+            Values(fields, "items", DecodeItem),
+            Values(fields, "projectReferences", DecodeReference),
+            Values(fields, "references", DecodeReference),
+            Values(fields, "packages", DecodePackage),
+            Paths(fields, "analyzers")
         );
     }
 
-    private static RpcValue References(ImmutableArray<EvaluatedReference> references) =>
-        WorkerProtocol.Array(
-            references,
-            reference =>
-                WorkerProtocol.Map(
-                    ("include", RpcValue.NewString(reference.Include)),
-                    ("resolvedPath", Optional(reference.ResolvedPath))
+    private static RpcValue EncodeItem(EvaluatedItem item) =>
+        WorkerProtocol.Map(
+            ("itemType", RpcValue.NewString(item.ItemType)),
+            ("include", RpcValue.NewString(item.EvaluatedInclude)),
+            ("resolvedPath", OptionalPath(item.ResolvedPath)),
+            (
+                "metadata",
+                WorkerProtocol.Array(
+                    item.Metadata,
+                    metadata =>
+                        WorkerProtocol.Map(
+                            ("name", RpcValue.NewString(metadata.Name)),
+                            ("value", RpcValue.NewString(metadata.Value))
+                        )
                 )
+            )
         );
 
-    private static RpcValue Optional(string? value) =>
-        value is null ? RpcValue.Nil : RpcValue.NewString(value);
-
-    private static EvaluatedProperty Property(RpcValue value)
+    private static EvaluatedProperty DecodeProperty(RpcValue value)
     {
-        var fields = RpcValueModule.requireMap("property", value);
+        var fields = WorkerProtocol.ExactMap("property", value, ["name", "value"]);
         return new EvaluatedProperty(
-            RequiredString(fields, "name"),
-            RequiredString(fields, "value")
+            WorkerProtocol.String(fields, "name"),
+            WorkerProtocol.String(fields, "value")
         );
     }
 
-    private static EvaluatedItem Item(RpcValue value)
+    private static EvaluatedItem DecodeItem(RpcValue value)
     {
-        var fields = RpcValueModule.requireMap("item", value);
+        var fields = WorkerProtocol.ExactMap(
+            "item",
+            value,
+            ["itemType", "include", "resolvedPath", "metadata"]
+        );
         return new EvaluatedItem(
-            RequiredString(fields, "itemType"),
-            RequiredString(fields, "include"),
-            OptionalString(fields, "resolvedPath"),
-            Values(fields, "metadata", Metadata),
-            new EvaluationDimension(RequiredString(fields, "dimension"))
+            WorkerProtocol.String(fields, "itemType"),
+            WorkerProtocol.String(fields, "include"),
+            OptionalPath(fields, "resolvedPath"),
+            Values(fields, "metadata", DecodeMetadata)
         );
     }
 
-    private static EvaluatedMetadata Metadata(RpcValue value)
+    private static EvaluatedMetadata DecodeMetadata(RpcValue value)
     {
-        var fields = RpcValueModule.requireMap("metadata", value);
+        var fields = WorkerProtocol.ExactMap("metadata", value, ["name", "value"]);
         return new EvaluatedMetadata(
-            RequiredString(fields, "name"),
-            RequiredString(fields, "value")
+            WorkerProtocol.String(fields, "name"),
+            WorkerProtocol.String(fields, "value")
         );
     }
 
-    private static EvaluatedReference Reference(RpcValue value)
+    private static RpcValue EncodeReference(EvaluatedReference reference) =>
+        WorkerProtocol.Map(
+            ("include", RpcValue.NewString(reference.Include)),
+            ("resolvedPath", OptionalPath(reference.ResolvedPath))
+        );
+
+    private static EvaluatedReference DecodeReference(RpcValue value)
     {
-        var fields = RpcValueModule.requireMap("reference", value);
+        var fields = WorkerProtocol.ExactMap("reference", value, ["include", "resolvedPath"]);
         return new EvaluatedReference(
-            RequiredString(fields, "include"),
-            OptionalString(fields, "resolvedPath")
+            WorkerProtocol.String(fields, "include"),
+            OptionalPath(fields, "resolvedPath")
         );
     }
 
-    private static EvaluatedPackage Package(RpcValue value)
+    private static EvaluatedPackage DecodePackage(RpcValue value)
     {
-        var fields = RpcValueModule.requireMap("package", value);
+        var fields = WorkerProtocol.ExactMap("package", value, ["id", "version"]);
         return new EvaluatedPackage(
-            RequiredString(fields, "id"),
+            WorkerProtocol.String(fields, "id"),
             OptionalString(fields, "version")
         );
     }
 
-    private static MsBuildDiagnostic Diagnostic(RpcValue value)
-    {
-        var fields = RpcValueModule.requireMap("diagnostic", value);
-        return new MsBuildDiagnostic(
-            RequiredString(fields, "code"),
-            RequiredString(fields, "message"),
-            RequiredBoolean(fields, "transient")
+    private static RpcValue EncodeDiagnostic(WorkspaceDiagnostic diagnostic) =>
+        WorkerProtocol.Map(
+            ("severity", RpcValue.NewString(diagnostic.DiagnosticSeverity.ToString())),
+            ("code", RpcValue.NewString(diagnostic.DiagnosticCode.Value)),
+            ("message", RpcValue.NewString(diagnostic.Message)),
+            (
+                "path",
+                diagnostic.DiagnosticArtifactPath is { } path
+                    ? RpcValue.NewString(path.Value.Value)
+                    : RpcValue.Nil
+            ),
+            ("retryable", RpcValue.NewBoolean(diagnostic.Retryable))
         );
+
+    private static WorkspaceDiagnostic DecodeDiagnostic(RpcValue value)
+    {
+        var fields = WorkerProtocol.ExactMap(
+            "diagnostic",
+            value,
+            ["severity", "code", "message", "path", "retryable"]
+        );
+        return CoreOutcomes.Diagnostic(
+            WorkerProtocol.String(fields, "code"),
+            WorkerProtocol.String(fields, "message"),
+            OptionalPath(fields, "path"),
+            RequiredBoolean(fields, "retryable"),
+            Enum.Parse<WorkspaceDiagnosticSeverity>(
+                WorkerProtocol.String(fields, "severity"),
+                false
+            )
+        );
+    }
+
+    private static WorkspaceCapabilityProfile ParseProfile(string value) =>
+        value switch
+        {
+            nameof(WorkspaceCapabilityProfile.Full) => WorkspaceCapabilityProfile.Full,
+            nameof(WorkspaceCapabilityProfile.ReadOnly) => WorkspaceCapabilityProfile.ReadOnly,
+            nameof(WorkspaceCapabilityProfile.UnknownProjectSystem) =>
+                WorkspaceCapabilityProfile.UnknownProjectSystem,
+            _ => throw new ArgumentException("The capability profile is invalid.", nameof(value)),
+        };
+
+    private static WorkspaceCapabilityId DecodeCapability(RpcValue value) =>
+        RpcValueModule.requireString("capability", value) switch
+        {
+            "workspace.read" => WorkspaceCapabilityId.Read,
+            "workspace.write" => WorkspaceCapabilityId.Write,
+            _ => throw new ArgumentException(
+                "The capability identifier is invalid.",
+                nameof(value)
+            ),
+        };
+
+    private static RpcValue Paths(ImmutableArray<WorkspaceArtifactPath> paths) =>
+        WorkerProtocol.Array(paths, path => RpcValue.NewString(path.Value));
+
+    private static ImmutableArray<WorkspaceArtifactPath> Paths(
+        ImmutableDictionary<string, RpcValue> fields,
+        string name
+    ) =>
+        Values(
+            fields,
+            name,
+            value => WorkspaceArtifactPath.Create(RpcValueModule.requireString(name, value))
+        );
+
+    private static RpcValue OptionalPath(WorkspaceArtifactPath? path) =>
+        path is null ? RpcValue.Nil : RpcValue.NewString(path.Value);
+
+    private static WorkspaceArtifactPath? OptionalPath(
+        ImmutableDictionary<string, RpcValue> fields,
+        string name
+    )
+    {
+        var value = WorkerProtocol.Field(fields, name);
+        return value == RpcValue.Nil
+            ? null
+            : WorkspaceArtifactPath.Create(RpcValueModule.requireString(name, value));
+    }
+
+    private static RpcValue OptionalString(string? value) =>
+        value is null ? RpcValue.Nil : RpcValue.NewString(value);
+
+    private static string? OptionalString(ImmutableDictionary<string, RpcValue> fields, string name)
+    {
+        var value = WorkerProtocol.Field(fields, name);
+        return value == RpcValue.Nil ? null : RpcValueModule.requireString(name, value);
     }
 
     private static ImmutableArray<T> Values<T>(
@@ -201,33 +288,15 @@ internal static class SnapshotCodec
         Func<RpcValue, T> decode
     ) =>
         RpcValueModule
-            .requireArray(name, RpcValueModule.requireField(name, fields))
+            .requireArray(name, WorkerProtocol.Field(fields, name))
             .Select(decode)
             .ToImmutableArray();
-
-    private static ImmutableArray<string> Strings(
-        ImmutableDictionary<string, RpcValue> fields,
-        string name
-    ) => Values(fields, name, value => RpcValueModule.requireString(name, value));
-
-    private static string RequiredString(
-        ImmutableDictionary<string, RpcValue> fields,
-        string name
-    ) => RpcValueModule.requireString(name, RpcValueModule.requireField(name, fields));
-
-    private static string? OptionalString(
-        ImmutableDictionary<string, RpcValue> fields,
-        string name
-    ) =>
-        RpcValueModule.optionalField(name, fields) is { } value && value.Value != RpcValue.Nil
-            ? RpcValueModule.requireString(name, value.Value)
-            : null;
 
     private static bool RequiredBoolean(
         ImmutableDictionary<string, RpcValue> fields,
         string name
     ) =>
-        RpcValueModule.requireField(name, fields) is RpcValue.Boolean value
+        WorkerProtocol.Field(fields, name) is RpcValue.Boolean value
             ? value.Item
             : throw new ArgumentException("Expected a boolean.", name);
 }

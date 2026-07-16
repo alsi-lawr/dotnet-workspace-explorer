@@ -8,7 +8,7 @@
         <ProjectReference Include="../Dotnet.CLI.Plus.Core/Dotnet.CLI.Plus.Core.fsproj" />
         <ProjectReference Include="../Dotnet.CLI.Plus.Transport/Dotnet.CLI.Plus.Transport.fsproj" />
         <PackageReference Include="Microsoft.Build" ExcludeAssets="runtime" PrivateAssets="all" />
-        <PackageReference Include="Microsoft.Build.Locator" />
+        <PackageReference Include="Microsoft.Build.Locator" PrivateAssets="all" />
         <PackageReference
             Include="Microsoft.NET.StringTools"
             ExcludeAssets="runtime"
