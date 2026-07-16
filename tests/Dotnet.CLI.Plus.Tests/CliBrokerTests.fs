@@ -53,6 +53,28 @@ module private Helpers =
                 Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MODE", prior))
 
 type CliBrokerTests() =
+    [<Theory>]
+    [<InlineData(false)>]
+    [<InlineData(true)>]
+    member _.``package update modes accept zero operands``(vulnerable: bool) =
+        let directory = Helpers.temporaryDirectory ()
+        let current = Directory.GetCurrentDirectory()
+
+        try
+            File.WriteAllText(Path.Combine(directory, "App.fsproj"), "<Project />")
+            Directory.SetCurrentDirectory directory
+
+            let arguments =
+                if vulnerable then
+                    [| "package"; "update"; "--vulnerable" |]
+                else
+                    [| "package"; "update" |]
+
+            Assert.True((Helpers.fake "capture" arguments).Success)
+        finally
+            Directory.SetCurrentDirectory current
+            Helpers.delete directory
+
     [<Fact>]
     member _.``json render sanitizes arguments streams and diagnostics``() =
         let diagnostic =

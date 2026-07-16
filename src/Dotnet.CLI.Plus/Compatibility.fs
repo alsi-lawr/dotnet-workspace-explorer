@@ -269,7 +269,7 @@ module private Grammar =
                   "--configfile"
                   "--package-directory"
                   "--verbosity" ])
-            (Set.ofList [ "--prerelease"; "--no-restore"; "--interactive" ])
+            (Set.ofList [ "--prerelease"; "--vulnerable"; "--no-restore"; "--interactive" ])
 
     let private scanReference =
         scan (Set.ofList [ "--project"; "--framework" ]) (Set.ofList [ "--interactive" ])
@@ -1094,6 +1094,8 @@ module internal Broker =
                             match command with
                             | Solution(target, operation, operands, false) ->
                                 Verify.verifySolution target operation operands cancellationToken
+                            | Package(Some PackageUpdate, _, _, _, operands, false) when List.isEmpty operands ->
+                                Task.FromResult(Ok None)
                             | Package(Some((PackageAdd | PackageRemove | PackageUpdate) as operation),
                                       project,
                                       file,
