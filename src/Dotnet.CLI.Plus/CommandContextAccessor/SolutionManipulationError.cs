@@ -1,38 +1,57 @@
-﻿using System.Runtime.ExceptionServices;
+using System.Runtime.ExceptionServices;
+using Dotnet.CLI.Plus.Common;
 using Spectre.Console;
 
 namespace Dotnet.CLI.Plus.CommandContextAccessor;
 
-public class SolutionManipulationError(
+public sealed class SolutionManipulationError(
     SolutionManipulationError.ManipulationErrorType errorType,
-    ExceptionDispatchInfo? exception = null)
-    : CliErrorHandler
+    ExceptionDispatchInfo? exception = null
+) : ICliError
 {
-    private ManipulationErrorType ErrorType { get; } = errorType;
-    private ExceptionDispatchInfo? Exception { get; } = exception;
+    public ManipulationErrorType ErrorType { get; } = errorType;
+    private ExceptionDispatchInfo? ExceptionInfo { get; } = exception;
 
-    [Flags]
-    public enum ManipulationErrorType 
+    public enum ManipulationErrorType
     {
-        CorruptedSolution,
-        FileNotFound,
         DirectoryNotFound,
-        NotASolutionFile,
-        InternalParsingError,
-        MultipleSolutionsFound
+        DirectoryOutsideSolution,
+        SolutionRootDirectory,
+        InvalidDirectoryPath,
+        WriteFailed,
     }
 
-    public override int DisplayCliInfo()
+    public int DisplayCliInfo()
     {
         Action writeError = this switch
         {
-            { ErrorType: ManipulationErrorType.FileNotFound} =>
-                () => AnsiConsole.MarkupLine(
-                    "[yellow]Solution file not found.[/]"),
-            _ => throw new ArgumentOutOfRangeException()
+            { ErrorType: ManipulationErrorType.DirectoryNotFound } => () =>
+                AnsiConsole.MarkupLine("[yellow]Directory to add was not found.[/]"),
+            { ErrorType: ManipulationErrorType.DirectoryOutsideSolution } => () =>
+                AnsiConsole.MarkupLine(
+                    "[red]Directory to add must be inside the solution directory.[/]"
+                ),
+            { ErrorType: ManipulationErrorType.SolutionRootDirectory } => () =>
+                AnsiConsole.MarkupLine("[yellow]The solution root cannot be added as a folder.[/]"),
+            { ErrorType: ManipulationErrorType.InvalidDirectoryPath } => () =>
+                AnsiConsole.MarkupLine("[red]Directory path is invalid.[/]"),
+            { ErrorType: ManipulationErrorType.WriteFailed } => DisplayWriteFailure,
+            _ => throw new ArgumentOutOfRangeException(),
         };
 
         writeError();
         return 1;
+    }
+
+    private void DisplayWriteFailure()
+    {
+        if (ExceptionInfo is null)
+        {
+            AnsiConsole.MarkupLine("[red]Failed to save the solution file.[/]");
+            return;
+        }
+
+        AnsiConsole.MarkupLine("[red]Failed to save the solution file:[/]");
+        AnsiConsole.WriteException(ExceptionInfo.SourceException);
     }
 }

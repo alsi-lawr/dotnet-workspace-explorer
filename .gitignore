@@ -1,5 +1,10 @@
 **/*:Zone.Identifier
-**/obj
-**/bin
-.idea
-.vs
+**/[Bb]in/
+**/[Oo]bj/
+.agent-workspace/
+.direnv/
+.idea/
+.vs/
+*.DotSettings.user
+build/
+result

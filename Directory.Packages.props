@@ -1,36 +1,16 @@
 <Project>
-  <!-- See https://learn.microsoft.com/nuget/consume-packages/Central-Package-Management -->
-  <PropertyGroup>
-    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
-  </PropertyGroup>
-  <ItemGroup>
-    <!-- <PackageVersion Include="StyleCop.Analyzers" Version="1.2.0-beta.556" /> -->
-    <PackageVersion Include="LanguageExt.core" Version="4.4.9" />
-    <PackageVersion Include="Spectre.Console" Version="0.49.1" />
-    <PackageVersion Include="Spectre.Console.Cli" Version="0.49.1" />
-    <PackageVersion Include="IgnoresAccessChecksToGenerator" Version="0.7.0" />
+    <PropertyGroup>
+        <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    </PropertyGroup>
 
-    <!-- dotnet dependencies -->
-    <PackageVersion Include="Microsoft.Build.Runtime" Version="17.11.4" />
-    <PackageVersion Include="Microsoft.Extensions.DependencyModel" Version="8.0.1" />
-    <PackageVersion Include="NuGet.Versioning" Version="6.11.0" />
-    <PackageVersion Include="NuGet.Packaging" Version="6.11.0" />
-    <PackageVersion Include="NuGet.Frameworks" Version="6.11.0" />
-    <PackageVersion Include="NuGet.ProjectModel" Version="6.11.0" />
-    <PackageVersion Include="Microsoft.Build" Version="17.11.4" />
-    <PackageVersion Include="Microsoft.Build.Utilities.Core" Version="17.11.4" />
-    <PackageVersion Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
-    <PackageVersion Include="System.Text.Encoding" Version="4.3.0" />
-    <PackageVersion Include="Microsoft.CodeAnalysis" Version="4.11.0" />
-    
-    <!-- Test only -->
-    <PackageVersion Include="BenchmarkDotNet" Version="0.14.0" />
-    <PackageVersion Include="coverlet.msbuild" Version="6.0.2" />
-    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.10.0" />
-    <PackageVersion Include="System.Text.Json" Version="8.0.4" />
-    <PackageVersion Include="xunit" Version="2.8.1" />
-    <PackageVersion Include="xunit.runner.visualstudio" Version="2.8.1" />
-    <PackageVersion Include="coverlet.collector" Version="6.0.2" />
-    <PackageVersion Include="FluentAssertions" Version="6.12.0" />
-  </ItemGroup>
+    <ItemGroup>
+        <PackageVersion Include="Microsoft.VisualStudio.SolutionPersistence" Version="1.0.52" />
+        <PackageVersion Include="Spectre.Console" Version="0.55.0" />
+        <PackageVersion Include="Spectre.Console.Cli" Version="0.55.0" />
+
+        <PackageVersion Include="coverlet.collector" Version="10.0.1" />
+        <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.6.0" />
+        <PackageVersion Include="xunit" Version="2.9.3" />
+        <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
+    </ItemGroup>
 </Project>

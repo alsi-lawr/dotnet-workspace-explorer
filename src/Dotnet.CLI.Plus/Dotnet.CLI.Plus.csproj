@@ -1,33 +1,20 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <PackAsTool>true</PackAsTool>
+        <ToolCommandName>dotnet-plus</ToolCommandName>
+        <PackageOutputPath>../../build</PackageOutputPath>
+        <Description>Additional solution-management commands for the .NET CLI.</Description>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+    </PropertyGroup>
 
-  <PropertyGroup>
-    <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-    <PackAsTool>true</PackAsTool>
-    <ToolCommandName>dotnet-plus</ToolCommandName>
-    <PackageOutputPath>../../build</PackageOutputPath>
-  </PropertyGroup>
-  
-  <ItemGroup>
-    <InternalsAssemblyName Include="Microsoft.Build" />
-  </ItemGroup>
-  
-  <ItemGroup>
-    <PackageReference Include="IgnoresAccessChecksToGenerator">
-      <PrivateAssets>all</PrivateAssets>
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-    </PackageReference>
-    <PackageReference Include="LanguageExt.Core" />
-    <PackageReference Include="Microsoft.Build" />
-    <PackageReference Include="Spectre.Console" />
-    <PackageReference Include="Spectre.Console.Cli"  />
-  </ItemGroup>
-  
-  <ItemGroup>
-    <ProjectReference Include="..\..\extern\src\Cli\Microsoft.DotNet.Cli.Sln.Internal\Microsoft.DotNet.Cli.Sln.Internal.csproj" />
-    <ProjectReference Include="..\..\extern\src\Cli\Microsoft.DotNet.Cli.Utils\Microsoft.DotNet.Cli.Utils.csproj" />
-  </ItemGroup>
+    <ItemGroup>
+        <PackageReference Include="Microsoft.VisualStudio.SolutionPersistence" />
+        <PackageReference Include="Spectre.Console" />
+        <PackageReference Include="Spectre.Console.Cli" />
+    </ItemGroup>
 
+    <ItemGroup>
+        <None Include="../../README.md" Pack="true" PackagePath="/" />
+    </ItemGroup>
 </Project>
