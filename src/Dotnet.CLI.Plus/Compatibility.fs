@@ -872,6 +872,7 @@ module private ProcessExecution =
         task {
             let builder = StringBuilder()
             let buffer = Array.zeroCreate<char> 1024
+            let sanitizer = if tty then None else Some(IncrementalTerminalSanitizer())
 
             let rec copy () =
                 task {
@@ -880,12 +881,24 @@ module private ProcessExecution =
                     if read > 0 then
                         let chunk = String(buffer, 0, read)
                         builder.Append chunk |> ignore
-                        writer.Write(if tty then chunk else sanitize chunk)
+
+                        writer.Write(
+                            match sanitizer with
+                            | Some value -> value.Push chunk
+                            | None -> chunk
+                        )
+
                         writer.Flush()
                         return! copy ()
                 }
 
             do! copy ()
+
+            sanitizer
+            |> Option.iter (fun value ->
+                writer.Write(value.Complete())
+                writer.Flush())
+
             return builder.ToString()
         }
 

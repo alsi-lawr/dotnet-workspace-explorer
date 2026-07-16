@@ -131,6 +131,7 @@ type CliBrokerTests() =
             Thread.Sleep 200
             Assert.Contains("first", output.ToString())
             Assert.False(output.ToString().Contains("\u001b", StringComparison.Ordinal))
+            Assert.False(output.ToString().Contains("[31m", StringComparison.Ordinal))
             Assert.False(task.IsCompleted)
             let result = task.Result
             Assert.Contains("second", result.Payload.StandardOutput)
