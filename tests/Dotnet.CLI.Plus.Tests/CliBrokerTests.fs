@@ -54,6 +54,10 @@ module private Helpers =
 
 type CliBrokerTests() =
     [<Fact>]
+    member _.``template uninstall without subject is read only``() =
+        Assert.True((Helpers.fake "capture" [| "new"; "uninstall" |]).Success)
+
+    [<Fact>]
     member _.``new name before output verifies output state``() =
         let directory = Helpers.temporaryDirectory ()
 

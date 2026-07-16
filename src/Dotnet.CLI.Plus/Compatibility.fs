@@ -1045,6 +1045,43 @@ module internal Broker =
                                 | Error message -> Task.FromResult(Error(Failure.invalid message))
                             | New(TemplateCreate, _, false, _, false) ->
                                 Task.FromResult(Verify.verifyNew newOutput before)
+                            | New(TemplateInstall, _, false, subjects, false) ->
+                                if List.isEmpty subjects then
+                                    Task.FromResult(Error(Failure.invalid "Template install requires a subject."))
+                                else
+                                    match TemplateEngineStateReader.Read(TemplateEngineStateReader.Root()) with
+                                    | Ok state when
+                                        subjects
+                                        |> List.forall (fun subject ->
+                                            TemplateEngineStateReader.Contains(subject, state))
+                                        ->
+                                        Task.FromResult(Ok None)
+                                    | Ok _ ->
+                                        Task.FromResult(
+                                            Error(
+                                                Failure.verification
+                                                    "The requested template was not present after installation."
+                                            )
+                                        )
+                                    | Error failure -> Task.FromResult(Error failure)
+                            | New(TemplateUninstall, _, false, subjects, false) ->
+                                if List.isEmpty subjects then
+                                    Task.FromResult(Ok None)
+                                else
+                                    match TemplateEngineStateReader.Read(TemplateEngineStateReader.Root()) with
+                                    | Ok state when
+                                        subjects
+                                        |> List.forall (fun subject ->
+                                            not (TemplateEngineStateReader.Contains(subject, state)))
+                                        ->
+                                        Task.FromResult(Ok None)
+                                    | Ok _ ->
+                                        Task.FromResult(
+                                            Error(
+                                                Failure.verification "The requested template remained after uninstall."
+                                            )
+                                        )
+                                    | Error failure -> Task.FromResult(Error failure)
                             | _ -> Task.FromResult(Ok None)
 
                         match verified with
