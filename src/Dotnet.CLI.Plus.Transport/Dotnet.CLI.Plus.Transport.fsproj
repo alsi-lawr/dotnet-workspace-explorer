@@ -12,6 +12,7 @@
         <Compile Include="Protocol.fs" />
         <Compile Include="Codec.fs" />
         <Compile Include="Session.fs" />
+        <Compile Include="Interop.fs" />
         <Compile Include="PublicProtocol.fs" />
     </ItemGroup>
 </Project>

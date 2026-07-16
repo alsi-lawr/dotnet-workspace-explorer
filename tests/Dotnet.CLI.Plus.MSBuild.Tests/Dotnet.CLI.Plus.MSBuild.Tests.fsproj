@@ -3,16 +3,11 @@
         <IsPackable>false</IsPackable>
         <IsTestProject>true</IsTestProject>
     </PropertyGroup>
-
     <ItemGroup>
-        <Compile Include="AssemblyInfo.fs" />
-        <Compile Include="CliBrokerTests.fs" />
-        <Compile Include="PipeTests.fs" />
+        <Compile Include="MsBuildHostTests.fs" />
     </ItemGroup>
-
     <ItemGroup>
         <PackageReference Include="FSharp.Core" />
-        <PackageReference Include="Microsoft.NET.StringTools" ExcludeAssets="runtime" PrivateAssets="all" />
         <PackageReference Include="Microsoft.NET.Test.Sdk" />
         <PackageReference Include="xunit" />
         <PackageReference Include="xunit.runner.visualstudio">
@@ -20,11 +15,7 @@
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>
     </ItemGroup>
-
     <ItemGroup>
-        <ProjectReference Include="../../src/Dotnet.CLI.Plus/Dotnet.CLI.Plus.fsproj" />
-        <ProjectReference Include="../../src/Dotnet.CLI.Plus.Solution/Dotnet.CLI.Plus.Solution.fsproj" />
-        <ProjectReference Include="../../src/Dotnet.CLI.Plus.Transport/Dotnet.CLI.Plus.Transport.fsproj" />
-        <ProjectReference Include="../Dotnet.CLI.Plus.FakeHost/Dotnet.CLI.Plus.FakeHost.fsproj" />
+        <ProjectReference Include="../../src/Dotnet.CLI.Plus.MSBuild/Dotnet.CLI.Plus.MSBuild.csproj" />
     </ItemGroup>
 </Project>
