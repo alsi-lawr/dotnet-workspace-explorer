@@ -91,7 +91,7 @@ type internal BrokerHost =
       Prefix: string list }
 
 type internal BrokerMode =
-    | Human of TextWriter * TextWriter
+    | Human of TextWriter * TextWriter * bool * bool
     | Json
 
 type internal BrokerPayload =
@@ -838,9 +838,9 @@ module private ProcessExecution =
                         match mode with
                         | Json ->
                             childProcess.StandardOutput.ReadToEndAsync(), childProcess.StandardError.ReadToEndAsync()
-                        | Human(output, error) ->
-                            pump childProcess.StandardOutput output (not Console.IsOutputRedirected) true,
-                            pump childProcess.StandardError error (not Console.IsErrorRedirected) true
+                        | Human(output, error, outputIsTty, errorIsTty) ->
+                            pump childProcess.StandardOutput output outputIsTty true,
+                            pump childProcess.StandardError error errorIsTty true
 
                     let! wasCancelled =
                         task {
@@ -1173,6 +1173,24 @@ module internal BrokerTestHooks =
             { FileName = fileName
               Prefix = [ prefix ] }
             Json
+            cancellationToken
+
+    let ExecuteWithHostHumanAsync
+        (
+            arguments: string array,
+            fileName: string,
+            prefix: string,
+            output: TextWriter,
+            error: TextWriter,
+            outputIsTty: bool,
+            errorIsTty: bool,
+            cancellationToken: CancellationToken
+        ) =
+        Broker.execute
+            arguments
+            { FileName = fileName
+              Prefix = [ prefix ] }
+            (Human(output, error, outputIsTty, errorIsTty))
             cancellationToken
 
     let PathEquals (caseSemantics: HostFileSystemCaseSemantics, left: string, right: string) =

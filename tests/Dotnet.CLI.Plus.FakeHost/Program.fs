@@ -24,6 +24,17 @@ module Program =
         | _, Some "capture" ->
             Console.Out.Write(JsonSerializer.Serialize arguments)
             0
+        | _, Some "stream" ->
+            Console.Out.Write("\u001b[31mfirst\u001b[0m")
+            Console.Out.Flush()
+
+            match setting "DOTNET_PLUS_FAKE_HOST_MARKER" with
+            | Some path -> File.WriteAllText(path, "first")
+            | None -> ()
+
+            Thread.Sleep 1000
+            Console.Out.Write("second")
+            0
         | _, Some "failure" ->
             Console.Error.Write("failure")
             23

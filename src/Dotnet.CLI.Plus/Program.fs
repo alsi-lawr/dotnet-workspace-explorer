@@ -21,7 +21,15 @@ module Program =
                 Broker
                     .ExecuteAsync(
                         arguments,
-                        (if jsonMode then Json else Human(Console.Out, Console.Error)),
+                        (if jsonMode then
+                             Json
+                         else
+                             Human(
+                                 Console.Out,
+                                 Console.Error,
+                                 not Console.IsOutputRedirected,
+                                 not Console.IsErrorRedirected
+                             )),
                         cancellation.Token
                     )
                     .GetAwaiter()

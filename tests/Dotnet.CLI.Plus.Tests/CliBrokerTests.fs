@@ -54,6 +54,61 @@ module private Helpers =
 
 type CliBrokerTests() =
     [<Fact>]
+    member _.``human redirected stream receives sanitized chunks before completion``() =
+        let output = new StringWriter()
+        let error = new StringWriter()
+        let previous = Environment.GetEnvironmentVariable "DOTNET_PLUS_FAKE_HOST_MODE"
+
+        try
+            Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MODE", "stream")
+
+            let task =
+                BrokerTestHooks.ExecuteWithHostHumanAsync(
+                    [| "build" |],
+                    "dotnet",
+                    Helpers.fakeHost,
+                    output,
+                    error,
+                    false,
+                    false,
+                    CancellationToken.None
+                )
+
+            Thread.Sleep 200
+            Assert.Contains("first", output.ToString())
+            Assert.False(output.ToString().Contains("\u001b", StringComparison.Ordinal))
+            Assert.False(task.IsCompleted)
+            let result = task.Result
+            Assert.Contains("second", result.Payload.StandardOutput)
+        finally
+            Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MODE", previous)
+
+    [<Fact>]
+    member _.``human tty stream preserves ansi``() =
+        let output = new StringWriter()
+        let previous = Environment.GetEnvironmentVariable "DOTNET_PLUS_FAKE_HOST_MODE"
+
+        try
+            Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MODE", "stream")
+
+            BrokerTestHooks
+                .ExecuteWithHostHumanAsync(
+                    [| "build" |],
+                    "dotnet",
+                    Helpers.fakeHost,
+                    output,
+                    new StringWriter(),
+                    true,
+                    true,
+                    CancellationToken.None
+                )
+                .Wait()
+
+            Assert.Contains("\u001b", output.ToString())
+        finally
+            Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MODE", previous)
+
+    [<Fact>]
     member _.``template install id version cache state is idempotently verified``() =
         let home = Helpers.temporaryDirectory ()
         let previous = Environment.GetEnvironmentVariable "DOTNET_CLI_HOME"
