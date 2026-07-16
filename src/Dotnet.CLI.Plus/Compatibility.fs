@@ -218,7 +218,7 @@ module private Grammar =
                   "-v"
                   "--add-source"
                   "--nuget-source" ])
-            (Set.ofList [ "--dry-run"; "--force"; "--no-update-check"; "--diagnostics" ])
+            (Set.ofList [ "--dry-run"; "--check-only"; "--force"; "--no-update-check"; "--diagnostics" ])
 
     let parse (arguments: string array) =
         let json, child =
@@ -356,7 +356,8 @@ module private Grammar =
                             options
                             |> Map.tryFind "--output"
                             |> Option.orElseWith (fun () -> options |> Map.tryFind "-o"),
-                            beforeSentinel |> List.contains "--dry-run",
+                            beforeSentinel
+                            |> List.exists (fun value -> value = "--dry-run" || value = "--check-only"),
                             operands,
                             help beforeSentinel
                         )
@@ -1082,6 +1083,10 @@ module internal Broker =
                                             )
                                         )
                                     | Error failure -> Task.FromResult(Error failure)
+                            | New(TemplateUpdate, _, false, _, false) ->
+                                match TemplateEngineStateReader.Read(TemplateEngineStateReader.Root()) with
+                                | Ok _ -> Task.FromResult(Ok None)
+                                | Error failure -> Task.FromResult(Error failure)
                             | _ -> Task.FromResult(Ok None)
 
                         match verified with

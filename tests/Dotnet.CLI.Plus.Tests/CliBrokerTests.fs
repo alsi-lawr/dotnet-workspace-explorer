@@ -54,6 +54,15 @@ module private Helpers =
 
 type CliBrokerTests() =
     [<Fact>]
+    member _.``template update check only and dry run are read only``() =
+        Assert.True((Helpers.fake "capture" [| "new"; "update"; "--check-only" |]).Success)
+        Assert.True((Helpers.fake "capture" [| "new"; "update"; "--dry-run" |]).Success)
+
+    [<Fact>]
+    member _.``template update help forwards without verification``() =
+        Assert.True((Helpers.fake "capture" [| "new"; "update"; "--help" |]).Success)
+
+    [<Fact>]
     member _.``template uninstall without subject is read only``() =
         Assert.True((Helpers.fake "capture" [| "new"; "uninstall" |]).Success)
 
