@@ -51,6 +51,14 @@ internal static class CoreOutcomes
         bool retryable = false
     ) => Failure<T>(WorkspaceFailure.NewInternal(Diagnostic(code, message, null, retryable)));
 
+    internal static WorkspaceOutcome<T> WorkerClosed<T>() =>
+        ExternalToolFailed<T>(
+            "msbuild-host",
+            -1,
+            MsBuildDiagnosticCodes.WorkerClosed,
+            "The MSBuild evaluator is closed."
+        );
+
     internal static WorkspaceOutcome<T> Failure<T>(WorkspaceFailure failure) =>
         WorkspaceOutcome<T>.NewFailure(failure);
 
@@ -129,6 +137,7 @@ internal static class MsBuildDiagnosticCodes
     internal const string SdkSelectionFailed = "msbuild.sdk_selection_failed";
     internal const string SdkStartFailed = "msbuild.sdk_start_failed";
     internal const string ToolsetIncompatible = "msbuild.toolset_incompatible";
+    internal const string WorkerClosed = "msbuild.worker_closed";
     internal const string WorkerCrashed = "msbuild.worker_crashed";
     internal const string WorkerDisabled = "msbuild.worker_disabled";
 }

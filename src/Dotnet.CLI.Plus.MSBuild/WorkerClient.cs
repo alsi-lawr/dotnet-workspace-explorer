@@ -4,7 +4,6 @@ using System.Diagnostics;
 using System.Text;
 using Dotnet.CLI.Plus.Core;
 using Dotnet.CLI.Plus.Transport;
-using Microsoft.FSharp.Core;
 
 namespace Dotnet.CLI.Plus.MSBuild;
 
@@ -18,6 +17,7 @@ internal sealed class WorkerClient : IAsyncDisposable
     private WorkerProcessState? active;
     private uint nextRequestId = 1;
     private bool disabled;
+    private bool closed;
 
     internal WorkerClient(WorkerLaunchSettings launchSettings, ToolsetSelection selection)
     {
@@ -56,12 +56,17 @@ internal sealed class WorkerClient : IAsyncDisposable
         await gate.WaitAsync();
         try
         {
+            if (closed)
+            {
+                return;
+            }
+
+            closed = true;
             await GracefulStopAsync();
         }
         finally
         {
             gate.Release();
-            gate.Dispose();
         }
     }
 
@@ -84,6 +89,11 @@ internal sealed class WorkerClient : IAsyncDisposable
 
         try
         {
+            if (closed)
+            {
+                return CoreOutcomes.WorkerClosed<T>();
+            }
+
             if (disabled)
             {
                 return CoreOutcomes.ExternalToolFailed<T>(
@@ -94,68 +104,55 @@ internal sealed class WorkerClient : IAsyncDisposable
                 );
             }
 
-            for (var attempt = 0; attempt < 2; attempt++)
+            for (var attemptNumber = 0; attemptNumber < 2; attemptNumber++)
             {
-                try
+                var attempt = await TryEnsureStartedAsync(cancellationToken);
+                if (attempt is WorkerAttempt.Started ready)
                 {
-                    var worker = await EnsureStartedAsync(cancellationToken);
-                    var response = await SendAsync(worker, method, parameters, cancellationToken);
-                    if (response.Error is { } rpcError)
-                    {
-                        return CoreOutcomes.FromRpcError<T>(rpcError.Value, projectPath);
-                    }
+                    attempt = await SendAsync(ready.Worker, method, parameters, cancellationToken);
+                }
 
+                if (attempt is WorkerAttempt.Received received)
+                {
                     try
                     {
-                        return CoreOutcomes.Success(decode(response.Result));
+                        return CoreOutcomes.Success(decode(received.Result));
                     }
-                    catch (ArgumentException error)
+                    catch (Exception error)
+                        when (error is ArgumentException or FormatException or OverflowException)
                     {
-                        throw new WorkerTransportException(
-                            "The MSBuild worker response was malformed.",
-                            error
-                        );
-                    }
-                    catch (FormatException error)
-                    {
-                        throw new WorkerTransportException(
-                            "The MSBuild worker response was malformed.",
-                            error
-                        );
-                    }
-                    catch (OverflowException error)
-                    {
-                        throw new WorkerTransportException(
-                            "The MSBuild worker response was malformed.",
-                            error
-                        );
+                        attempt = new WorkerAttempt.TransportFailed();
                     }
                 }
-                catch (OperationCanceledException)
+
+                switch (attempt)
                 {
-                    await KillActiveAsync();
-                    return CoreOutcomes.Cancelled<T>("The MSBuild operation was cancelled.");
-                }
-                catch (WorkerStartupException startup)
-                {
-                    await KillActiveAsync();
-                    return StartupFailure<T>(startup);
-                }
-                catch (WorkerTransportException) when (attempt == 0)
-                {
-                    await KillActiveAsync();
-                }
-                catch (WorkerTransportException)
-                {
-                    disabled = true;
-                    await KillActiveAsync();
-                    return CoreOutcomes.ExternalToolFailed<T>(
-                        "msbuild-host",
-                        -1,
-                        MsBuildDiagnosticCodes.WorkerCrashed,
-                        "The MSBuild evaluator stopped unexpectedly after one restart.",
-                        true
-                    );
+                    case WorkerAttempt.Cancelled:
+                        await KillActiveAsync();
+                        return CoreOutcomes.Cancelled<T>("The MSBuild operation was cancelled.");
+                    case WorkerAttempt.RpcFailed rpc:
+                        return CoreOutcomes.FromRpcError<T>(rpc.Error, projectPath);
+                    case WorkerAttempt.StartupFailed startup:
+                        await KillActiveAsync();
+                        return StartupFailure<T>(startup);
+                    case WorkerAttempt.TransportFailed when attemptNumber == 0:
+                        await KillActiveAsync();
+                        break;
+                    case WorkerAttempt.TransportFailed:
+                        disabled = true;
+                        await KillActiveAsync();
+                        return CoreOutcomes.ExternalToolFailed<T>(
+                            "msbuild-host",
+                            -1,
+                            MsBuildDiagnosticCodes.WorkerCrashed,
+                            "The MSBuild evaluator stopped unexpectedly after one restart.",
+                            true
+                        );
+                    default:
+                        return CoreOutcomes.Internal<T>(
+                            MsBuildDiagnosticCodes.WorkerCrashed,
+                            "The MSBuild evaluator retry policy did not complete safely."
+                        );
                 }
             }
 
@@ -170,11 +167,11 @@ internal sealed class WorkerClient : IAsyncDisposable
         }
     }
 
-    private async Task<WorkerProcessState> EnsureStartedAsync(CancellationToken cancellationToken)
+    private async Task<WorkerAttempt> TryEnsureStartedAsync(CancellationToken cancellationToken)
     {
         if (active is { Process.HasExited: false, Initialized: true } running)
         {
-            return running;
+            return new WorkerAttempt.Started(running);
         }
 
         if (active is not null)
@@ -182,63 +179,58 @@ internal sealed class WorkerClient : IAsyncDisposable
             await KillActiveAsync();
         }
 
-        Process process;
+        Process? process;
         try
         {
-            process =
-                Process.Start(launchSettings.CreateStartInfo(selection))
-                ?? throw new WorkerStartupException(WorkerStartupKind.HostStartFailed, -1);
+            process = Process.Start(launchSettings.CreateStartInfo(selection));
         }
-        catch (Win32Exception)
+        catch (Exception error) when (error is Win32Exception or InvalidOperationException)
         {
-            throw new WorkerStartupException(WorkerStartupKind.HostStartFailed, -1);
+            return new WorkerAttempt.StartupFailed(WorkerStartupKind.HostStartFailed, -1);
+        }
+
+        if (process is null)
+        {
+            return new WorkerAttempt.StartupFailed(WorkerStartupKind.HostStartFailed, -1);
         }
 
         var state = new WorkerProcessState(process, DrainStandardErrorAsync(process.StandardError));
         active = state;
         launchSettings.ProcessStarted?.Invoke(process);
 
-        try
+        var initialize = await SendAsync(
+            state,
+            "initialize",
+            WorkerProtocol.InitializeRequest(RpcCodec.secureLimits.MaximumValueBytes),
+            cancellationToken,
+            RpcCodec.secureLimits.MaximumValueBytes
+        );
+        switch (initialize)
         {
-            var response = await SendAsync(
-                state,
-                "initialize",
-                WorkerProtocol.InitializeRequest(RpcCodec.secureLimits.MaximumValueBytes),
-                cancellationToken,
-                RpcCodec.secureLimits.MaximumValueBytes
-            );
-            if (response.Error is { } error)
-            {
-                throw new WorkerStartupException(
+            case WorkerAttempt.Received response:
+                try
+                {
+                    state.FrameLimit = WorkerProtocol.DecodeInitializeResult(response.Result);
+                    state.Initialized = true;
+                    return new WorkerAttempt.Started(state);
+                }
+                catch (Exception error) when (error is ArgumentException or OverflowException)
+                {
+                    return new WorkerAttempt.TransportFailed();
+                }
+            case WorkerAttempt.RpcFailed:
+                return new WorkerAttempt.StartupFailed(
                     WorkerStartupKind.ProtocolRejected,
-                    (process.HasExited ? process.ExitCode : -1)
+                    ExitCode(state.Process)
                 );
-            }
-
-            state.FrameLimit = WorkerProtocol.DecodeInitializeResult(response.Result);
-            state.Initialized = true;
-            return state;
-        }
-        catch (WorkerTransportException)
-        {
-            var startup = await StartupFailureAsync(state);
-            if (startup is not null)
-            {
-                throw startup;
-            }
-
-            throw;
-        }
-        catch (ArgumentException error)
-        {
-            throw new WorkerTransportException(
-                "The MSBuild worker initialization was malformed.",
-                error
-            );
+            case WorkerAttempt.TransportFailed:
+                return await ClassifyStartupFailureAsync(state);
+            default:
+                return initialize;
         }
     }
 
-    private async Task<Response> SendAsync(
+    private async Task<WorkerAttempt> SendAsync(
         WorkerProcessState worker,
         string method,
         RpcValue parameters,
@@ -247,90 +239,72 @@ internal sealed class WorkerClient : IAsyncDisposable
     )
     {
         var id = nextRequestId++;
-        var bytes = RpcCodec.encodeFrame(RpcFrame.NewRequest(id, method, parameters));
+        byte[] bytes;
+        try
+        {
+            bytes = RpcCodec.encodeFrame(RpcFrame.NewRequest(id, method, parameters));
+        }
+        catch (Exception error) when (error is ArgumentException or InvalidOperationException)
+        {
+            return new WorkerAttempt.TransportFailed();
+        }
+
         var limit = frameLimit ?? worker.FrameLimit;
         if (bytes.Length > limit)
         {
-            throw new WorkerTransportException(
-                "The MSBuild worker request exceeded its negotiated frame limit."
-            );
+            return new WorkerAttempt.TransportFailed();
         }
 
         try
         {
             await worker.Process.StandardInput.BaseStream.WriteAsync(bytes, cancellationToken);
             await worker.Process.StandardInput.BaseStream.FlushAsync(cancellationToken);
-            return await ReadResponseAsync(worker, id, limit, cancellationToken);
+            return await ReadResponseAsync(
+                worker.Process.StandardOutput.BaseStream,
+                id,
+                limit,
+                cancellationToken
+            );
         }
-        catch (IOException error)
+        catch (OperationCanceledException)
         {
-            throw new WorkerTransportException("The MSBuild worker transport failed.", error);
+            return new WorkerAttempt.Cancelled();
         }
-        catch (InvalidOperationException error)
+        catch (Exception error) when (error is IOException or InvalidOperationException)
         {
-            throw new WorkerTransportException("The MSBuild worker transport failed.", error);
+            return new WorkerAttempt.TransportFailed();
         }
     }
 
-    private static async Task<Response> ReadResponseAsync(
-        WorkerProcessState worker,
+    internal static async Task<WorkerAttempt> ReadResponseAsync(
+        Stream output,
         uint expectedId,
         int frameLimit,
         CancellationToken cancellationToken
     )
     {
-        var buffer = new byte[4096];
-        while (true)
+        var read = await RpcFrameReader.ReadOneAsync(output, frameLimit, cancellationToken);
+        if (read.IsError)
         {
-            var bytes = worker.Pending.ToArray();
-            var length = RpcCodec.tryReadValueLength(RpcCodec.secureLimits, bytes);
-            if (!length.IsError)
-            {
-                if (length.ResultValue > frameLimit)
-                {
-                    throw new WorkerTransportException(
-                        "The MSBuild worker exceeded its negotiated frame limit."
-                    );
-                }
-
-                var frameBytes = bytes[..length.ResultValue];
-                worker.Pending.RemoveRange(0, length.ResultValue);
-                var decoded = RpcCodec.decodeFrame(RpcCodec.secureLimits, frameBytes);
-                if (decoded.IsError || decoded.ResultValue is not RpcFrameDecodeResult.Frame frame)
-                {
-                    throw new WorkerTransportException(
-                        "The MSBuild worker wrote an invalid RPC frame."
-                    );
-                }
-
-                if (frame.Item is RpcFrame.Response response && response.messageId == expectedId)
-                {
-                    return new Response(response.error, response.result);
-                }
-
-                throw new WorkerTransportException(
-                    "The MSBuild worker wrote an unexpected RPC frame."
-                );
-            }
-
-            if (length.ErrorValue != RpcDecodeError.Incomplete)
-            {
-                throw new WorkerTransportException(
-                    "The MSBuild worker wrote an invalid RPC frame."
-                );
-            }
-
-            var count = await worker.Process.StandardOutput.BaseStream.ReadAsync(
-                buffer,
-                cancellationToken
-            );
-            if (count == 0)
-            {
-                throw new WorkerTransportException("The MSBuild worker closed its output.");
-            }
-
-            worker.Pending.AddRange(buffer.AsSpan(0, count).ToArray());
+            return read.ErrorValue == RpcFrameReadFailure.Cancelled
+                ? new WorkerAttempt.Cancelled()
+                : new WorkerAttempt.TransportFailed();
         }
+
+        var decoded = RpcCodec.decodeFrame(RpcCodec.secureLimits, read.ResultValue);
+        if (decoded.IsError || decoded.ResultValue is not RpcFrameDecodeResult.Frame frame)
+        {
+            return new WorkerAttempt.TransportFailed();
+        }
+
+        if (frame.Item is not RpcFrame.Response response || response.messageId != expectedId)
+        {
+            return new WorkerAttempt.TransportFailed();
+        }
+
+        return response.error is { } error
+            ? new WorkerAttempt.RpcFailed(error.Value)
+            : new WorkerAttempt.Received(response.result);
     }
 
     private async Task GracefulStopAsync()
@@ -341,52 +315,40 @@ internal sealed class WorkerClient : IAsyncDisposable
             return;
         }
 
-        try
+        var stopped = worker.Process.HasExited;
+        if (!stopped && worker.Initialized)
         {
-            if (worker.Initialized && !worker.Process.HasExited)
+            using var timeout = new CancellationTokenSource(ProcessExitTimeout);
+            var response = await SendAsync(
+                worker,
+                "shutdown",
+                RpcValueModule.emptyMap,
+                timeout.Token
+            );
+            if (response is WorkerAttempt.Received shutdown)
             {
-                using var timeout = new CancellationTokenSource(ProcessExitTimeout);
-                var response = await SendAsync(
-                    worker,
-                    "shutdown",
-                    RpcValueModule.emptyMap,
-                    timeout.Token
-                );
-                if (response.Error is not null)
+                try
                 {
-                    throw new WorkerTransportException("The MSBuild worker rejected shutdown.");
+                    WorkerProtocol.ValidateShutdownResult(shutdown.Result);
+                    await worker.Process.WaitForExitAsync(timeout.Token);
+                    stopped = worker.Process.ExitCode == 0;
                 }
+                catch (Exception error)
+                    when (error is ArgumentException or OperationCanceledException)
+                {
+                    stopped = false;
+                }
+            }
+        }
 
-                WorkerProtocol.ValidateShutdownResult(response.Result);
-                await worker.Process.WaitForExitAsync(timeout.Token);
-                if (worker.Process.ExitCode != 0)
-                {
-                    throw new WorkerTransportException("The MSBuild worker exited unsuccessfully.");
-                }
-            }
-            else if (!worker.Process.HasExited)
-            {
-                await KillAndReapAsync(worker.Process);
-            }
-        }
-        catch (OperationCanceledException)
+        if (!stopped && !worker.Process.HasExited)
         {
             await KillAndReapAsync(worker.Process);
         }
-        catch (WorkerTransportException)
-        {
-            await KillAndReapAsync(worker.Process);
-        }
-        catch (ArgumentException)
-        {
-            await KillAndReapAsync(worker.Process);
-        }
-        finally
-        {
-            active = null;
-            await worker.StderrDrain;
-            worker.Process.Dispose();
-        }
+
+        active = null;
+        await worker.StderrDrain;
+        worker.Process.Dispose();
     }
 
     private async Task KillActiveAsync()
@@ -412,51 +374,64 @@ internal sealed class WorkerClient : IAsyncDisposable
                 process.Kill(true);
             }
         }
-        catch (InvalidOperationException) when (process.HasExited) { }
+        catch (InvalidOperationException) when (process.HasExited)
+        {
+            await process.WaitForExitAsync();
+            return;
+        }
 
         await process.WaitForExitAsync();
     }
 
-    private static async Task<WorkerStartupException?> StartupFailureAsync(
-        WorkerProcessState worker
-    )
+    private static async Task<WorkerAttempt> ClassifyStartupFailureAsync(WorkerProcessState worker)
     {
         if (!worker.Process.HasExited)
         {
+            using var timeout = new CancellationTokenSource(ProcessExitTimeout);
             try
             {
-                await worker.Process.WaitForExitAsync().WaitAsync(ProcessExitTimeout);
+                await worker.Process.WaitForExitAsync(timeout.Token);
             }
-            catch (TimeoutException)
+            catch (Exception error)
+                when (error is OperationCanceledException or InvalidOperationException)
             {
-                return null;
+                return new WorkerAttempt.TransportFailed();
             }
         }
 
         var diagnostic = await worker.StderrDrain;
-        return diagnostic switch
-        {
-            WorkerStartupKind.None => null,
-            _ => new WorkerStartupException(diagnostic, worker.Process.ExitCode),
-        };
+        return diagnostic == WorkerStartupKind.None
+            ? new WorkerAttempt.TransportFailed()
+            : new WorkerAttempt.StartupFailed(diagnostic, worker.Process.ExitCode);
     }
 
     private static async Task<WorkerStartupKind> DrainStandardErrorAsync(StreamReader error)
     {
         var retained = new StringBuilder(512);
         var buffer = new char[1024];
-        while (true)
+        try
         {
-            var count = await error.ReadAsync(buffer);
-            if (count == 0)
+            while (true)
             {
-                break;
-            }
+                var count = await error.ReadAsync(buffer);
+                if (count == 0)
+                {
+                    break;
+                }
 
-            if (retained.Length < retained.Capacity)
-            {
-                retained.Append(buffer, 0, Math.Min(count, retained.Capacity - retained.Length));
+                if (retained.Length < retained.Capacity)
+                {
+                    retained.Append(
+                        buffer,
+                        0,
+                        Math.Min(count, retained.Capacity - retained.Length)
+                    );
+                }
             }
+        }
+        catch (Exception failure) when (failure is IOException or ObjectDisposedException)
+        {
+            return WorkerStartupKind.None;
         }
 
         var safe = retained.ToString();
@@ -478,7 +453,9 @@ internal sealed class WorkerClient : IAsyncDisposable
         return WorkerStartupKind.None;
     }
 
-    private static WorkspaceOutcome<T> StartupFailure<T>(WorkerStartupException startup) =>
+    private static int ExitCode(Process process) => process.HasExited ? process.ExitCode : -1;
+
+    private static WorkspaceOutcome<T> StartupFailure<T>(WorkerAttempt.StartupFailed startup) =>
         startup.Kind switch
         {
             WorkerStartupKind.HostStartFailed => CoreOutcomes.ExternalToolFailed<T>(
@@ -509,33 +486,38 @@ internal sealed class WorkerClient : IAsyncDisposable
             ),
         };
 
-    private sealed class WorkerProcessState(Process process, Task<WorkerStartupKind> stderrDrain)
+    internal sealed class WorkerProcessState(Process process, Task<WorkerStartupKind> stderrDrain)
     {
         internal Process Process { get; } = process;
         internal Task<WorkerStartupKind> StderrDrain { get; } = stderrDrain;
-        internal List<byte> Pending { get; } = [];
         internal int FrameLimit { get; set; } = RpcCodec.secureLimits.MaximumValueBytes;
         internal bool Initialized { get; set; }
     }
 
-    private sealed record Response(FSharpOption<RpcError>? Error, RpcValue Result);
-
-    private sealed class WorkerTransportException : IOException
+    internal abstract record WorkerAttempt
     {
-        internal WorkerTransportException(string message)
-            : base(message) { }
+        private WorkerAttempt() { }
 
-        internal WorkerTransportException(string message, Exception innerException)
-            : base(message, innerException) { }
+        internal sealed record Started(WorkerProcessState Worker) : WorkerAttempt;
+
+        internal sealed record Received(RpcValue Result) : WorkerAttempt;
+
+        internal sealed record RpcFailed(RpcError Error) : WorkerAttempt;
+
+        internal sealed record StartupFailed(WorkerStartupKind Kind, int ExitCode) : WorkerAttempt;
+
+        internal sealed record TransportFailed : WorkerAttempt
+        {
+            internal TransportFailed() { }
+        }
+
+        internal sealed record Cancelled : WorkerAttempt
+        {
+            internal Cancelled() { }
+        }
     }
 
-    private sealed class WorkerStartupException(WorkerStartupKind kind, int exitCode) : Exception
-    {
-        internal WorkerStartupKind Kind { get; } = kind;
-        internal int ExitCode { get; } = exitCode;
-    }
-
-    private enum WorkerStartupKind
+    internal enum WorkerStartupKind
     {
         None,
         HostStartFailed,

@@ -445,30 +445,75 @@ type MsBuildHostTests() =
             Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``dispose performs graceful shutdown and drains stderr``() =
-        let directory = Test.temporaryDirectory "shutdown"
+    member _.``refresh waits for active evaluation and disposal is idempotent``() =
+        let directory = Test.temporaryDirectory "lifetime"
 
         try
-            let project = Test.simpleProject directory "Shutdown" ".csproj"
+            let project = Test.simpleProject directory "Lifetime" ".csproj"
+            use releaseFirstLaunch = new ManualResetEventSlim(false)
 
-            let exitCode =
+            let firstStarted =
+                Threading.Tasks.TaskCompletionSource<unit>(
+                    Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+                )
+
+            let firstExit =
                 Threading.Tasks.TaskCompletionSource<int>(
                     Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
                 )
 
+            let secondExit =
+                Threading.Tasks.TaskCompletionSource<int>(
+                    Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+                )
+
+            let mutable launchCount = 0
+
             let started =
                 Action<Process>(fun child ->
+                    let launch = Interlocked.Increment(&launchCount)
                     child.EnableRaisingEvents <- true
-                    child.Exited.Add(fun _ -> exitCode.TrySetResult child.ExitCode |> ignore))
+
+                    child.Exited.Add(fun _ ->
+                        let completion = if launch = 1 then firstExit else secondExit
+                        completion.TrySetResult child.ExitCode |> ignore)
+
+                    if launch = 1 then
+                        firstStarted.TrySetResult() |> ignore
+                        releaseFirstLaunch.Wait())
 
             let client = Test.client started
 
-            client.EvaluateAsync(Test.path project, Test.path directory).GetAwaiter().GetResult()
-            |> Test.success
-            |> ignore
+            try
+                let evaluation = client.EvaluateAsync(Test.path project, Test.path directory)
 
-            client.DisposeAsync().AsTask().GetAwaiter().GetResult()
-            Assert.Equal(0, exitCode.Task.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult())
+                firstStarted.Task.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult()
+                let refresh = client.RefreshAsync()
+                Assert.False(refresh.IsCompleted)
+                releaseFirstLaunch.Set()
+
+                evaluation.GetAwaiter().GetResult() |> Test.success |> ignore
+                refresh.GetAwaiter().GetResult()
+                Assert.Equal(0, firstExit.Task.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult())
+
+                client.EvaluateAsync(Test.path project, Test.path directory).GetAwaiter().GetResult()
+                |> Test.success
+                |> ignore
+
+                client.DisposeAsync().AsTask().GetAwaiter().GetResult()
+                client.DisposeAsync().AsTask().GetAwaiter().GetResult()
+                Assert.Equal(0, secondExit.Task.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult())
+                Assert.Equal(2, launchCount)
+
+                let closed =
+                    client.EvaluateAsync(Test.path project, Test.path directory).GetAwaiter().GetResult()
+                    |> Test.failure
+
+                Assert.Equal("msbuild.worker_closed", closed.Diagnostic.DiagnosticCode.Value)
+                Assert.Equal(2, launchCount)
+            finally
+                releaseFirstLaunch.Set()
+                client.DisposeAsync().AsTask().GetAwaiter().GetResult()
         finally
             Directory.Delete(directory, true)
 
@@ -652,7 +697,7 @@ type MsBuildHostTests() =
             Assert.True(missingFailure.IsNotFound)
 
             let selection =
-                ToolsetSelection("missing", Test.path (Path.Combine(directory, "not-a-toolset")), null)
+                ToolsetSelection(Test.path (Path.Combine(directory, "not-a-toolset")), null)
 
             let worker = new WorkerClient(Test.settings null, selection)
 
@@ -663,6 +708,13 @@ type MsBuildHostTests() =
             Assert.True(incompatible.IsExternalToolFailed)
             Assert.Equal("msbuild.toolset_incompatible", incompatible.Diagnostic.DiagnosticCode.Value)
             worker.DisposeAsync().AsTask().GetAwaiter().GetResult()
+            worker.DisposeAsync().AsTask().GetAwaiter().GetResult()
+
+            let closedWorker =
+                worker.EvaluateAsync(Test.path malformed, CancellationToken.None).GetAwaiter().GetResult()
+                |> Test.failure
+
+            Assert.Equal("msbuild.worker_closed", closedWorker.Diagnostic.DiagnosticCode.Value)
             client.DisposeAsync().AsTask().GetAwaiter().GetResult()
         finally
             Directory.Delete(directory, true)
@@ -676,15 +728,16 @@ type MsBuildHostTests() =
             Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MODE", "stderr-flood")
             let settings = WorkerLaunchSettings("dotnet", Test.fakeHostAssembly, "dotnet", null)
             let client = new MsBuildEvaluationClient(settings)
-            let stopwatch = Stopwatch.StartNew()
 
             let failure =
-                client.EvaluateAsync(Test.path project, Test.path directory).GetAwaiter().GetResult()
+                client
+                    .EvaluateAsync(Test.path project, Test.path directory)
+                    .WaitAsync(TimeSpan.FromSeconds 5.0)
+                    .GetAwaiter()
+                    .GetResult()
                 |> Test.failure
 
-            stopwatch.Stop()
             Assert.Equal("msbuild.worker_crashed", failure.Diagnostic.DiagnosticCode.Value)
-            Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds 10.0)
             client.DisposeAsync().AsTask().GetAwaiter().GetResult()
         finally
             Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MODE", null)

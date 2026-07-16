@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Diagnostics;
 using Dotnet.CLI.Plus.Core;
@@ -11,9 +10,11 @@ public sealed class MsBuildEvaluationClient : IAsyncDisposable
         ? StringComparer.OrdinalIgnoreCase
         : StringComparer.Ordinal;
 
+    private readonly SemaphoreSlim gate = new(1, 1);
     private readonly WorkerLaunchSettings launchSettings;
-    private readonly ConcurrentDictionary<string, WorkspaceBinding> bindings = new(PathComparer);
-    private readonly ConcurrentDictionary<string, WorkerClient> workers = new(PathComparer);
+    private readonly Dictionary<string, WorkspaceBinding> bindings = new(PathComparer);
+    private readonly Dictionary<string, WorkerClient> workers = new(PathComparer);
+    private bool closed;
 
     public MsBuildEvaluationClient()
         : this(WorkerLaunchSettings.ForCurrentProcess()) { }
@@ -23,110 +24,162 @@ public sealed class MsBuildEvaluationClient : IAsyncDisposable
         this.launchSettings = launchSettings;
     }
 
-    public async Task<WorkspaceOutcome<EvaluationSnapshot>> EvaluateAsync(
+    public Task<WorkspaceOutcome<EvaluationSnapshot>> EvaluateAsync(
         WorkspaceArtifactPath projectPath,
         WorkspaceArtifactPath workspacePath,
         CancellationToken cancellationToken = default
-    )
-    {
-        var canonicalWorkspace = WorkspaceArtifactPath.Create(workspacePath.Value);
-        if (!bindings.TryGetValue(canonicalWorkspace.Value, out var binding))
-        {
-            var discovery = await DotnetSdkDiscovery.DiscoverAsync(
-                canonicalWorkspace,
-                launchSettings.DotnetExecutable,
-                cancellationToken
-            );
-            if (!CoreOutcomes.TrySuccess(discovery, out var selection, out var failure))
+    ) =>
+        RunLockedAsync(
+            cancellationToken,
+            async () =>
             {
-                return CoreOutcomes.Failure<EvaluationSnapshot>(failure!);
+                var canonicalWorkspace = WorkspaceArtifactPath.Create(workspacePath.Value);
+                if (!bindings.TryGetValue(canonicalWorkspace.Value, out var binding))
+                {
+                    var discovery = await DotnetSdkDiscovery.DiscoverAsync(
+                        canonicalWorkspace,
+                        launchSettings.DotnetExecutable,
+                        cancellationToken
+                    );
+                    if (!CoreOutcomes.TrySuccess(discovery, out var selection, out var failure))
+                    {
+                        return CoreOutcomes.Failure<EvaluationSnapshot>(failure!);
+                    }
+
+                    binding = new WorkspaceBinding(canonicalWorkspace, selection!);
+                    bindings.Add(canonicalWorkspace.Value, binding);
+                }
+
+                var toolsetKey = binding.Toolset.ToolsetPath.Value;
+                if (!workers.TryGetValue(toolsetKey, out var worker))
+                {
+                    worker = new WorkerClient(launchSettings, binding.Toolset);
+                    workers.Add(toolsetKey, worker);
+                }
+
+                return await worker.EvaluateAsync(
+                    WorkspaceArtifactPath.Create(projectPath.Value),
+                    cancellationToken
+                );
             }
-
-            binding = new WorkspaceBinding(canonicalWorkspace, selection!);
-            bindings[canonicalWorkspace.Value] = binding;
-        }
-
-        var toolsetKey = binding.Toolset.ToolsetPath.Value;
-        var worker = workers.GetOrAdd(
-            toolsetKey,
-            _ => new WorkerClient(launchSettings, binding.Toolset)
         );
-        return await worker.EvaluateAsync(
-            WorkspaceArtifactPath.Create(projectPath.Value),
-            cancellationToken
-        );
-    }
 
-    public async Task<WorkspaceOutcome<MsBuildInvalidationKind>> InvalidateAsync(
+    public Task<WorkspaceOutcome<MsBuildInvalidationKind>> InvalidateAsync(
         IEnumerable<WorkspaceArtifactPath> paths,
         CancellationToken cancellationToken = default
+    ) =>
+        RunLockedAsync(
+            cancellationToken,
+            async () =>
+            {
+                var changed = paths
+                    .Select(path => WorkspaceArtifactPath.Create(path.Value))
+                    .DistinctBy(path => path.Value, PathComparer)
+                    .ToImmutableArray();
+                if (changed.IsDefaultOrEmpty)
+                {
+                    return CoreOutcomes.Success(MsBuildInvalidationKind.None);
+                }
+
+                var affectedBindings = bindings
+                    .Values.Where(binding =>
+                        changed.Any(path => IsApplicableGlobalJsonChange(binding, path.Value))
+                    )
+                    .ToArray();
+                if (affectedBindings.Length > 0)
+                {
+                    foreach (var binding in affectedBindings)
+                    {
+                        bindings.Remove(binding.WorkspacePath.Value);
+                    }
+
+                    foreach (
+                        var toolsetKey in affectedBindings
+                            .Select(binding => binding.Toolset.ToolsetPath.Value)
+                            .Distinct(PathComparer)
+                    )
+                    {
+                        if (workers.Remove(toolsetKey, out var worker))
+                        {
+                            await worker.DisposeAsync();
+                        }
+                    }
+
+                    return CoreOutcomes.Success(MsBuildInvalidationKind.ToolsetSelection);
+                }
+
+                var invalidated = false;
+                foreach (var worker in workers.Values)
+                {
+                    var outcome = await worker.InvalidateAsync(changed, cancellationToken);
+                    if (!CoreOutcomes.TrySuccess(outcome, out var result, out var failure))
+                    {
+                        return CoreOutcomes.Failure<MsBuildInvalidationKind>(failure!);
+                    }
+
+                    invalidated |= !result!.InvalidatedProjects.IsDefaultOrEmpty;
+                }
+
+                return CoreOutcomes.Success(
+                    invalidated
+                        ? MsBuildInvalidationKind.ProjectOrImport
+                        : MsBuildInvalidationKind.None
+                );
+            }
+        );
+
+    public Task RefreshAsync() => ResetAsync(false);
+
+    public ValueTask DisposeAsync() => new(ResetAsync(true));
+
+    private async Task ResetAsync(bool close)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            if (closed)
+            {
+                return;
+            }
+
+            closed = close;
+            bindings.Clear();
+            var activeWorkers = workers.Values.ToArray();
+            workers.Clear();
+            foreach (var worker in activeWorkers)
+            {
+                await worker.DisposeAsync();
+            }
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private async Task<WorkspaceOutcome<T>> RunLockedAsync<T>(
+        CancellationToken cancellationToken,
+        Func<Task<WorkspaceOutcome<T>>> operation
     )
     {
-        var changed = paths
-            .Select(path => WorkspaceArtifactPath.Create(path.Value))
-            .DistinctBy(path => path.Value, PathComparer)
-            .ToImmutableArray();
-        if (changed.IsDefaultOrEmpty)
+        try
         {
-            return CoreOutcomes.Success(MsBuildInvalidationKind.None);
+            await gate.WaitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            return CoreOutcomes.Cancelled<T>("The MSBuild operation was cancelled.");
         }
 
-        var affectedBindings = bindings
-            .Values.Where(binding =>
-                changed.Any(path => IsApplicableGlobalJsonChange(binding, path.Value))
-            )
-            .ToArray();
-        if (affectedBindings.Length > 0)
+        try
         {
-            foreach (var binding in affectedBindings)
-            {
-                bindings.TryRemove(binding.WorkspacePath.Value, out _);
-            }
-
-            foreach (
-                var toolsetKey in affectedBindings
-                    .Select(binding => binding.Toolset.ToolsetPath.Value)
-                    .Distinct(PathComparer)
-            )
-            {
-                if (workers.TryRemove(toolsetKey, out var worker))
-                {
-                    await worker.DisposeAsync();
-                }
-            }
-
-            return CoreOutcomes.Success(MsBuildInvalidationKind.ToolsetSelection);
+            return closed ? CoreOutcomes.WorkerClosed<T>() : await operation();
         }
-
-        var invalidated = false;
-        foreach (var worker in workers.Values)
+        finally
         {
-            var outcome = await worker.InvalidateAsync(changed, cancellationToken);
-            if (!CoreOutcomes.TrySuccess(outcome, out var result, out var failure))
-            {
-                return CoreOutcomes.Failure<MsBuildInvalidationKind>(failure!);
-            }
-
-            invalidated |= !result!.InvalidatedProjects.IsDefaultOrEmpty;
-        }
-
-        return CoreOutcomes.Success(
-            invalidated ? MsBuildInvalidationKind.ProjectOrImport : MsBuildInvalidationKind.None
-        );
-    }
-
-    public async Task RefreshAsync()
-    {
-        bindings.Clear();
-        var active = workers.ToArray();
-        workers.Clear();
-        foreach (var worker in active)
-        {
-            await worker.Value.DisposeAsync();
+            gate.Release();
         }
     }
-
-    public async ValueTask DisposeAsync() => await RefreshAsync();
 
     private static bool IsApplicableGlobalJsonChange(WorkspaceBinding binding, string changedPath)
     {

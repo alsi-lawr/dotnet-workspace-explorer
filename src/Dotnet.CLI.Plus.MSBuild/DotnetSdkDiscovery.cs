@@ -48,7 +48,6 @@ internal static class DotnetSdkDiscovery
             )
             : CoreOutcomes.Success(
                 new ToolsetSelection(
-                    sdkVersion,
                     WorkspaceArtifactPath.Create(toolsetPath),
                     FindGlobalJson(workingDirectory)
                 )

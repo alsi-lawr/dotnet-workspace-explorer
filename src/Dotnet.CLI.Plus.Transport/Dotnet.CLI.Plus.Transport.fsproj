@@ -9,6 +9,7 @@
         <PackageReference Include="MessagePack" />
     </ItemGroup>
     <ItemGroup>
+        <Compile Include="AssemblyInfo.fs" />
         <Compile Include="Protocol.fs" />
         <Compile Include="Codec.fs" />
         <Compile Include="Session.fs" />

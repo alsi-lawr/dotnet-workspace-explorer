@@ -51,6 +51,11 @@ internal sealed class WorkerEvaluator : IDisposable
             return CoreOutcomes.Success(cached.Snapshot);
         }
 
+        var existingProjects = collection.LoadedProjects.ToHashSet(
+            ReferenceEqualityComparer.Instance
+        );
+        var cacheOwnsLoadedProjects = false;
+
         try
         {
             var outer = Load(projectPath.Value, null);
@@ -63,6 +68,7 @@ internal sealed class WorkerEvaluator : IDisposable
             var projects = loaded.MoveToImmutable();
             var snapshot = Materialize(projectPath, projects, targetFrameworks);
             Add(projectPath.Value, snapshot, projects);
+            cacheOwnsLoadedProjects = true;
             return CoreOutcomes.Success(snapshot);
         }
         catch (InvalidProjectFileException)
@@ -87,6 +93,20 @@ internal sealed class WorkerEvaluator : IDisposable
                 MsBuildDiagnosticCodes.EvaluationFailed,
                 "MSBuild could not read the project."
             );
+        }
+        finally
+        {
+            if (!cacheOwnsLoadedProjects)
+            {
+                foreach (
+                    var project in collection
+                        .LoadedProjects.Where(project => !existingProjects.Contains(project))
+                        .ToArray()
+                )
+                {
+                    collection.UnloadProject(project);
+                }
+            }
         }
     }
 
@@ -272,18 +292,6 @@ internal sealed class WorkerEvaluator : IDisposable
             packages,
             analyzers
         );
-    }
-
-    private static string PropertyValue(ProjectProperty property)
-    {
-        try
-        {
-            return property.EvaluatedValue;
-        }
-        catch (InvalidProjectFileException)
-        {
-            return property.UnevaluatedValue;
-        }
     }
 
     private static EvaluatedItem MaterializeItem(string projectPath, ProjectItem item) =>

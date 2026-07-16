@@ -63,7 +63,6 @@ public sealed record EvaluationSnapshot(
 );
 
 internal sealed record ToolsetSelection(
-    string SdkVersion,
     WorkspaceArtifactPath ToolsetPath,
     WorkspaceArtifactPath? GlobalJsonPath
 );
