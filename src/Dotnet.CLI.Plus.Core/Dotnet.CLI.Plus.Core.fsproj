@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <AssemblyName>Dotnet.CLI.Plus.Core</AssemblyName>
+        <RootNamespace>Dotnet.CLI.Plus.Core</RootNamespace>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="FSharp.Core" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Compile Include="Identity.fs" />
+        <Compile Include="Diagnostics.fs" />
+        <Compile Include="Nodes.fs" />
+        <Compile Include="Commands.fs" />
+        <Compile Include="Outcomes.fs" />
+    </ItemGroup>
+</Project>

@@ -9,9 +9,11 @@
         <File Path="README.md" />
     </Folder>
     <Folder Name="/src/">
+        <Project Path="src/Dotnet.CLI.Plus.Core/Dotnet.CLI.Plus.Core.fsproj" />
         <Project Path="src/Dotnet.CLI.Plus/Dotnet.CLI.Plus.csproj" />
     </Folder>
     <Folder Name="/tests/">
+        <Project Path="tests/Dotnet.CLI.Plus.Core.Tests/Dotnet.CLI.Plus.Core.Tests.fsproj" />
         <Project Path="tests/Dotnet.CLI.Plus.Tests/Dotnet.CLI.Plus.Tests.csproj" />
     </Folder>
 </Solution>
