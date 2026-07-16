@@ -855,8 +855,15 @@ module private ProcessExecution =
                         try
                             if not childProcess.HasExited then
                                 childProcess.Kill(true)
-                        with :? InvalidOperationException ->
-                            ()
+                        with
+                        | :? InvalidOperationException
+                        | :? System.ComponentModel.Win32Exception ->
+                            try
+                                if not childProcess.HasExited then
+                                    childProcess.Kill()
+                            with
+                            | :? InvalidOperationException
+                            | :? System.ComponentModel.Win32Exception -> ()
 
                         do! childProcess.WaitForExitAsync CancellationToken.None
                         let! output = outputTask

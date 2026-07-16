@@ -54,6 +54,42 @@ module private Helpers =
 
 type CliBrokerTests() =
     [<Fact>]
+    member _.``cancellation returns typed failure and reaps managed tree``() =
+        let directory = Helpers.temporaryDirectory ()
+        let pidFile = Path.Combine(directory, "child.pid")
+        let mode = Environment.GetEnvironmentVariable "DOTNET_PLUS_FAKE_HOST_MODE"
+        let marker = Environment.GetEnvironmentVariable "DOTNET_PLUS_FAKE_HOST_CHILD_PID"
+
+        try
+            Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MODE", "tree")
+            Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_CHILD_PID", pidFile)
+            use cancellation = new CancellationTokenSource(200)
+
+            let result =
+                BrokerTestHooks
+                    .ExecuteWithHostAsync([| "build" |], "dotnet", Helpers.fakeHost, cancellation.Token)
+                    .Result
+
+            Assert.False(result.Success)
+            Assert.Equal("cancelled", result.Diagnostics.Head.DiagnosticCode.Value)
+            Assert.Equal(1, Broker.Render result true (new StringWriter()) (new StringWriter()))
+        finally
+            Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MODE", mode)
+            Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_CHILD_PID", marker)
+            Helpers.delete directory
+
+    [<Fact>]
+    member _.``pre cancelled token returns typed cancellation``() =
+        use cancellation = new CancellationTokenSource()
+        cancellation.Cancel()
+
+        let result =
+            BrokerTestHooks.ExecuteWithHostAsync([| "build" |], "dotnet", Helpers.fakeHost, cancellation.Token).Result
+
+        Assert.False(result.Success)
+        Assert.Equal("cancelled", result.Diagnostics.Head.DiagnosticCode.Value)
+
+    [<Fact>]
     member _.``human redirected stream receives sanitized chunks before completion``() =
         let output = new StringWriter()
         let error = new StringWriter()
