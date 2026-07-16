@@ -54,6 +54,49 @@ module private Helpers =
 
 type CliBrokerTests() =
     [<Fact>]
+    member _.``package verification does not accept a longer package id``() =
+        let directory = Helpers.temporaryDirectory ()
+
+        try
+            let project = Path.Combine(directory, "App.fsproj")
+
+            File.WriteAllText(
+                project,
+                "<Project><ItemGroup><PackageReference Include=\"Example.Package.Extra\" /></ItemGroup></Project>"
+            )
+
+            let result =
+                Helpers.fake "capture" [| "package"; "add"; "Example.Package"; "--project"; project |]
+
+            Assert.False(result.Success)
+        finally
+            Helpers.delete directory
+
+    [<Fact>]
+    member _.``central package version verifies id at version``() =
+        let directory = Helpers.temporaryDirectory ()
+
+        try
+            let project = Path.Combine(directory, "App.fsproj")
+
+            File.WriteAllText(
+                project,
+                "<Project><ItemGroup><PackageReference Include=\"Example.Package\" /></ItemGroup></Project>"
+            )
+
+            File.WriteAllText(
+                Path.Combine(directory, "Directory.Packages.props"),
+                "<Project><ItemGroup><PackageVersion Include=\"Example.Package\" Version=\"1.2.3\" /></ItemGroup></Project>"
+            )
+
+            let result =
+                Helpers.fake "capture" [| "package"; "add"; "Example.Package@1.2.3"; "--project"; project |]
+
+            Assert.True(result.Success)
+        finally
+            Helpers.delete directory
+
+    [<Fact>]
     member _.``malformed package project returns a single json failure envelope``() =
         let directory = Helpers.temporaryDirectory ()
 

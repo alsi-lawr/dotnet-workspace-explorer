@@ -552,6 +552,31 @@ module private Verify =
         else
             value, None
 
+    let private centralVersion (project: string) (id: string) =
+        let rec find directory =
+            let candidate = Path.Combine(directory, "Directory.Packages.props")
+
+            if File.Exists candidate then
+                let document = XDocument.Load candidate
+
+                descendants "PackageVersion" document
+                |> Seq.tryFind (fun element ->
+                    attribute "Include" element
+                    |> Option.orElseWith (fun () -> attribute "Update" element)
+                    |> Option.exists (fun value -> String.Equals(value, id, StringComparison.OrdinalIgnoreCase)))
+                |> Option.bind (fun element ->
+                    attribute "Version" element
+                    |> Option.orElseWith (fun () ->
+                        element.Elements()
+                        |> Seq.tryFind (fun child -> child.Name.LocalName = "Version")
+                        |> Option.map _.Value))
+            else
+                match Directory.GetParent directory with
+                | null -> None
+                | parent -> find parent.FullName
+
+        Path.GetDirectoryName project |> Option.ofObj |> Option.bind find
+
     let verifyPackage operation (project: string) operands =
         match operands with
         | [] -> Error(Failure.invalid "Package mutations require a package ID.")
@@ -576,8 +601,11 @@ module private Verify =
                             |> Seq.tryFind (fun child -> child.Name.LocalName = "Version")
                             |> Option.map _.Value)
 
+                    let effectiveVersion =
+                        actualVersion |> Option.orElseWith (fun () -> centralVersion project id)
+
                     matchesId
-                    && (version |> Option.forall (fun expected -> actualVersion = Some expected)))
+                    && (version |> Option.forall (fun expected -> effectiveVersion = Some expected)))
 
             let correct =
                 match operation with
