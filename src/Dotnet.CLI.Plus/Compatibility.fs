@@ -525,7 +525,9 @@ module internal TemplateEngineStateReader =
             let name = Path.GetFileNameWithoutExtension value in
 
             String.Equals(name, id, StringComparison.OrdinalIgnoreCase)
-            || name.StartsWith(id + ".", StringComparison.OrdinalIgnoreCase))
+            || name.StartsWith(id + ".", StringComparison.OrdinalIgnoreCase)
+            || String.Equals(value, subject, StringComparison.OrdinalIgnoreCase)
+            || value.StartsWith(id + "::", StringComparison.OrdinalIgnoreCase))
 
 module private Verify =
     let private openSolution target cancellationToken =

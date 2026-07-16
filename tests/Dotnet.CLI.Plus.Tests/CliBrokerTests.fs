@@ -54,6 +54,90 @@ module private Helpers =
 
 type CliBrokerTests() =
     [<Fact>]
+    member _.``template install id version cache state is idempotently verified``() =
+        let home = Helpers.temporaryDirectory ()
+        let previous = Environment.GetEnvironmentVariable "DOTNET_CLI_HOME"
+
+        try
+            Environment.SetEnvironmentVariable("DOTNET_CLI_HOME", home)
+
+            let cache =
+                Path.Combine(home, ".templateengine", "dotnetcli", "test", "templatecache.json")
+
+            Directory.CreateDirectory(Path.GetDirectoryName cache) |> ignore
+            File.WriteAllText(cache, "\uFEFF{\"MountPointsInfo\":{\"Example.Template::1.2.3\":{}}}")
+            Assert.True((Helpers.fake "capture" [| "new"; "install"; "Example.Template::1.2.3" |]).Success)
+        finally
+            Environment.SetEnvironmentVariable("DOTNET_CLI_HOME", previous)
+            Helpers.delete home
+
+    [<Fact>]
+    member _.``template install multiple subjects use exact boundaries``() =
+        let home = Helpers.temporaryDirectory ()
+        let previous = Environment.GetEnvironmentVariable "DOTNET_CLI_HOME"
+
+        try
+            Environment.SetEnvironmentVariable("DOTNET_CLI_HOME", home)
+
+            let cache =
+                Path.Combine(home, ".templateengine", "dotnetcli", "test", "templatecache.json")
+
+            Directory.CreateDirectory(Path.GetDirectoryName cache) |> ignore
+
+            File.WriteAllText(
+                cache,
+                "\uFEFF{\"MountPointsInfo\":{\"One.Template\":{},\"Two.Template\":{},\"One.Template.Decoy\":{}}}"
+            )
+
+            Assert.True((Helpers.fake "capture" [| "new"; "install"; "One.Template"; "Two.Template" |]).Success)
+        finally
+            Environment.SetEnvironmentVariable("DOTNET_CLI_HOME", previous)
+            Helpers.delete home
+
+    [<Fact>]
+    member _.``template uninstall and update accept valid idempotent cache state``() =
+        let home = Helpers.temporaryDirectory ()
+        let previous = Environment.GetEnvironmentVariable "DOTNET_CLI_HOME"
+
+        try
+            Environment.SetEnvironmentVariable("DOTNET_CLI_HOME", home)
+
+            let cache =
+                Path.Combine(home, ".templateengine", "dotnetcli", "test", "templatecache.json")
+
+            Directory.CreateDirectory(Path.GetDirectoryName cache) |> ignore
+            File.WriteAllText(cache, "\uFEFF{\"MountPointsInfo\":{}}")
+            Assert.True((Helpers.fake "capture" [| "new"; "uninstall"; "Missing.Template" |]).Success)
+            Assert.True((Helpers.fake "capture" [| "new"; "update" |]).Success)
+        finally
+            Environment.SetEnvironmentVariable("DOTNET_CLI_HOME", previous)
+            Helpers.delete home
+
+    [<Fact>]
+    member _.``template malformed cache is json safe broker failure``() =
+        let home = Helpers.temporaryDirectory ()
+        let previous = Environment.GetEnvironmentVariable "DOTNET_CLI_HOME"
+
+        try
+            Environment.SetEnvironmentVariable("DOTNET_CLI_HOME", home)
+
+            let cache =
+                Path.Combine(home, ".templateengine", "dotnetcli", "test", "templatecache.json")
+
+            Directory.CreateDirectory(Path.GetDirectoryName cache) |> ignore
+            File.WriteAllText(cache, "{")
+            let result = Helpers.fake "capture" [| "new"; "update" |]
+            let output = new StringWriter()
+            let error = new StringWriter()
+            Assert.False(result.Success)
+            Assert.Equal(1, Broker.Render result true output error)
+            use _ = JsonDocument.Parse(output.ToString())
+            Assert.Equal("", error.ToString())
+        finally
+            Environment.SetEnvironmentVariable("DOTNET_CLI_HOME", previous)
+            Helpers.delete home
+
+    [<Fact>]
     member _.``template update check only and dry run are read only``() =
         Assert.True((Helpers.fake "capture" [| "new"; "update"; "--check-only" |]).Success)
         Assert.True((Helpers.fake "capture" [| "new"; "update"; "--dry-run" |]).Success)
