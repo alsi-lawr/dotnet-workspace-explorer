@@ -51,6 +51,29 @@ module RpcValue =
         | RpcValue.Map fields -> fields
         | _ -> invalidArg name "Expected a string-key map."
 
+    let optionalField name (fields: ImmutableDictionary<string, RpcValue>) =
+        match fields.TryGetValue name with
+        | true, value -> Some value
+        | _ -> None
+
+    let requireField name (fields: ImmutableDictionary<string, RpcValue>) =
+        match fields.TryGetValue name with
+        | true, value -> value
+        | _ -> invalidArg name $"Missing required field '{name}'."
+
+    let requireArray name value =
+        match value with
+        | RpcValue.Array values -> values
+        | _ -> invalidArg name "Expected an array."
+
+    let ensureOnly name allowed (fields: ImmutableDictionary<string, RpcValue>) =
+        let allowedNames =
+            ImmutableHashSet.CreateRange<string>(StringComparer.Ordinal, allowed)
+
+        match fields.Keys |> Seq.tryFind (allowedNames.Contains >> not) with
+        | Some field -> invalidArg name $"Unknown field '{field}'."
+        | None -> ()
+
     let requireString name value =
         match value with
         | RpcValue.String text -> text

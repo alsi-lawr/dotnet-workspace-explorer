@@ -1,17 +1,22 @@
 namespace Dotnet.CLI.Plus.Transport
 
 open System
-open System.Buffers.Binary
-open System.Collections.Generic
+open System.Buffers
 open System.Collections.Immutable
-open System.Text
 open System.IO
+open System.Text
+open MessagePack
 
 [<RequireQualifiedAccess>]
 type RpcDecodeError =
     | Incomplete
     | Invalid of string
     | TooLarge of string
+
+[<RequireQualifiedAccess>]
+type RpcFrameDecodeResult =
+    | Frame of RpcFrame
+    | RecoverableError of messageId: uint32 * error: RpcError
 
 type RpcCodecLimits =
     { MaximumValueBytes: int
@@ -23,377 +28,351 @@ module RpcCodec =
         { MaximumValueBytes = 16 * 1024 * 1024
           MaximumDepth = 64 }
 
+    let private strictUtf8 = UTF8Encoding(false, true)
+
+    let private security limits =
+        MessagePackSecurity.UntrustedData
+            .WithMaximumObjectGraphDepth(limits.MaximumDepth)
+            .WithMaximumDecompressedSize(limits.MaximumValueBytes)
+
     let private invalid message = Error(RpcDecodeError.Invalid message)
 
-    let private require count index length =
-        if index + count > length then
-            raise (EndOfStreamException())
+    let private safeMessage (error: exn) =
+        match error with
+        | :? DecoderFallbackException -> "MessagePack strings must contain valid UTF-8."
+        | :? InsufficientExecutionStackException -> "MessagePack nesting exceeds the configured limit."
+        | :? OverflowException -> "MessagePack numeric value is outside the supported range."
+        | :? MessagePackSerializationException -> "The MessagePack value is malformed."
+        | :? ArgumentException when not (String.IsNullOrWhiteSpace error.Message) -> error.Message
+        | _ -> "The MessagePack value is malformed."
 
-    let private u16 source index =
-        BinaryPrimitives.ReadUInt16BigEndian(ReadOnlySpan(source, index, 2)) |> int
+    let private readStrictString (reader: byref<MessagePackReader>) =
+        let bytes = reader.ReadStringSequence()
 
-    let private u32 source index =
-        BinaryPrimitives.ReadUInt32BigEndian(ReadOnlySpan(source, index, 4)) |> int64
+        if not bytes.HasValue then
+            invalidArg "value" "Expected a string."
 
-    let private u64 source index =
-        BinaryPrimitives.ReadUInt64BigEndian(ReadOnlySpan(source, index, 8))
+        let sequence = bytes.Value
+        let buffer = Array.zeroCreate<byte> (int sequence.Length)
+        sequence.CopyTo buffer
+        strictUtf8.GetString buffer
 
-    let private parse (limits: RpcCodecLimits) (source: byte array) start length =
-        let rec value depth index =
-            if depth > limits.MaximumDepth then
-                raise (ArgumentException "MessagePack nesting exceeds the configured limit.")
+    let private readInteger (reader: byref<MessagePackReader>) =
+        let code = reader.NextCode
 
-            require 1 index length
-            let marker = source[index]
-            let next = index + 1
+        if code >= 0xccuy && code <= 0xcfuy then
+            RpcValue.Unsigned(reader.ReadUInt64())
+        elif code <= 0x7fuy then
+            RpcValue.Unsigned(reader.ReadUInt64())
+        else
+            RpcValue.Integer(reader.ReadInt64())
 
-            let text count offset =
-                require count offset length
-                Encoding.UTF8.GetString(source, offset, count), offset + count
+    let rec private readValue
+        (limits: RpcCodecLimits)
+        (configuredSecurity: MessagePackSecurity)
+        (reader: byref<MessagePackReader>)
+        =
+        reader.CancellationToken.ThrowIfCancellationRequested()
 
-            let binary count offset =
-                require count offset length
-                source[offset .. offset + count - 1], offset + count
+        match reader.NextMessagePackType with
+        | MessagePackType.Nil ->
+            reader.ReadNil() |> ignore
+            RpcValue.Nil
+        | MessagePackType.Boolean -> RpcValue.Boolean(reader.ReadBoolean())
+        | MessagePackType.Integer -> readInteger &reader
+        | MessagePackType.Float -> RpcValue.Float(reader.ReadDouble())
+        | MessagePackType.String -> RpcValue.String(readStrictString &reader)
+        | MessagePackType.Binary ->
+            let bytes = reader.ReadBytes()
 
-            let array count offset =
-                let mutable cursor = offset
-                let values = ResizeArray<RpcValue>()
+            if not bytes.HasValue then
+                invalidArg "value" "Expected a binary value."
+
+            let sequence = bytes.Value
+            let buffer = Array.zeroCreate<byte> (int sequence.Length)
+            sequence.CopyTo buffer
+            RpcValue.Binary buffer
+        | MessagePackType.Array ->
+            configuredSecurity.DepthStep &reader
+
+            try
+                let count = reader.ReadArrayHeader()
+
+                if count > min 1000000 limits.MaximumValueBytes then
+                    invalidArg "value" "MessagePack arrays exceed the configured item limit."
+
+                let values = ImmutableArray.CreateBuilder<RpcValue>(count)
 
                 for _ in 1..count do
-                    let parsed, after = value (depth + 1) cursor
-                    values.Add parsed
-                    cursor <- after
+                    values.Add(readValue limits configuredSecurity &reader)
 
-                RpcValue.Array(ImmutableArray.CreateRange values), cursor
+                RpcValue.Array(values.MoveToImmutable())
+            finally
+                reader.Depth <- reader.Depth - 1
+        | MessagePackType.Map ->
+            configuredSecurity.DepthStep &reader
 
-            let map count offset =
+            try
+                let count = reader.ReadMapHeader()
+
+                if count > min 500000 (limits.MaximumValueBytes / 2) then
+                    invalidArg "value" "MessagePack maps exceed the configured item limit."
+
                 let fields =
-                    ImmutableDictionary.CreateBuilder<string, RpcValue>(StringComparer.Ordinal)
-
-                let mutable cursor = offset
+                    ImmutableDictionary.CreateBuilder<string, RpcValue>(
+                        configuredSecurity.GetEqualityComparer<string>()
+                    )
 
                 for _ in 1..count do
-                    let key, afterKey = value (depth + 1) cursor
+                    if reader.NextMessagePackType <> MessagePackType.String then
+                        invalidArg "value" "MessagePack map keys must be strings."
 
-                    let name =
-                        match key with
-                        | RpcValue.String text when not (String.IsNullOrEmpty text) -> text
-                        | _ -> raise (ArgumentException "MessagePack map keys must be strings.")
+                    let key = readStrictString &reader
 
-                    let parsed, afterValue = value (depth + 1) afterKey
+                    if String.IsNullOrEmpty key then
+                        invalidArg "value" "MessagePack map keys must be non-empty strings."
 
-                    if not (fields.TryAdd(name, parsed)) then
-                        raise (ArgumentException "MessagePack maps cannot contain duplicate keys.")
+                    if fields.ContainsKey key then
+                        invalidArg "value" "MessagePack maps cannot contain duplicate keys."
 
-                    cursor <- afterValue
+                    fields.Add(key, readValue limits configuredSecurity &reader)
 
-                RpcValue.Map(fields.ToImmutable()), cursor
+                RpcValue.Map(fields.ToImmutable())
+            finally
+                reader.Depth <- reader.Depth - 1
+        | MessagePackType.Extension -> invalidArg "value" "MessagePack extension values are not allowed."
+        | _ -> invalidArg "value" "Unsupported MessagePack value type."
 
-            match marker with
-            | value when value <= 0x7fuy -> RpcValue.Unsigned(uint64 value), next
-            | value when value >= 0xe0uy -> RpcValue.Integer(int64 (sbyte value)), next
-            | value when value >= 0xa0uy && value <= 0xbfuy ->
-                text (int (value &&& 0x1fuy)) next |> fun (v, i) -> RpcValue.String v, i
-            | value when value >= 0x90uy && value <= 0x9fuy -> array (int (value &&& 0x0fuy)) next
-            | value when value >= 0x80uy && value <= 0x8fuy -> map (int (value &&& 0x0fuy)) next
-            | 0xc0uy -> RpcValue.Nil, next
-            | 0xc2uy -> RpcValue.Boolean false, next
-            | 0xc3uy -> RpcValue.Boolean true, next
-            | 0xc4uy ->
-                require 1 next length
-                binary (int source[next]) (next + 1) |> fun (v, i) -> RpcValue.Binary v, i
-            | 0xc5uy ->
-                require 2 next length
-                binary (u16 source next) (next + 2) |> fun (v, i) -> RpcValue.Binary v, i
-            | 0xc6uy ->
-                require 4 next length
-                let count = u32 source next in
+    let tryReadValueLength limits (bytes: byte array) =
+        try
+            let mutable reader = MessagePackReader(ReadOnlyMemory<byte>(bytes))
 
-                if count > int64 Int32.MaxValue then
-                    raise (ArgumentException "Binary value is too large.")
-                else
-                    binary (int count) (next + 4) |> fun (v, i) -> RpcValue.Binary v, i
-            | 0xc7uy
-            | 0xc8uy
-            | 0xc9uy
-            | 0xd4uy
-            | 0xd5uy
-            | 0xd6uy
-            | 0xd7uy
-            | 0xd8uy -> raise (ArgumentException "MessagePack extension values are not allowed.")
-            | 0xcauy ->
-                require 4 next length
+            reader.Skip()
 
-                RpcValue.Float(
-                    float (
-                        BitConverter.Int32BitsToSingle(
-                            BinaryPrimitives.ReadInt32BigEndian(ReadOnlySpan(source, next, 4))
-                        )
-                    )
-                ),
-                next + 4
-            | 0xcbuy ->
-                require 8 next length
-
-                RpcValue.Float(
-                    BitConverter.Int64BitsToDouble(BinaryPrimitives.ReadInt64BigEndian(ReadOnlySpan(source, next, 8)))
-                ),
-                next + 8
-            | 0xccuy ->
-                require 1 next length
-                RpcValue.Unsigned(uint64 source[next]), next + 1
-            | 0xcduy ->
-                require 2 next length
-                RpcValue.Unsigned(uint64 (u16 source next)), next + 2
-            | 0xceuy ->
-                require 4 next length
-
-                RpcValue.Unsigned(uint64 (BinaryPrimitives.ReadUInt32BigEndian(ReadOnlySpan(source, next, 4)))),
-                next + 4
-            | 0xcfuy ->
-                require 8 next length
-                RpcValue.Unsigned(u64 source next), next + 8
-            | 0xd0uy ->
-                require 1 next length
-                RpcValue.Integer(int64 (sbyte source[next])), next + 1
-            | 0xd1uy ->
-                require 2 next length
-                RpcValue.Integer(int64 (BinaryPrimitives.ReadInt16BigEndian(ReadOnlySpan(source, next, 2)))), next + 2
-            | 0xd2uy ->
-                require 4 next length
-                RpcValue.Integer(int64 (BinaryPrimitives.ReadInt32BigEndian(ReadOnlySpan(source, next, 4)))), next + 4
-            | 0xd3uy ->
-                require 8 next length
-                RpcValue.Integer(BinaryPrimitives.ReadInt64BigEndian(ReadOnlySpan(source, next, 8))), next + 8
-            | 0xd9uy ->
-                require 1 next length
-                text (int source[next]) (next + 1) |> fun (v, i) -> RpcValue.String v, i
-            | 0xdauy ->
-                require 2 next length
-                text (u16 source next) (next + 2) |> fun (v, i) -> RpcValue.String v, i
-            | 0xdbuy ->
-                require 4 next length
-                let count = u32 source next in
-
-                if count > int64 Int32.MaxValue then
-                    raise (ArgumentException "String value is too large.")
-                else
-                    text (int count) (next + 4) |> fun (v, i) -> RpcValue.String v, i
-            | 0xdcuy ->
-                require 2 next length
-                array (u16 source next) (next + 2)
-            | 0xdduy ->
-                require 4 next length
-                let count = u32 source next in
-
-                if count > int64 Int32.MaxValue then
-                    raise (ArgumentException "Array is too large.")
-                else
-                    array (int count) (next + 4)
-            | 0xdeuy ->
-                require 2 next length
-                map (u16 source next) (next + 2)
-            | 0xdfuy ->
-                require 4 next length
-                let count = u32 source next in
-
-                if count > int64 Int32.MaxValue then
-                    raise (ArgumentException "Map is too large.")
-                else
-                    map (int count) (next + 4)
-            | _ -> raise (ArgumentException "Unsupported MessagePack marker.")
-
-        value 0 start
+            if reader.Consumed > int64 limits.MaximumValueBytes then
+                Error(RpcDecodeError.TooLarge "Inbound MessagePack value exceeds 16 MiB.")
+            else
+                Ok(int reader.Consumed)
+        with
+        | :? EndOfStreamException ->
+            if bytes.Length > limits.MaximumValueBytes then
+                Error(RpcDecodeError.TooLarge "Inbound MessagePack value exceeds 16 MiB.")
+            else
+                Error RpcDecodeError.Incomplete
+        | error -> invalid (safeMessage error)
 
     let tryDecodeValue limits (bytes: byte array) =
-        if bytes.Length > limits.MaximumValueBytes then
-            Error(RpcDecodeError.TooLarge "Inbound MessagePack value exceeds 16 MiB.")
-        else
+        match tryReadValueLength limits bytes with
+        | Error error -> Error error
+        | Ok length ->
             try
-                let parsed, consumed = parse limits bytes 0 bytes.Length
-                Ok(parsed, consumed)
+                let mutable reader = MessagePackReader(ReadOnlyMemory<byte>(bytes, 0, length))
+                let value = readValue limits (security limits) &reader
+
+                if reader.Consumed <> int64 length then
+                    invalid "Trailing bytes in a MessagePack value are not allowed."
+                else
+                    Ok(value, length)
             with
             | :? EndOfStreamException -> Error RpcDecodeError.Incomplete
-            | :? ArgumentException as error -> invalid error.Message
+            | error -> invalid (safeMessage error)
 
-    let private integer =
-        function
-        | RpcValue.Integer value -> value
-        | RpcValue.Unsigned value when value <= uint64 Int64.MaxValue -> int64 value
-        | _ -> invalidArg "frame" "Expected an integer frame tag."
+    let private tryUnsigned32 value =
+        match value with
+        | RpcValue.Unsigned number when number <= uint64 UInt32.MaxValue -> Some(uint32 number)
+        | RpcValue.Integer number when number >= 0L && number <= int64 UInt32.MaxValue -> Some(uint32 number)
+        | _ -> None
 
-    let decodeFrame limits bytes =
-        match tryDecodeValue limits bytes with
+    let private tryTag value =
+        match value with
+        | RpcValue.Unsigned number when number <= 2UL -> Some(int number)
+        | RpcValue.Integer number when number >= 0L && number <= 2L -> Some(int number)
+        | _ -> None
+
+    let private tryError value =
+        match value with
+        | RpcValue.Nil -> Ok None
+        | RpcValue.Map fields ->
+            match fields.TryGetValue "code", fields.TryGetValue "message" with
+            | (true, RpcValue.String code), (true, RpcValue.String message) ->
+                Ok(
+                    Some
+                        { Code = code
+                          Message = message
+                          Data =
+                            match fields.TryGetValue "data" with
+                            | true, data -> Some data
+                            | _ -> None }
+                )
+            | _ -> invalid "A response error map requires string code and message fields."
+        | _ -> invalid "A response error must be nil or a string-key map."
+
+    let private tryReadNext limits configuredSecurity (reader: byref<MessagePackReader>) =
+        try
+            Ok(readValue limits configuredSecurity &reader)
+        with
+        | :? EndOfStreamException -> Error RpcDecodeError.Incomplete
+        | error -> Error(RpcDecodeError.Invalid(safeMessage error))
+
+    let decodeFrame limits (bytes: byte array) =
+        match tryReadValueLength limits bytes with
         | Error error -> Error error
-        | Ok(value, consumed) when consumed <> bytes.Length -> invalid "Trailing bytes in a frame are not allowed."
-        | Ok(RpcValue.Array values, _) ->
+        | Ok consumed when consumed <> bytes.Length -> invalid "Trailing bytes in a frame are not allowed."
+        | Ok _ ->
             try
-                match values.Length, integer values[0] with
-                | 4, 0L ->
-                    let id = RpcValue.requireUnsigned32 "msgid" values[1]
-                    let methodName = RpcValue.requireString "method" values[2]
-                    RpcValue.requireMap "params" values[3] |> ignore
-                    Ok(Request(id, methodName, values[3]))
-                | 4, 1L ->
-                    let id = RpcValue.requireUnsigned32 "msgid" values[1]
+                let configuredSecurity = security limits
+                let mutable reader = MessagePackReader(ReadOnlyMemory<byte>(bytes))
 
-                    let error =
-                        match values[2] with
-                        | RpcValue.Nil -> None
-                        | RpcValue.Map fields ->
-                            let code = fields |> fun map -> map["code"] |> RpcValue.requireString "error.code"
+                if reader.NextMessagePackType <> MessagePackType.Array then
+                    invalid "A MessagePack-RPC frame must be an array."
+                else
+                    let count = reader.ReadArrayHeader()
 
-                            let message =
-                                fields |> fun map -> map["message"] |> RpcValue.requireString "error.message"
+                    if count = 0 then
+                        invalid "A MessagePack-RPC frame cannot be an empty array."
+                    else
+                        match tryReadNext limits configuredSecurity &reader with
+                        | Error error -> Error error
+                        | Ok tagValue ->
+                            match tryTag tagValue with
+                            | Some 0 ->
+                                if count < 2 then
+                                    invalid "A request requires a non-negative uint32-compatible message ID."
+                                else
+                                    match tryReadNext limits configuredSecurity &reader with
+                                    | Error error -> Error error
+                                    | Ok idValue ->
+                                        match tryUnsigned32 idValue with
+                                        | None ->
+                                            invalid "A request requires a non-negative uint32-compatible message ID."
+                                        | Some id when count <> 4 ->
+                                            Ok(
+                                                RpcFrameDecodeResult.RecoverableError(
+                                                    id,
+                                                    { Code = "invalid_request"
+                                                      Message = "A request frame must contain exactly four values."
+                                                      Data = None }
+                                                )
+                                            )
+                                        | Some id ->
+                                            let methodResult = tryReadNext limits configuredSecurity &reader
+                                            let paramsResult = tryReadNext limits configuredSecurity &reader
 
-                            Some
-                                { Code = code
-                                  Message = message
-                                  Data =
-                                    fields.TryGetValue "data"
-                                    |> function
-                                        | true, data -> Some data
-                                        | _ -> None }
-                        | _ -> invalidArg "error" "Expected an error map or nil."
+                                            match methodResult, paramsResult with
+                                            | Ok(RpcValue.String methodName), Ok((RpcValue.Map _) as parameters) when
+                                                not (String.IsNullOrWhiteSpace methodName)
+                                                ->
+                                                Ok(RpcFrameDecodeResult.Frame(Request(id, methodName, parameters)))
+                                            | Ok(RpcValue.String methodName), Ok _ when
+                                                not (String.IsNullOrWhiteSpace methodName)
+                                                ->
+                                                Ok(
+                                                    RpcFrameDecodeResult.RecoverableError(
+                                                        id,
+                                                        { Code = "invalid_params"
+                                                          Message = "Request params must be a string-key map."
+                                                          Data = None }
+                                                    )
+                                                )
+                                            | Ok(RpcValue.String methodName), Error decodeError when
+                                                not (String.IsNullOrWhiteSpace methodName)
+                                                ->
+                                                Ok(
+                                                    RpcFrameDecodeResult.RecoverableError(
+                                                        id,
+                                                        { Code = "invalid_params"
+                                                          Message =
+                                                            match decodeError with
+                                                            | RpcDecodeError.Invalid message -> message
+                                                            | RpcDecodeError.TooLarge message -> message
+                                                            | RpcDecodeError.Incomplete ->
+                                                                "Request params are incomplete."
+                                                          Data = None }
+                                                    )
+                                                )
+                                            | _ ->
+                                                Ok(
+                                                    RpcFrameDecodeResult.RecoverableError(
+                                                        id,
+                                                        { Code = "invalid_request"
+                                                          Message = "A request method must be a non-empty UTF-8 string."
+                                                          Data = None }
+                                                    )
+                                                )
+                            | Some 1 when count = 4 ->
+                                let id = tryReadNext limits configuredSecurity &reader
+                                let error = tryReadNext limits configuredSecurity &reader
+                                let result = tryReadNext limits configuredSecurity &reader
 
-                    Ok(Response(id, error, values[3]))
-                | 3, 2L ->
-                    let methodName = RpcValue.requireString "method" values[1]
-                    RpcValue.requireMap "params" values[2] |> ignore
-                    Ok(Notification(methodName, values[2]))
-                | _ -> invalid "Invalid MessagePack-RPC frame arity or tag."
-            with :? ArgumentException as error ->
-                invalid error.Message
-        | Ok _ -> invalid "A MessagePack-RPC frame must be an array."
+                                match id, error, result with
+                                | Ok idValue, Ok errorValue, Ok resultValue ->
+                                    match tryUnsigned32 idValue, tryError errorValue with
+                                    | Some messageId, Ok rpcError ->
+                                        Ok(RpcFrameDecodeResult.Frame(Response(messageId, rpcError, resultValue)))
+                                    | None, _ ->
+                                        invalid "A response requires a non-negative uint32-compatible message ID."
+                                    | _, Error decodeError -> Error decodeError
+                                | Error decodeError, _, _
+                                | _, Error decodeError, _
+                                | _, _, Error decodeError -> Error decodeError
+                            | Some 1 -> invalid "A response frame must contain exactly four values."
+                            | Some 2 when count = 3 ->
+                                let methodName = tryReadNext limits configuredSecurity &reader
+                                let parameters = tryReadNext limits configuredSecurity &reader
 
-    let private appendUnsigned (buffer: ResizeArray<byte>) (value: uint64) =
-        if value <= 0x7fUL then
-            buffer.Add(byte value)
-        elif value <= 0xffUL then
-            buffer.Add 0xccuy
-            buffer.Add(byte value)
-        elif value <= 0xffffUL then
-            buffer.Add 0xcduy
-            buffer.Add(byte (value >>> 8))
-            buffer.Add(byte value)
-        elif value <= 0xffffffffUL then
-            buffer.Add 0xceuy
+                                match methodName, parameters with
+                                | Ok(RpcValue.String name), Ok((RpcValue.Map _) as notificationParameters) when
+                                    not (String.IsNullOrWhiteSpace name)
+                                    ->
+                                    Ok(RpcFrameDecodeResult.Frame(Notification(name, notificationParameters)))
+                                | Error decodeError, _
+                                | _, Error decodeError -> Error decodeError
+                                | _ ->
+                                    invalid
+                                        "A notification requires a non-empty string method and string-key params map."
+                            | Some 2 -> invalid "A notification frame must contain exactly three values."
+                            | _ -> invalid "The MessagePack-RPC frame tag must be 0, 1, or 2."
+            with
+            | :? EndOfStreamException -> Error RpcDecodeError.Incomplete
+            | error -> invalid (safeMessage error)
 
-            for shift in [ 24; 16; 8; 0 ] do
-                buffer.Add(byte (value >>> shift))
-        else
-            buffer.Add 0xcfuy
+    let rec private writeValue (writer: byref<MessagePackWriter>) value =
+        match value with
+        | RpcValue.Nil -> writer.WriteNil()
+        | RpcValue.Boolean boolean -> writer.Write boolean
+        | RpcValue.Integer integer -> writer.Write integer
+        | RpcValue.Unsigned integer -> writer.Write integer
+        | RpcValue.Float number -> writer.Write number
+        | RpcValue.String text -> writer.Write text
+        | RpcValue.Binary bytes -> writer.Write bytes
+        | RpcValue.Array values ->
+            writer.WriteArrayHeader values.Length
 
-            for shift in [ 56; 48; 40; 32; 24; 16; 8; 0 ] do
-                buffer.Add(byte (value >>> shift))
+            for item in values do
+                writeValue &writer item
+        | RpcValue.Map fields ->
+            writer.WriteMapHeader fields.Count
 
-    let private appendLength marker8 marker16 marker32 (buffer: ResizeArray<byte>) length =
-        if length <= 0xff then
-            buffer.Add marker8
-            buffer.Add(byte length)
-        elif length <= 0xffff then
-            buffer.Add marker16
-            buffer.Add(byte (length >>> 8))
-            buffer.Add(byte length)
-        else
-            buffer.Add marker32
-
-            for shift in [ 24; 16; 8; 0 ] do
-                buffer.Add(byte (uint32 length >>> shift))
+            for field in fields |> Seq.sortBy _.Key do
+                writer.Write field.Key
+                writeValue &writer field.Value
 
     let encodeValue value =
-        let buffer = ResizeArray<byte>()
-
-        let rec append value =
-            match value with
-            | RpcValue.Nil -> buffer.Add 0xc0uy
-            | RpcValue.Boolean false -> buffer.Add 0xc2uy
-            | RpcValue.Boolean true -> buffer.Add 0xc3uy
-            | RpcValue.Unsigned number -> appendUnsigned buffer number
-            | RpcValue.Integer number when number >= 0L -> appendUnsigned buffer (uint64 number)
-            | RpcValue.Integer number when number >= -32L -> buffer.Add(byte (sbyte number))
-            | RpcValue.Integer number when number >= int64 Int16.MinValue ->
-                buffer.Add 0xd1uy
-                let raw = int16 number in
-                buffer.Add(byte (raw >>> 8))
-                buffer.Add(byte raw)
-            | RpcValue.Integer number when number >= int64 Int32.MinValue ->
-                buffer.Add 0xd2uy
-                let raw = int32 number in
-
-                for shift in [ 24; 16; 8; 0 ] do
-                    buffer.Add(byte (raw >>> shift))
-            | RpcValue.Integer number ->
-                buffer.Add 0xd3uy
-
-                for shift in [ 56; 48; 40; 32; 24; 16; 8; 0 ] do
-                    buffer.Add(byte (number >>> shift))
-            | RpcValue.Float number ->
-                buffer.Add 0xcbuy
-                let raw = BitConverter.DoubleToInt64Bits number in
-
-                for shift in [ 56; 48; 40; 32; 24; 16; 8; 0 ] do
-                    buffer.Add(byte (raw >>> shift))
-            | RpcValue.String text ->
-                let bytes = Encoding.UTF8.GetBytes text
-
-                if bytes.Length <= 31 then
-                    buffer.Add(byte (0xa0 + bytes.Length))
-                else
-                    appendLength 0xd9uy 0xdauy 0xdbuy buffer bytes.Length
-
-                buffer.AddRange bytes
-            | RpcValue.Binary bytes ->
-                appendLength 0xc4uy 0xc5uy 0xc6uy buffer bytes.Length
-                buffer.AddRange bytes
-            | RpcValue.Array values ->
-                if values.Length <= 15 then
-                    buffer.Add(byte (0x90 + values.Length))
-                elif values.Length <= 0xffff then
-                    buffer.Add 0xdcuy
-                    buffer.Add(byte (values.Length >>> 8))
-                    buffer.Add(byte values.Length)
-                else
-                    buffer.Add 0xdduy
-
-                    for shift in [ 24; 16; 8; 0 ] do
-                        buffer.Add(byte (uint32 values.Length >>> shift))
-
-                for item in values do
-                    append item
-            | RpcValue.Map fields ->
-                if fields.Count <= 15 then
-                    buffer.Add(byte (0x80 + fields.Count))
-                elif fields.Count <= 0xffff then
-                    buffer.Add 0xdeuy
-                    buffer.Add(byte (fields.Count >>> 8))
-                    buffer.Add(byte fields.Count)
-                else
-                    buffer.Add 0xdfuy
-
-                    for shift in [ 24; 16; 8; 0 ] do
-                        buffer.Add(byte (uint32 fields.Count >>> shift))
-
-                for field in fields |> Seq.sortBy _.Key do
-                    append (RpcValue.String field.Key)
-                    append field.Value
-
-        append value
-        buffer.ToArray()
+        let buffer = ArrayBufferWriter<byte>()
+        let mutable writer = MessagePackWriter(buffer)
+        writeValue &writer value
+        writer.Flush()
+        buffer.WrittenSpan.ToArray()
 
     let encodeFrame frame =
         let errorValue error =
             match error with
             | None -> RpcValue.Nil
             | Some value ->
-                RpcValue.map [ "code", RpcValue.String value.Code; "message", RpcValue.String value.Message ]
-                |> fun baseMap ->
-                    match value.Data with
-                    | None -> baseMap
-                    | Some data ->
-                        match baseMap with
-                        | RpcValue.Map fields -> RpcValue.Map(fields.Add("data", data))
-                        | _ -> failwith "Impossible."
+                RpcValue.map
+                    [ "code", RpcValue.String value.Code
+                      "message", RpcValue.String value.Message
+                      "data", value.Data |> Option.defaultValue RpcValue.Nil ]
 
         match frame with
         | Request(id, methodName, parameters) ->
