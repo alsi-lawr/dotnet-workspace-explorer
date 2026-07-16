@@ -78,6 +78,7 @@ type private ParsedCommand =
     | Package of
         operation: PackageOperation option *
         project: string option *
+        file: string option *
         version: string option *
         operands: string list *
         help: bool
@@ -304,9 +305,8 @@ module private Grammar =
                         Ok(
                             Package(
                                 operation,
-                                options
-                                |> Map.tryFind "--project"
-                                |> Option.orElseWith (fun () -> options |> Map.tryFind "--file"),
+                                options |> Map.tryFind "--project",
+                                options |> Map.tryFind "--file",
                                 options |> Map.tryFind "--version",
                                 operands,
                                 help beforeSentinel
@@ -380,7 +380,7 @@ module private Grammar =
     let mutates =
         function
         | Solution(_, Some(Add | Remove | Migrate), _, false) -> true
-        | Package(Some(PackageAdd | PackageRemove | PackageUpdate), _, _, _, false) -> true
+        | Package(Some(PackageAdd | PackageRemove | PackageUpdate), _, _, _, _, false) -> true
         | Reference(Some(ReferenceAdd | ReferenceRemove), _, _, false) -> true
         | New(TemplateCreate, _, false, _, false) -> true
         | _ -> false
@@ -595,7 +595,7 @@ module private Verify =
     let private attribute name (element: XElement) =
         element.Attribute(XName.Get name) |> Option.ofObj |> Option.map _.Value
 
-    let private packageSubject (value: string) =
+    let packageSubject (value: string) =
         let index = value.LastIndexOf '@'
 
         if index > 0 then
@@ -892,6 +892,7 @@ module internal Broker =
                                 Verify.verifySolution target operation operands cancellationToken
                             | Package(Some((PackageAdd | PackageRemove | PackageUpdate) as operation),
                                       project,
+                                      file,
                                       version,
                                       operands,
                                       false) ->
@@ -900,31 +901,71 @@ module internal Broker =
                                     |> Option.map Ok
                                     |> Option.defaultWith (fun () -> Paths.defaultProject ())
 
-                                match target with
-                                | Ok target ->
-                                    let effectiveOperands =
+                                match file, target with
+                                | Some path, _ ->
+                                    let effective =
                                         match operation, version, operands with
-                                        | PackageAdd, Some requested, [ package ] when
-                                            not (package.Contains("@", StringComparison.Ordinal))
-                                            ->
+                                        | PackageAdd, Some requested, [ package ] when not (package.Contains "@") ->
                                             [ $"{package}@{requested}" ]
-                                        | PackageAdd, _, _ :: _ :: _ -> []
                                         | _ -> operands
 
-                                    if List.isEmpty effectiveOperands then
-                                        Task.FromResult(
-                                            Error(Failure.invalid "Package add accepts exactly one package ID.")
-                                        )
-                                    elif
-                                        Path.GetExtension(target).Equals(".sln", StringComparison.OrdinalIgnoreCase)
-                                        || Path.GetExtension(target).Equals(".slnx", StringComparison.OrdinalIgnoreCase)
-                                    then
-                                        Task.FromResult(
-                                            Error(Failure.invalid "Solution-wide package mutation is not supported.")
-                                        )
-                                    else
-                                        Task.FromResult(Verify.verifyPackage operation target effectiveOperands)
-                                | Error message -> Task.FromResult(Error(Failure.invalid message))
+                                    match FileBasedPackageDirectives.Parse(File.ReadAllText path) with
+                                    | Error failure -> Task.FromResult(Error failure)
+                                    | Ok directives ->
+                                        let present subject =
+                                            let id, requested = Verify.packageSubject subject in
+                                            FileBasedPackageDirectives.Contains(id, requested, directives)
+
+                                        let correct =
+                                            match operation with
+                                            | PackageAdd -> effective.Length = 1 && present effective.Head
+                                            | PackageRemove -> effective |> List.forall (present >> not)
+                                            | PackageUpdate -> false
+                                            | _ -> true
+
+                                        if correct then
+                                            Task.FromResult(Ok None)
+                                        elif operation = PackageUpdate then
+                                            Task.FromResult(
+                                                Error(Failure.invalid "File-based package update is not supported.")
+                                            )
+                                        else
+                                            Task.FromResult(
+                                                Error(
+                                                    Failure.verification
+                                                        "The file-based app does not contain the requested package state."
+                                                )
+                                            )
+                                | None, target ->
+                                    match target with
+                                    | Ok target ->
+                                        let effectiveOperands =
+                                            match operation, version, operands with
+                                            | PackageAdd, Some requested, [ package ] when
+                                                not (package.Contains("@", StringComparison.Ordinal))
+                                                ->
+                                                [ $"{package}@{requested}" ]
+                                            | PackageAdd, _, _ :: _ :: _ -> []
+                                            | _ -> operands
+
+                                        if List.isEmpty effectiveOperands then
+                                            Task.FromResult(
+                                                Error(Failure.invalid "Package add accepts exactly one package ID.")
+                                            )
+                                        elif
+                                            Path.GetExtension(target).Equals(".sln", StringComparison.OrdinalIgnoreCase)
+                                            || Path
+                                                .GetExtension(target)
+                                                .Equals(".slnx", StringComparison.OrdinalIgnoreCase)
+                                        then
+                                            Task.FromResult(
+                                                Error(
+                                                    Failure.invalid "Solution-wide package mutation is not supported."
+                                                )
+                                            )
+                                        else
+                                            Task.FromResult(Verify.verifyPackage operation target effectiveOperands)
+                                    | Error message -> Task.FromResult(Error(Failure.invalid message))
                             | Reference(Some((ReferenceAdd | ReferenceRemove) as operation), project, operands, false) ->
                                 let target =
                                     project

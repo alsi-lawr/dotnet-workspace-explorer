@@ -53,6 +53,29 @@ module private Helpers =
                 Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MODE", prior))
 
 type CliBrokerTests() =
+    [<Fact>]
+    member _.``file based package add verifies directive with explicit version``() =
+        let directory = Helpers.temporaryDirectory ()
+
+        try
+            let source = Path.Combine(directory, "app.cs")
+            File.WriteAllText(source, "#:package Example.Package@1.2.3")
+
+            let result =
+                Helpers.fake
+                    "capture"
+                    [| "package"
+                       "add"
+                       "Example.Package"
+                       "--version"
+                       "1.2.3"
+                       "--file"
+                       source |]
+
+            Assert.True(result.Success)
+        finally
+            Helpers.delete directory
+
     [<Theory>]
     [<InlineData("#:package Example.Package", "Example.Package", "")>]
     [<InlineData("  #:package Example.Package@1.2.3", "Example.Package", "1.2.3")>]
