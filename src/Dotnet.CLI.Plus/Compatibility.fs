@@ -416,6 +416,7 @@ module private Grammar =
                         | "uninstall" :: tail -> TemplateUninstall, tail
                         | "update" :: tail -> TemplateUpdate, tail
                         | "create" :: tail -> TemplateCreate, tail
+                        | [] when Map.isEmpty options && List.isEmpty sentinelOperands -> TemplateList, []
                         | tail -> TemplateCreate, tail @ sentinelOperands
 
                     Ok(
@@ -1031,6 +1032,44 @@ module internal Broker =
                         | Solution(target, Some(operation as (Add | Remove | Migrate)), operands, false) ->
                             let! workspace = Verify.prepareSolution target operation operands cancellationToken
                             return workspace |> Result.map ignore
+                        | Package(Some PackageAdd, project, file, _, operands, false) ->
+                            if operands.Length <> 1 || (project.IsSome && file.IsSome) then
+                                return Error(Failure.invalid "Package add requires exactly one package and one target.")
+                            else
+                                match
+                                    file
+                                    |> Option.orElse project
+                                    |> Option.map Ok
+                                    |> Option.defaultWith Paths.defaultProject
+                                with
+                                | Ok target when File.Exists target -> return Ok()
+                                | Ok _ -> return Error(Failure.invalid "The package target does not exist.")
+                                | Error message -> return Error(Failure.invalid message)
+                        | Package(Some PackageRemove, project, file, _, operands, false) ->
+                            if List.isEmpty operands || (project.IsSome && file.IsSome) then
+                                return Error(Failure.invalid "Package remove requires operands and one target.")
+                            else
+                                match
+                                    file
+                                    |> Option.orElse project
+                                    |> Option.map Ok
+                                    |> Option.defaultWith Paths.defaultProject
+                                with
+                                | Ok target when File.Exists target -> return Ok()
+                                | Ok _ -> return Error(Failure.invalid "The package target does not exist.")
+                                | Error message -> return Error(Failure.invalid message)
+                        | Reference(Some(ReferenceAdd | ReferenceRemove), project, operands, false) ->
+                            if List.isEmpty operands then
+                                return Error(Failure.invalid "Reference mutation requires operands.")
+                            else
+                                match project |> Option.map Ok |> Option.defaultWith Paths.defaultProject with
+                                | Ok target when File.Exists target -> return Ok()
+                                | Ok _ -> return Error(Failure.invalid "The reference target does not exist.")
+                                | Error message -> return Error(Failure.invalid message)
+                        | New(TemplateInstall, _, false, subjects, false) when List.isEmpty subjects ->
+                            return Error(Failure.invalid "Template install requires a subject.")
+                        | New(TemplateCreate, _, false, subjects, false) when List.isEmpty subjects ->
+                            return Error(Failure.invalid "Template creation requires a template.")
                         | _ -> return Ok()
                     }
 
