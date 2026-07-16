@@ -53,6 +53,14 @@ module private PipeTest =
 
             repositoryRoot parent.FullName
 
+    let buildConfiguration =
+        let frameworkDirectory = DirectoryInfo(AppContext.BaseDirectory)
+
+        if isNull frameworkDirectory.Parent then
+            failwith "Could not determine the active build configuration."
+
+        frameworkDirectory.Parent.Name
+
     let apphost =
         let root = repositoryRoot AppContext.BaseDirectory
 
@@ -62,7 +70,7 @@ module private PipeTest =
             else
                 "Dotnet.CLI.Plus"
 
-        Path.Combine(root, "src", "Dotnet.CLI.Plus", "bin", "Release", "net10.0", name)
+        Path.Combine(root, "src", "Dotnet.CLI.Plus", "bin", buildConfiguration, "net10.0", name)
 
     let startPipe alias solution =
         let start = ProcessStartInfo(apphost)
@@ -90,7 +98,7 @@ module private PipeTest =
             child.StandardInput.BaseStream.Write(bytes, 0, bytes.Length)
             child.StandardInput.BaseStream.Flush()
 
-    let readFrame (child: Process) =
+    let readFrameWithSize (child: Process) =
         let pending = ResizeArray<byte>()
         let mutable frame = None
 
@@ -107,12 +115,14 @@ module private PipeTest =
             | Error error -> failwithf "Invalid apphost stdout: %A" error
             | Ok length when length = pending.Count ->
                 match RpcCodec.decodeFrame RpcCodec.secureLimits (pending.ToArray()) with
-                | Ok(RpcFrameDecodeResult.Frame value) -> frame <- Some value
+                | Ok(RpcFrameDecodeResult.Frame value) -> frame <- Some(value, length)
                 | Ok(RpcFrameDecodeResult.RecoverableError _) -> failwith "Server stdout contained a request error."
                 | Error error -> failwithf "Invalid apphost frame: %A" error
             | Ok _ -> failwith "The frame reader consumed an unexpected byte count."
 
         frame.Value
+
+    let readFrame child = readFrameWithSize child |> fst
 
     let readRemaining (stream: Stream) =
         use buffer = new MemoryStream()
@@ -131,7 +141,9 @@ module private PipeTest =
 
     let shutdown (child: Process) id =
         send child false (request id "shutdown" RpcValue.emptyMap)
-        let error, result = readFrame child |> response id
+        let frame, size = readFrameWithSize child
+        Assert.True(size <= 1024)
+        let error, result = response id frame
         Assert.True(error.IsNone)
         Assert.Equal(RpcValue.Boolean true, field "accepted" result)
         child.StandardInput.Close()
@@ -260,7 +272,7 @@ type PipeTests() =
             let solution = Path.Combine(directory, "Demo.slnx")
             let model = SolutionModel()
 
-            for index in 1..100 do
+            for index in 1..500 do
                 model.AddProject($"Project{index}.fsproj", $"Project{index}", null) |> ignore
 
             PipeTest.save solution model
@@ -278,16 +290,19 @@ type PipeTests() =
 
                 let cancel = PipeTest.map [ "operationId", RpcValue.String operationId ]
                 PipeTest.send child false (PipeTest.request 3u "operation/cancel" cancel)
-                let cancelError, cancelResult = PipeTest.readFrame child |> PipeTest.response 3u
-                Assert.True(cancelError.IsNone)
-                Assert.Equal(RpcValue.Boolean true, PipeTest.field "accepted" cancelResult)
+                let mutable cancelResponseSeen = false
                 let mutable completions = 0
                 let mutable completed = false
 
                 while not completed do
                     match PipeTest.readFrame child with
-                    | Notification("workspace/exportChunk", _) -> ()
+                    | Notification("workspace/exportChunk", _) when not cancelResponseSeen -> ()
+                    | Response(3u, cancelError, cancelResult) ->
+                        Assert.True(cancelError.IsNone)
+                        Assert.Equal(RpcValue.Boolean true, PipeTest.field "accepted" cancelResult)
+                        cancelResponseSeen <- true
                     | Notification("operation/completed", parameters) ->
+                        Assert.True(cancelResponseSeen, "Cancellation completion preceded its response.")
                         Assert.Equal(RpcValue.String operationId, PipeTest.field "operationId" parameters)
                         Assert.Equal(RpcValue.String "cancelled", PipeTest.field "outcome" parameters)
                         Assert.NotEmpty(PipeTest.field "diagnostics" parameters |> RpcValue.requireArray "diagnostics")
@@ -295,6 +310,7 @@ type PipeTests() =
                         completed <- true
                     | frame -> failwithf "Unexpected cancellation frame: %A" frame
 
+                Assert.True(cancelResponseSeen)
                 Assert.Equal(1, completions)
                 PipeTest.shutdown child 4u
             finally
@@ -302,6 +318,90 @@ type PipeTests() =
         finally
             if Directory.Exists directory then
                 Directory.Delete(directory, true)
+
+    [<Fact>]
+    member _.``global negotiated frame limit covers responses errors and export notifications``() =
+        let directory = PipeTest.temporaryDirectory "pipe-global-limit"
+
+        try
+            let solution = Path.Combine(directory, "Demo.slnx")
+            let model = SolutionModel()
+
+            for index in 1..40 do
+                model.AddProject($"Project{index}.fsproj", $"Project{index}", null) |> ignore
+
+            model.AddProject("Oversized.fsproj", "Oversized", null) |> ignore
+            PipeTest.save solution model
+            use child = PipeTest.startPipe "solution" solution
+
+            try
+                PipeTest.send child false (PipeTest.request 1u "initialize" PipeTest.initialize)
+                let initializeFrame, initializeSize = PipeTest.readFrameWithSize child
+                Assert.True(initializeSize <= 1024)
+                PipeTest.response 1u initializeFrame |> ignore
+
+                PipeTest.send child false (PipeTest.request 2u "workspace/root" RpcValue.emptyMap)
+                let rootFrame, rootSize = PipeTest.readFrameWithSize child
+                Assert.True(rootSize <= 1024)
+                let rootError, _ = PipeTest.response 2u rootFrame
+                Assert.Equal("response_too_large", rootError.Value.Code)
+
+                let unknownMethod = String('m', 3000)
+                PipeTest.send child false (PipeTest.request 3u unknownMethod RpcValue.emptyMap)
+                let errorFrame, errorSize = PipeTest.readFrameWithSize child
+                Assert.True(errorSize <= 1024)
+                let methodError, _ = PipeTest.response 3u errorFrame
+                Assert.Equal("response_too_large", methodError.Value.Code)
+
+                PipeTest.send child false (PipeTest.request 4u "workspace/export" RpcValue.emptyMap)
+                let exportFrame, exportSize = PipeTest.readFrameWithSize child
+                Assert.True(exportSize <= 1024)
+                let exportError, exportResult = PipeTest.response 4u exportFrame
+                Assert.True(exportError.IsNone)
+
+                let operationId =
+                    PipeTest.field "operationId" exportResult
+                    |> RpcValue.requireString "operationId"
+
+                let mutable completed = false
+
+                while not completed do
+                    let frame, size = PipeTest.readFrameWithSize child
+                    Assert.True(size <= 1024)
+
+                    match frame with
+                    | Notification("operation/completed", parameters) ->
+                        Assert.Equal(RpcValue.String operationId, PipeTest.field "operationId" parameters)
+                        Assert.Equal(RpcValue.String "succeeded", PipeTest.field "outcome" parameters)
+                        completed <- true
+                    | Notification("workspace/exportChunk", _) -> ()
+                    | value -> failwithf "Unexpected globally bounded frame: %A" value
+
+                PipeTest.shutdown child 5u
+            finally
+                PipeTest.disposeProcess child
+        finally
+            if Directory.Exists directory then
+                Directory.Delete(directory, true)
+
+    [<Fact>]
+    member _.``canonical projection encoding distinguishes old delimiter collisions and advances revision``() =
+        let left = [ [ "a|b"; "c" ]; [ "line1\nline2,tail" ] ]
+        let right = [ [ "a"; "b|c" ]; [ "line1\nline2,tail" ] ]
+
+        let legacy values =
+            values |> List.map (String.concat "|") |> String.concat "\n"
+
+        Assert.Equal(legacy left, legacy right)
+
+        let leftSignature =
+            PipeTestHooks.canonicalSignature (left |> Seq.map (fun group -> group :> seq<string>))
+
+        let rightSignature =
+            PipeTestHooks.canonicalSignature (right |> Seq.map (fun group -> group :> seq<string>))
+
+        Assert.False(leftSignature.AsSpan().SequenceEqual(rightSignature))
+        Assert.Equal(8L, PipeTestHooks.nextRevision 7L leftSignature rightSignature)
 
     [<Fact>]
     member _.``slnf writes fail before deferred command handling``() =

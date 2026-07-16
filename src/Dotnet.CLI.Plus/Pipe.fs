@@ -12,23 +12,151 @@ open Dotnet.CLI.Plus.Core
 open Dotnet.CLI.Plus.Solution
 open Dotnet.CLI.Plus.Transport
 
+module private ProjectionFingerprint =
+    let private writeString (writer: BinaryWriter) (value: string) =
+        let bytes = Encoding.UTF8.GetBytes value
+        writer.Write bytes.Length
+        writer.Write bytes
+
+    let private writeOption (writer: BinaryWriter) value =
+        match value with
+        | Some text ->
+            writer.Write true
+            writeString writer text
+        | None -> writer.Write false
+
+    let private writeNode (writer: BinaryWriter) (node: WorkspaceNode) =
+        writeString writer node.NodeId.Value
+        writer.Write(int node.NodeKind)
+        writeString writer node.Identity.Value
+        writeString writer node.Name
+        writer.Write(int node.NodeLoadState)
+        writer.Write node.AvailableCapabilities.Length
+
+        for capability in node.AvailableCapabilities do
+            writeString writer capability.Value
+
+    let create (workspace: SolutionWorkspace) =
+        use stream = new MemoryStream()
+        use writer = new BinaryWriter(stream, Encoding.UTF8, true)
+        let root = workspace.RootProjection
+        writer.Write root.Nodes.Length
+
+        for node in root.Nodes do
+            writeNode writer node
+
+        writer.Write root.Folders.Length
+
+        for folder in root.Folders do
+            writeNode writer folder.Node
+            writeString writer folder.Path
+            writeOption writer folder.ParentPath
+
+        writer.Write root.Items.Length
+
+        for item in root.Items do
+            writeNode writer item.Node
+            writeOption writer item.FolderPath
+            writeString writer item.RelativePath
+
+        writer.Write root.Projects.Length
+
+        for project in root.Projects do
+            writeNode writer project.Node
+            writeString writer project.Path.AbsolutePath.Value
+            writeString writer project.Path.SolutionRelativePath
+            writer.Write project.Path.IsExternal
+            writeOption writer project.ParentFolderPath
+            writer.Write project.IsFilteredOut
+            writer.Write project.ConfigurationRules.Length
+
+            for rule in project.ConfigurationRules do
+                writeString writer rule.SolutionBuildType
+                writeString writer rule.SolutionPlatform
+                writeString writer rule.Dimension
+                writeString writer rule.ProjectValue
+
+            writer.Write project.ConfigurationMappings.Length
+
+            for mapping in project.ConfigurationMappings do
+                writeString writer mapping.SolutionBuildType
+                writeString writer mapping.SolutionPlatform
+                writeString writer mapping.ProjectBuildType
+                writeString writer mapping.ProjectPlatform
+                writer.Write mapping.Builds
+                writer.Write mapping.Deploys
+
+        writer.Write root.Dependencies.Length
+
+        for dependency in root.Dependencies do
+            writeNode writer dependency.Node
+            writeString writer dependency.ProjectId.Value
+            writeString writer dependency.DependsOnProjectId.Value
+
+        writer.Flush()
+        stream.ToArray()
+
+    let changed (left: byte array) (right: byte array) =
+        not (left.AsSpan().SequenceEqual(right))
+
+    let canonicalStrings (groups: seq<seq<string>>) =
+        use stream = new MemoryStream()
+        use writer = new BinaryWriter(stream, Encoding.UTF8, true)
+        let values = groups |> Seq.map Seq.toArray |> Seq.toArray
+        writer.Write values.Length
+
+        for group in values do
+            writer.Write group.Length
+
+            for value in group do
+                writeString writer value
+
+        writer.Flush()
+        stream.ToArray()
+
+type private ExportOperationState(sessionToken: CancellationToken) =
+    let cancellation = CancellationTokenSource.CreateLinkedTokenSource sessionToken
+
+    let cancellationResponseFlushed =
+        TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let mutable state = 0 // 0 running, 1 cancellation reserved, 2 success reserved, 3 complete
+
+    member _.Token = cancellation.Token
+    member _.IsCancellationReserved = Volatile.Read(&state) = 1
+
+    member _.TryReserveCancellation() =
+        Interlocked.CompareExchange(&state, 1, 0) = 0
+
+    member _.TryReserveCompletion() =
+        Interlocked.CompareExchange(&state, 2, 0) = 0
+
+    member _.WaitForCancellationResponseAsync() = cancellationResponseFlushed.Task
+
+    member _.CommitCancellationAfterResponse() =
+        cancellationResponseFlushed.TrySetResult() |> ignore
+        cancellation.Cancel()
+
+    member _.CancelForShutdown() =
+        if Interlocked.CompareExchange(&state, 1, 0) = 0 || Volatile.Read(&state) = 1 then
+            cancellationResponseFlushed.TrySetResult() |> ignore
+            cancellation.Cancel()
+
+    member _.Complete() =
+        Volatile.Write(&state, 3)
+        cancellation.Dispose()
+
+module internal PipeTestHooks =
+    let canonicalSignature groups =
+        ProjectionFingerprint.canonicalStrings groups
+
+    let nextRevision revision before after =
+        if ProjectionFingerprint.changed before after then
+            revision + 1L
+        else
+            revision
+
 module internal Pipe =
-    let private map values = RpcValue.map values
-    let private text value = RpcValue.String value
-    let private integer value = RpcValue.Integer value
-    let private boolean value = RpcValue.Boolean value
-
-    let private requireEmpty parameters =
-        let fields = RpcValue.requireMap "params" parameters
-
-        if fields.Count <> 0 then
-            invalidArg "params" "This method does not accept parameters."
-
-    let private requestRevision fields =
-        match RpcValue.optionalField "expectedRevision" fields with
-        | None -> None
-        | Some value -> Some(RpcValue.requireInteger "expectedRevision" value)
-
     let private openWorkspace target cancellationToken =
         task {
             let! outcome = SolutionStore.OpenAsync(target, cancellationToken)
@@ -39,76 +167,18 @@ module internal Pipe =
                 | WorkspaceOutcome.Failure failure -> Error(PublicProtocol.failureError failure)
         }
 
-    let private projectionSignature (workspace: SolutionWorkspace) =
-        let builder = StringBuilder()
-
-        let append (values: seq<string>) =
-            for value in values do
-                builder.AppendLine value |> ignore
-
-        let root = workspace.RootProjection
-
-        append (
-            root.Nodes
-            |> Seq.map (fun node ->
-                $"node|{node.NodeId.Value}|{node.NodeKind}|{node.Identity.Value}|{node.Name}|{node.NodeLoadState}|{String.Join(',', node.AvailableCapabilities |> Seq.map _.Value)}")
-        )
-
-        append (
-            root.Folders
-            |> Seq.map (fun folder -> $"folder|{folder.Node.NodeId.Value}|{folder.Path}|{folder.ParentPath}")
-        )
-
-        append (
-            root.Items
-            |> Seq.map (fun item -> $"item|{item.Node.NodeId.Value}|{item.FolderPath}|{item.RelativePath}")
-        )
-
-        for project in root.Projects do
-            builder.AppendLine(
-                $"project|{project.Node.NodeId.Value}|{project.Path.AbsolutePath.Value}|{project.Path.SolutionRelativePath}|{project.Path.IsExternal}|{project.ParentFolderPath}|{project.IsFilteredOut}"
-            )
-            |> ignore
-
-            append (
-                project.ConfigurationRules
-                |> Seq.map (fun rule ->
-                    $"rule|{rule.SolutionBuildType}|{rule.SolutionPlatform}|{rule.Dimension}|{rule.ProjectValue}")
-            )
-
-            append (
-                project.ConfigurationMappings
-                |> Seq.map (fun mapping ->
-                    $"mapping|{mapping.SolutionBuildType}|{mapping.SolutionPlatform}|{mapping.ProjectBuildType}|{mapping.ProjectPlatform}|{mapping.Builds}|{mapping.Deploys}")
-            )
-
-        append (
-            root.Dependencies
-            |> Seq.map (fun dependency ->
-                $"dependency|{dependency.Node.NodeId.Value}|{dependency.ProjectId.Value}|{dependency.DependsOnProjectId.Value}")
-        )
-
-        builder.ToString()
-
-    let private chunkNotification workspaceId operationId sequence revision nodes last =
-        Notification(
-            "workspace/exportChunk",
-            map
-                [ "workspaceId", text workspaceId
-                  "operationId", text operationId
-                  "sequence", integer (int64 sequence)
-                  "revision", integer revision
-                  "nodes", RpcValue.array nodes
-                  "last", boolean last
-                  "diagnostics", RpcValue.array [] ]
-        )
-
-    let private chunkNodes maximumFrameBytes workspaceId operationId revision (nodes: RpcValue array) =
-        let chunks = ResizeArray<RpcValue array>()
-        let current = ResizeArray<RpcValue>()
+    let private chunkNodes
+        maximumFrameBytes
+        (descriptor: WorkspaceDescriptor)
+        operationId
+        revision
+        (nodes: WorkspaceNode array)
+        =
+        let chunks = ResizeArray<WorkspaceNode array>()
+        let current = ResizeArray<WorkspaceNode>()
 
         let encodedSize candidate =
-            chunkNotification workspaceId operationId chunks.Count revision candidate false
+            PublicProtocol.exportChunk descriptor operationId chunks.Count revision candidate false
             |> RpcCodec.encodeFrame
             |> _.Length
 
@@ -125,8 +195,10 @@ module internal Pipe =
             else
                 flush ()
 
-                if encodedSize [| node |] > maximumFrameBytes then
-                    invalidOp "A workspace node exceeds the negotiated outbound frame limit."
+                let actual = encodedSize [| node |]
+
+                if actual > maximumFrameBytes then
+                    raise (RpcOutboundFrameTooLargeException(maximumFrameBytes, actual))
 
                 current.Add node
 
@@ -159,12 +231,12 @@ module internal Pipe =
                 return 64
             | Ok initialWorkspace ->
                 let mutable workspace = initialWorkspace
-                let mutable signature = projectionSignature initialWorkspace
+                let mutable fingerprint = ProjectionFingerprint.create initialWorkspace
                 let mutable revision = workspace.WorkspaceDescriptor.WorkspaceRevision.Value
                 let mutable maximumFrameBytes = RpcCodec.secureLimits.MaximumValueBytes
 
                 let activeExports =
-                    ConcurrentDictionary<string, CancellationTokenSource>(StringComparer.Ordinal)
+                    ConcurrentDictionary<string, ExportOperationState>(StringComparer.Ordinal)
 
                 let initialize parameters _ =
                     task {
@@ -177,292 +249,193 @@ module internal Pipe =
 
                 let dispatch (_: RpcSessionContext) methodName parameters requestCancellationToken =
                     task {
-                        try
-                            match methodName with
-                            | "workspace/root" ->
-                                requireEmpty parameters
-                                let descriptor = workspace.WorkspaceDescriptor
-
+                        match PublicProtocol.parseRequest methodName parameters with
+                        | Error rpcError -> return Error rpcError
+                        | Ok request ->
+                            match request with
+                            | PublicRequest.Root ->
                                 return
                                     Ok
                                         { Result =
-                                            map
-                                                [ "revision", integer revision
-                                                  "nodes",
-                                                  workspace.RootProjection.Nodes
-                                                  |> Seq.map (PublicProtocol.node descriptor.WorkspaceId revision)
-                                                  |> RpcValue.array ]
+                                            PublicProtocol.rootResult
+                                                workspace.WorkspaceDescriptor
+                                                revision
+                                                workspace.RootProjection.Nodes
                                           Notifications = []
                                           BackgroundWork = None
                                           AfterResponse = None
                                           StopAfterResponse = false }
-                            | "workspace/refresh" ->
-                                let fields = RpcValue.requireMap "params" parameters
-                                RpcValue.ensureOnly "params" [ "expectedRevision" ] fields
-
-                                match requestRevision fields with
+                            | PublicRequest.Refresh expectedRevision ->
+                                match expectedRevision with
                                 | Some expected when expected <> revision ->
-                                    return
-                                        Error(
-                                            RpcErrors.create
-                                                "workspace_conflict"
-                                                "The expected workspace revision is stale."
-                                                (Some(map [ "actualRevision", integer revision ]))
-                                        )
+                                    return Error(PublicProtocol.workspaceConflict revision)
                                 | _ ->
                                     let! reopened = openWorkspace target requestCancellationToken
 
                                     match reopened with
                                     | Error rpcError -> return Error rpcError
                                     | Ok next ->
-                                        let nextSignature = projectionSignature next
+                                        let nextFingerprint = ProjectionFingerprint.create next
 
-                                        let changed =
-                                            not (String.Equals(signature, nextSignature, StringComparison.Ordinal))
+                                        let nextRevision =
+                                            PipeTestHooks.nextRevision revision fingerprint nextFingerprint
+
+                                        let changed = nextRevision <> revision
 
                                         if changed then
                                             workspace <- next
-                                            signature <- nextSignature
-                                            revision <- revision + 1L
+                                            fingerprint <- nextFingerprint
+                                            revision <- nextRevision
 
                                         return
                                             Ok
-                                                { Result =
-                                                    map
-                                                        [ "revision", integer revision
-                                                          "reset", boolean changed
-                                                          "diagnostics", RpcValue.array [] ]
+                                                { Result = PublicProtocol.refreshResult revision changed
                                                   Notifications = []
                                                   BackgroundWork = None
                                                   AfterResponse = None
                                                   StopAfterResponse = false }
-                            | "workspace/export" ->
-                                requireEmpty parameters
+                            | PublicRequest.Export ->
                                 let snapshot = workspace
                                 let snapshotRevision = revision
                                 let descriptor = snapshot.WorkspaceDescriptor
-                                let workspaceId = descriptor.WorkspaceId.Value
                                 let operationId = Guid.NewGuid().ToString("N")
+                                let operation = ExportOperationState(requestCancellationToken)
 
-                                let source =
-                                    CancellationTokenSource.CreateLinkedTokenSource requestCancellationToken
-
-                                if not (activeExports.TryAdd(operationId, source)) then
-                                    source.Dispose()
+                                if not (activeExports.TryAdd(operationId, operation)) then
+                                    operation.Complete()
                                     return Error RpcErrors.internalError
                                 else
-                                    let nodeValues =
-                                        snapshot.RootProjection.Nodes
-                                        |> Seq.map (PublicProtocol.node descriptor.WorkspaceId snapshotRevision)
-                                        |> Seq.toArray
-
                                     let background (sink: RpcNotificationSink) sessionToken =
                                         task {
                                             let mutable sequence = 0
-                                            let mutable outcome = "succeeded"
-                                            let diagnostics = ResizeArray<RpcValue>()
+                                            let mutable outcome = PublicOperationOutcome.Succeeded
 
-                                            use linked =
-                                                CancellationTokenSource.CreateLinkedTokenSource(
-                                                    source.Token,
-                                                    sessionToken
-                                                )
+                                            let reserveFailure failure =
+                                                task {
+                                                    if operation.TryReserveCompletion() then
+                                                        outcome <- failure
+                                                    else
+                                                        do! operation.WaitForCancellationResponseAsync()
+                                                        outcome <- PublicOperationOutcome.Cancelled
+                                                }
 
                                             try
-                                                do! Task.Delay(250, linked.Token)
-
-                                                let chunks =
-                                                    chunkNodes
-                                                        maximumFrameBytes
-                                                        workspaceId
-                                                        operationId
-                                                        snapshotRevision
-                                                        nodeValues
-
-                                                for index in 0 .. chunks.Length - 1 do
-                                                    linked.Token.ThrowIfCancellationRequested()
-
-                                                    do!
-                                                        sink.WriteAsync(
-                                                            chunkNotification
-                                                                workspaceId
-                                                                operationId
-                                                                sequence
-                                                                snapshotRevision
-                                                                chunks[index]
-                                                                (index = chunks.Length - 1)
+                                                try
+                                                    use linked =
+                                                        CancellationTokenSource.CreateLinkedTokenSource(
+                                                            operation.Token,
+                                                            sessionToken
                                                         )
 
-                                                    sequence <- sequence + 1
-                                            with
-                                            | :? OperationCanceledException ->
-                                                outcome <- "cancelled"
+                                                    let chunks =
+                                                        chunkNodes
+                                                            maximumFrameBytes
+                                                            descriptor
+                                                            operationId
+                                                            snapshotRevision
+                                                            (snapshot.RootProjection.Nodes |> Seq.toArray)
 
-                                                diagnostics.Add(
-                                                    PublicProtocol.simpleDiagnostic
-                                                        descriptor.WorkspaceId
-                                                        snapshotRevision
-                                                        "cancelled"
-                                                        "The workspace export was cancelled."
-                                                )
-                                            | _ ->
-                                                outcome <- "failed"
+                                                    for index in 0 .. chunks.Length - 1 do
+                                                        if operation.IsCancellationReserved then
+                                                            raise (OperationCanceledException())
 
-                                                diagnostics.Add(
-                                                    PublicProtocol.simpleDiagnostic
-                                                        descriptor.WorkspaceId
-                                                        snapshotRevision
-                                                        "export_failed"
-                                                        "The workspace export failed safely."
-                                                )
+                                                        linked.Token.ThrowIfCancellationRequested()
 
-                                            activeExports.TryRemove operationId |> ignore
-                                            source.Dispose()
+                                                        do!
+                                                            sink.WriteAsync(
+                                                                PublicProtocol.exportChunk
+                                                                    descriptor
+                                                                    operationId
+                                                                    sequence
+                                                                    snapshotRevision
+                                                                    chunks[index]
+                                                                    (index = chunks.Length - 1)
+                                                            )
 
-                                            do!
-                                                sink.WriteAsync(
-                                                    Notification(
-                                                        "operation/completed",
-                                                        map
-                                                            [ "workspaceId", text workspaceId
-                                                              "operationId", text operationId
-                                                              "sequence", integer (int64 sequence)
-                                                              "revision", integer snapshotRevision
-                                                              "outcome", text outcome
-                                                              "diagnostics", RpcValue.array diagnostics ]
+                                                        sequence <- sequence + 1
+
+                                                    if operation.TryReserveCompletion() then
+                                                        outcome <- PublicOperationOutcome.Succeeded
+                                                    else
+                                                        do! operation.WaitForCancellationResponseAsync()
+                                                        outcome <- PublicOperationOutcome.Cancelled
+                                                with
+                                                | :? OperationCanceledException ->
+                                                    if operation.IsCancellationReserved then
+                                                        do! operation.WaitForCancellationResponseAsync()
+
+                                                    outcome <- PublicOperationOutcome.Cancelled
+                                                | :? RpcOutboundFrameTooLargeException ->
+                                                    do!
+                                                        reserveFailure (
+                                                            PublicOperationOutcome.Failed(
+                                                                "response_too_large",
+                                                                "The workspace export exceeded the negotiated outbound frame limit."
+                                                            )
+                                                        )
+                                                | :? InvalidOperationException ->
+                                                    do!
+                                                        reserveFailure (
+                                                            PublicOperationOutcome.Failed(
+                                                                "export_failed",
+                                                                "The workspace export could not be framed safely."
+                                                            )
+                                                        )
+
+                                                do!
+                                                    sink.WriteAsync(
+                                                        PublicProtocol.operationCompleted
+                                                            descriptor
+                                                            operationId
+                                                            sequence
+                                                            snapshotRevision
+                                                            outcome
                                                     )
-                                                )
+                                            finally
+                                                activeExports.TryRemove operationId |> ignore
+                                                operation.Complete()
                                         }
 
                                     return
                                         Ok
-                                            { Result =
-                                                map
-                                                    [ "operationId", text operationId
-                                                      "revision", integer snapshotRevision ]
+                                            { Result = PublicProtocol.exportResult operationId snapshotRevision
                                               Notifications = []
                                               BackgroundWork = Some background
                                               AfterResponse = None
                                               StopAfterResponse = false }
-                            | "operation/cancel" ->
-                                let fields = RpcValue.requireMap "params" parameters
-                                RpcValue.ensureOnly "params" [ "operationId" ] fields
-
-                                let operationId =
-                                    fields
-                                    |> RpcValue.requireField "operationId"
-                                    |> RpcValue.requireString "operationId"
-
-                                let accepted =
+                            | PublicRequest.Cancel operationId ->
+                                let accepted, afterResponse =
                                     match activeExports.TryGetValue operationId with
-                                    | true, source when not source.IsCancellationRequested -> true
-                                    | _ -> false
-
-                                let cancelAfterResponse =
-                                    if accepted then
-                                        Some(fun () ->
-                                            match activeExports.TryGetValue operationId with
-                                            | true, source when not source.IsCancellationRequested -> source.Cancel()
-                                            | _ -> ())
-                                    else
-                                        None
+                                    | true, operation when operation.TryReserveCancellation() ->
+                                        true, Some operation.CommitCancellationAfterResponse
+                                    | _ -> false, None
 
                                 return
                                     Ok
-                                        { Result = map [ "accepted", boolean accepted ]
+                                        { Result = PublicProtocol.cancelResult accepted
                                           Notifications = []
                                           BackgroundWork = None
-                                          AfterResponse = cancelAfterResponse
+                                          AfterResponse = afterResponse
                                           StopAfterResponse = false }
-                            | "shutdown" ->
-                                requireEmpty parameters
-
-                                for source in activeExports.Values do
-                                    source.Cancel()
+                            | PublicRequest.Shutdown ->
+                                for operation in activeExports.Values do
+                                    operation.CancelForShutdown()
 
                                 return
                                     Ok
-                                        { Result = map [ "accepted", boolean true ]
+                                        { Result = PublicProtocol.shutdownResult
                                           Notifications = []
                                           BackgroundWork = None
                                           AfterResponse = None
                                           StopAfterResponse = true }
-                            | "workspace/children" ->
-                                let fields = RpcValue.requireMap "params" parameters
-
-                                RpcValue.ensureOnly "params" [ "parentId"; "pageSize"; "continuationToken" ] fields
-
-                                fields
-                                |> RpcValue.requireField "parentId"
-                                |> RpcValue.requireString "parentId"
-                                |> ignore
-
-                                RpcValue.optionalField "pageSize" fields
-                                |> Option.iter (fun value ->
-                                    let pageSize = RpcValue.requireInteger "pageSize" value
-
-                                    if pageSize <= 0L || pageSize > 1000L then
-                                        invalidArg "pageSize" "Page size must be between 1 and 1000.")
-
-                                RpcValue.optionalField "continuationToken" fields
-                                |> Option.iter (RpcValue.requireString "continuationToken" >> ignore)
-
+                            | PublicRequest.Children _ ->
                                 return
                                     Error(RpcErrors.unsupported "Workspace children are not implemented until T-006.")
-                            | "command/list" ->
-                                let fields = RpcValue.requireMap "params" parameters
-                                RpcValue.ensureOnly "params" [ "targetId" ] fields
-
-                                RpcValue.optionalField "targetId" fields
-                                |> Option.iter (RpcValue.requireString "targetId" >> ignore)
-
+                            | PublicRequest.CommandList _
+                            | PublicRequest.CommandDescribe _ ->
                                 return Error(RpcErrors.unsupported "Command discovery is not implemented until T-007.")
-                            | "command/describe" ->
-                                let fields = RpcValue.requireMap "params" parameters
-                                RpcValue.ensureOnly "params" [ "commandId"; "targetId" ] fields
-
-                                fields
-                                |> RpcValue.requireField "commandId"
-                                |> RpcValue.requireString "commandId"
-                                |> ignore
-
-                                RpcValue.optionalField "targetId" fields
-                                |> Option.iter (RpcValue.requireString "targetId" >> ignore)
-
-                                return Error(RpcErrors.unsupported "Command discovery is not implemented until T-007.")
-                            | "command/preview"
-                            | "command/execute" ->
-                                let fields = RpcValue.requireMap "params" parameters
-
-                                let allowed =
-                                    if methodName = "command/execute" then
-                                        [ "commandId"; "targetId"; "arguments"; "expectedRevision"; "previewId" ]
-                                    else
-                                        [ "commandId"; "targetId"; "arguments"; "expectedRevision" ]
-
-                                RpcValue.ensureOnly "params" allowed fields
-
-                                fields
-                                |> RpcValue.requireField "commandId"
-                                |> RpcValue.requireString "commandId"
-                                |> ignore
-
-                                RpcValue.optionalField "targetId" fields
-                                |> Option.iter (RpcValue.requireString "targetId" >> ignore)
-
-                                fields
-                                |> RpcValue.requireField "arguments"
-                                |> RpcValue.requireMap "arguments"
-                                |> ignore
-
-                                fields
-                                |> RpcValue.requireField "expectedRevision"
-                                |> RpcValue.requireInteger "expectedRevision"
-                                |> ignore
-
-                                RpcValue.optionalField "previewId" fields
-                                |> Option.iter (RpcValue.requireString "previewId" >> ignore)
-
+                            | PublicRequest.CommandPreview _
+                            | PublicRequest.CommandExecute _ ->
                                 if workspace.WorkspaceDescriptor.IsReadOnly then
                                     return Error(RpcErrors.unsupported "The selected .slnf workspace is read-only.")
                                 else
@@ -470,16 +443,12 @@ module internal Pipe =
                                         Error(
                                             RpcErrors.unsupported "Workspace mutations are not implemented until T-007."
                                         )
-                            | _ -> return Error(RpcErrors.unknownMethod methodName)
-                        with
-                        | :? ArgumentException as error -> return Error(RpcErrors.invalidParams error.Message)
-                        | :? OperationCanceledException -> return raise (OperationCanceledException())
-                        | _ -> return Error RpcErrors.internalError
                     }
 
                 let configuration =
                     { Profile = RpcProfile.publicProfile
                       Limits = RpcCodec.secureLimits
+                      GetOutboundFrameLimit = fun () -> maximumFrameBytes
                       Initialize = initialize
                       Dispatch = dispatch }
 

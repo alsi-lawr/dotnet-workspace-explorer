@@ -8,6 +8,15 @@ open System.IO
 open System.Threading
 open System.Threading.Tasks
 
+type RpcOutboundFrameTooLargeException(limit: int, actual: int) =
+    inherit
+        InvalidOperationException(
+            $"The encoded RPC frame is {actual} bytes and exceeds the negotiated {limit}-byte limit."
+        )
+
+    member _.Limit = limit
+    member _.Actual = actual
+
 type RpcNotificationSink internal (write: RpcFrame -> Task<unit>) =
     member _.WriteAsync(frame: RpcFrame) = write frame
 
@@ -26,6 +35,7 @@ type RpcSessionContext =
 type RpcSessionConfiguration =
     { Profile: RpcProfile
       Limits: RpcCodecLimits
+      GetOutboundFrameLimit: unit -> int
       Initialize: RpcValue -> CancellationToken -> Task<Result<RpcValue, RpcError>>
       Dispatch:
           RpcSessionContext -> string -> RpcValue -> CancellationToken -> Task<Result<RpcDispatchResult, RpcError>> }
@@ -52,22 +62,67 @@ module RpcErrors =
     let internalError =
         create "internal_error" "The request could not be completed safely." None
 
+    let responseTooLarge =
+        create "response_too_large" "The response exceeds the negotiated outbound frame limit." None
+
 [<RequireQualifiedAccess>]
 module RpcSession =
     let private protocolFailure = 65
     let private cancelled = 130
 
-    type private SynchronizedWriter(output: Stream, cancellationToken: CancellationToken) =
+    type private ResponseWriteOutcome =
+        | OriginalResponse
+        | SizeErrorResponse
+
+    type private SynchronizedWriter
+        (output: Stream, getOutboundLimit: unit -> int, hardLimit: int, cancellationToken: CancellationToken) =
         let gate = new SemaphoreSlim(1, 1)
 
-        member _.WriteAsync(frame: RpcFrame) =
+        let outboundLimit () =
+            getOutboundLimit () |> max 1 |> min hardLimit
+
+        let writeBytes (bytes: byte array) =
+            task {
+                do! output.WriteAsync(bytes, cancellationToken)
+                do! output.FlushAsync cancellationToken
+            }
+
+        member _.WriteResponseAsync(messageId: uint32, error: RpcError option, result: RpcValue) =
             task {
                 do! gate.WaitAsync cancellationToken
 
                 try
-                    let bytes = RpcCodec.encodeFrame frame
-                    do! output.WriteAsync(bytes, cancellationToken)
-                    do! output.FlushAsync cancellationToken
+                    let limit = outboundLimit ()
+                    let encoded = RpcCodec.encodeFrame (Response(messageId, error, result))
+
+                    if encoded.Length <= limit then
+                        do! writeBytes encoded
+                        return OriginalResponse
+                    else
+                        let fallback =
+                            RpcCodec.encodeFrame (Response(messageId, Some RpcErrors.responseTooLarge, RpcValue.Nil))
+
+                        if fallback.Length > limit then
+                            raise (RpcOutboundFrameTooLargeException(limit, fallback.Length))
+
+                        do! writeBytes fallback
+                        return SizeErrorResponse
+                finally
+                    gate.Release() |> ignore
+            }
+
+        member _.WriteNotificationAsync(frame: RpcFrame) =
+            task {
+                do! gate.WaitAsync cancellationToken
+
+                try
+                    let limit = outboundLimit ()
+                    let encoded = RpcCodec.encodeFrame frame
+
+                    if encoded.Length > limit then
+                        raise (RpcOutboundFrameTooLargeException(limit, encoded.Length))
+
+                    do! writeBytes encoded
                 finally
                     gate.Release() |> ignore
             }
@@ -114,26 +169,46 @@ module RpcSession =
             use backgroundCancellation =
                 CancellationTokenSource.CreateLinkedTokenSource cancellationToken
 
-            use writer = new SynchronizedWriter(output, cancellationToken)
-            let sink = RpcNotificationSink(writer.WriteAsync)
+            use loopCancellation =
+                CancellationTokenSource.CreateLinkedTokenSource cancellationToken
+
+            use writer =
+                new SynchronizedWriter(
+                    output,
+                    configuration.GetOutboundFrameLimit,
+                    configuration.Limits.MaximumValueBytes,
+                    cancellationToken
+                )
+
+            let sink = RpcNotificationSink(writer.WriteNotificationAsync)
             let backgroundTasks = ResizeArray<Task>()
+
+            let backgroundFault =
+                TaskCompletionSource<exn>(TaskCreationOptions.RunContinuationsAsynchronously)
+
             let pending = ResizeArray<byte>()
             let buffer = Array.zeroCreate<byte> (1024 * 1024)
             let mutable initialized = false
             let mutable stopping = false
-            let mutable fatal = false
             let mutable exitCode = 0
+            let mutable fatalState = 0
+
+            let isFatal () = Volatile.Read(&fatalState) <> 0
 
             let fatalDiagnostic (message: string) =
                 task {
-                    if not fatal then
-                        fatal <- true
+                    if Interlocked.CompareExchange(&fatalState, 1, 0) = 0 then
                         do! error.WriteLineAsync($"dotnet-plus pipe protocol failure: {message}")
                         do! error.FlushAsync()
                 }
 
             let writeError id rpcError =
-                writer.WriteAsync(Response(id, Some rpcError, RpcValue.Nil))
+                writer.WriteResponseAsync(id, Some rpcError, RpcValue.Nil)
+
+            let reportBackgroundFault exceptionValue =
+                if backgroundFault.TrySetResult exceptionValue then
+                    backgroundCancellation.Cancel()
+                    loopCancellation.Cancel()
 
             let startBackground work =
                 let running =
@@ -141,8 +216,8 @@ module RpcSession =
                         try
                             do! work sink backgroundCancellation.Token
                         with
-                        | :? OperationCanceledException -> ()
-                        | _ -> ()
+                        | :? OperationCanceledException when backgroundCancellation.IsCancellationRequested -> ()
+                        | exceptionValue -> reportBackgroundFault exceptionValue
                     }
 
                 backgroundTasks.Add running
@@ -150,16 +225,17 @@ module RpcSession =
             let awaitBackground () =
                 task {
                     if backgroundTasks.Count > 0 then
-                        try
-                            do! Task.WhenAll(backgroundTasks.ToArray())
-                        with
-                        | :? OperationCanceledException -> ()
-                        | _ -> ()
+                        do! Task.WhenAll(backgroundTasks.ToArray())
                 }
 
             try
-                while not stopping && not fatal && not cancellationToken.IsCancellationRequested do
-                    let! read = input.ReadAsync(buffer, cancellationToken)
+                while not stopping
+                      && not (isFatal ())
+                      && not cancellationToken.IsCancellationRequested do
+                    if backgroundFault.Task.IsCompleted then
+                        raise (OperationCanceledException())
+
+                    let! read = input.ReadAsync(buffer, loopCancellation.Token)
 
                     if read = 0 then
                         if pending.Count > 0 then
@@ -171,7 +247,10 @@ module RpcSession =
                         append pending buffer read
                         let mutable parseMore = true
 
-                        while parseMore && not stopping && not fatal do
+                        while parseMore
+                              && not stopping
+                              && not (isFatal ())
+                              && not backgroundFault.Task.IsCompleted do
                             match nextFrame configuration.Limits pending with
                             | Error(RpcDecodeError.TooLarge message)
                             | Error(RpcDecodeError.Invalid message) ->
@@ -181,24 +260,29 @@ module RpcSession =
                             | Error RpcDecodeError.Incomplete -> parseMore <- false
                             | Ok None -> parseMore <- false
                             | Ok(Some(RpcFrameDecodeResult.RecoverableError(id, rpcError))) ->
-                                do! writeError id rpcError
+                                let! _ = writeError id rpcError
+                                ()
                             | Ok(Some(RpcFrameDecodeResult.Frame frame)) ->
                                 match frame with
                                 | Request(id, methodName, parameters) ->
                                     if methodName <> "initialize" && not initialized then
-                                        do! writeError id RpcErrors.preInitialize
+                                        let! _ = writeError id RpcErrors.preInitialize
+                                        ()
                                     elif
                                         methodName <> "initialize"
                                         && not (configuration.Profile.Methods.ContainsKey methodName)
                                     then
-                                        do! writeError id (RpcErrors.unknownMethod methodName)
+                                        let! _ = writeError id (RpcErrors.unknownMethod methodName)
+                                        ()
                                     elif methodName = "initialize" then
                                         if initialized then
-                                            do!
+                                            let! _ =
                                                 writeError
                                                     id
                                                     (RpcErrors.invalidRequest
                                                         "A session cannot be initialized more than once.")
+
+                                            ()
                                         else
                                             let! initialization =
                                                 safelyInvoke (fun () ->
@@ -206,9 +290,13 @@ module RpcSession =
 
                                             match initialization with
                                             | Ok result ->
-                                                initialized <- true
-                                                do! writer.WriteAsync(Response(id, None, result))
-                                            | Error rpcError -> do! writeError id rpcError
+                                                let! outcome = writer.WriteResponseAsync(id, None, result)
+
+                                                if outcome = OriginalResponse then
+                                                    initialized <- true
+                                            | Error rpcError ->
+                                                let! _ = writeError id rpcError
+                                                ()
                                     else
                                         let context =
                                             { Profile = configuration.Profile
@@ -220,40 +308,69 @@ module RpcSession =
                                                 configuration.Dispatch context methodName parameters cancellationToken)
 
                                         match dispatched with
-                                        | Error rpcError -> do! writeError id rpcError
+                                        | Error rpcError ->
+                                            let! _ = writeError id rpcError
+                                            ()
                                         | Ok result when result.StopAfterResponse ->
                                             backgroundCancellation.Cancel()
                                             do! awaitBackground ()
-                                            do! writer.WriteAsync(Response(id, None, result.Result))
+
+                                            if backgroundFault.Task.IsCompleted then
+                                                raise (OperationCanceledException())
+
+                                            let! _ = writer.WriteResponseAsync(id, None, result.Result)
+                                            ()
                                             stopping <- true
                                         | Ok result ->
-                                            do! writer.WriteAsync(Response(id, None, result.Result))
+                                            let! outcome = writer.WriteResponseAsync(id, None, result.Result)
 
-                                            result.AfterResponse
-                                            |> Option.iter (fun action ->
-                                                try
-                                                    action ()
-                                                with _ ->
-                                                    ())
+                                            if outcome = OriginalResponse then
+                                                result.AfterResponse
+                                                |> Option.iter (fun action ->
+                                                    try
+                                                        action ()
+                                                    with exceptionValue ->
+                                                        reportBackgroundFault exceptionValue)
 
-                                            for notification in result.Notifications do
-                                                do! writer.WriteAsync notification
+                                                for notification in result.Notifications do
+                                                    do! writer.WriteNotificationAsync notification
 
-                                            result.BackgroundWork |> Option.iter startBackground
+                                                result.BackgroundWork |> Option.iter startBackground
                                 | Notification _ -> ()
                                 | Response _ ->
                                     do! fatalDiagnostic "Clients may not send response frames."
                                     exitCode <- protocolFailure
                                     stopping <- true
-            with :? OperationCanceledException ->
+            with
+            | :? OperationCanceledException when backgroundFault.Task.IsCompleted ->
+                do! fatalDiagnostic "A background RPC operation failed."
+                exitCode <- protocolFailure
+                stopping <- true
+            | :? OperationCanceledException ->
                 exitCode <- cancelled
+                stopping <- true
+            | _ ->
+                do! fatalDiagnostic "The RPC session failed while reading or writing protocol frames."
+                exitCode <- protocolFailure
                 stopping <- true
 
             backgroundCancellation.Cancel()
-            do! awaitBackground ()
+
+            try
+                do! awaitBackground ()
+            with _ ->
+                do! fatalDiagnostic "A background RPC operation failed during session shutdown."
+                exitCode <- protocolFailure
+
+            if backgroundFault.Task.IsCompleted && exitCode = 0 then
+                do! fatalDiagnostic "A background RPC operation failed."
+                exitCode <- protocolFailure
 
             return
-                if cancellationToken.IsCancellationRequested then cancelled
-                elif fatal then protocolFailure
-                else exitCode
+                if cancellationToken.IsCancellationRequested && not (isFatal ()) then
+                    cancelled
+                elif isFatal () then
+                    protocolFailure
+                else
+                    exitCode
         }
