@@ -54,6 +54,103 @@ module private Helpers =
 
 type CliBrokerTests() =
     [<Fact>]
+    member _.``package version before project selects the project``() =
+        let directory = Helpers.temporaryDirectory ()
+
+        try
+            let project = Path.Combine(directory, "App.fsproj")
+
+            File.WriteAllText(
+                project,
+                "<Project><ItemGroup><PackageReference Include=\"Example.Package\" Version=\"1.2.3\" /></ItemGroup></Project>"
+            )
+
+            Assert.True(
+                (Helpers.fake
+                    "capture"
+                    [| "package"
+                       "add"
+                       "--version"
+                       "1.2.3"
+                       "--project"
+                       project
+                       "Example.Package" |])
+                    .Success
+            )
+        finally
+            Helpers.delete directory
+
+    [<Fact>]
+    member _.``package equals version and project select the project``() =
+        let directory = Helpers.temporaryDirectory ()
+
+        try
+            let project = Path.Combine(directory, "App.fsproj")
+
+            File.WriteAllText(
+                project,
+                "<Project><ItemGroup><PackageReference Include=\"Example.Package\" Version=\"1.2.3\" /></ItemGroup></Project>"
+            )
+
+            Assert.True(
+                (Helpers.fake
+                    "capture"
+                    [| "package"
+                       "add"
+                       "Example.Package"
+                       "--version=1.2.3"
+                       $"--project={project}" |])
+                    .Success
+            )
+        finally
+            Helpers.delete directory
+
+    [<Fact>]
+    member _.``multiple package removes verify exact absence``() =
+        let directory = Helpers.temporaryDirectory ()
+
+        try
+            let project = Path.Combine(directory, "App.fsproj")
+            File.WriteAllText(project, "<Project />")
+            Assert.True((Helpers.fake "capture" [| "package"; "remove"; "One"; "Two"; "--project"; project |]).Success)
+        finally
+            Helpers.delete directory
+
+    [<Fact>]
+    member _.``multiple package updates verify exact versions``() =
+        let directory = Helpers.temporaryDirectory ()
+
+        try
+            let project = Path.Combine(directory, "App.fsproj")
+
+            File.WriteAllText(
+                project,
+                "<Project><ItemGroup><PackageReference Include=\"One\" Version=\"1.0\" /><PackageReference Include=\"Two\" Version=\"2.0\" /></ItemGroup></Project>"
+            )
+
+            Assert.True(
+                (Helpers.fake "capture" [| "package"; "update"; "One@1.0"; "Two@2.0"; "--project"; project |]).Success
+            )
+        finally
+            Helpers.delete directory
+
+    [<Fact>]
+    member _.``multiple package add is rejected before verification``() =
+        let result =
+            Helpers.fake "capture" [| "package"; "add"; "One"; "Two"; "--project"; "missing.fsproj" |]
+
+        Assert.False(result.Success)
+        Assert.Equal("invalid_input", result.Diagnostics.Head.DiagnosticCode.Value)
+
+    [<Fact>]
+    member _.``solution wide package update is rejected``() =
+        let result =
+            Helpers.fake "capture" [| "package"; "update"; "One"; "--project"; "Demo.sln" |]
+
+        Assert.False(result.Success)
+        Assert.Equal("invalid_input", result.Diagnostics.Head.DiagnosticCode.Value)
+
+    [<Fact>]
     member _.``package verification does not accept a longer package id``() =
         let directory = Helpers.temporaryDirectory ()
 
