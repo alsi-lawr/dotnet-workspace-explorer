@@ -607,33 +607,6 @@ module private SolutionStoreImplementation =
             | :? NotSupportedException -> return invalidInput "targetPath" "The solution path is invalid."
         }
 
-type internal SolutionStoreTestHooks private () =
-    static member PathIdentity(caseSemantics: HostFileSystemCaseSemantics, path: string) =
-        SolutionStoreImplementation.pathIdentity caseSemantics path
-
-    static member FilterContains
-        (
-            backingCaseSemantics: HostFileSystemCaseSemantics,
-            backingSolutionPath: string,
-            projectPath: string,
-            filterProjectPath: string
-        ) =
-        let backingDirectory =
-            System.IO.Path.GetDirectoryName backingSolutionPath
-            |> Option.ofObj
-            |> Option.defaultValue (Directory.GetCurrentDirectory())
-
-        let selected =
-            SolutionStoreImplementation.includedProjects
-                backingCaseSemantics
-                (Some(ImmutableArray.Create(System.IO.Path.GetFullPath(filterProjectPath, backingDirectory))))
-
-        selected
-        |> Option.exists (fun projects -> projects.Contains(System.IO.Path.GetFullPath(projectPath, backingDirectory)))
-
-    static member Order(cancellationToken: CancellationToken, values: seq<string>) =
-        SolutionStoreImplementation.orderBy cancellationToken id values
-
 [<AbstractClass; Sealed>]
 type SolutionStore private () =
     static member OpenAsync

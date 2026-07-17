@@ -196,8 +196,6 @@ internal sealed class WorkerClient : IAsyncDisposable
 
         var state = new WorkerProcessState(process, DrainStandardErrorAsync(process.StandardError));
         active = state;
-        launchSettings.ProcessStarted?.Invoke(process);
-
         var initialize = await SendAsync(
             state,
             "initialize",

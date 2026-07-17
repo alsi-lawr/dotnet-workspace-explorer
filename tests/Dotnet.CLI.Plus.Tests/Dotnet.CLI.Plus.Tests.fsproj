@@ -5,10 +5,10 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <Compile Include="AssemblyInfo.fs" />
-        <Compile Include="CliBrokerTests.fs" />
-        <Compile Include="WorkspaceStateTests.fs" />
-        <Compile Include="PipeTests.fs" />
+        <Compile Include="CoreContractTests.fs" />
+        <Compile Include="SolutionContractTests.fs" />
+        <Compile Include="BrokerProcessTests.fs" />
+        <Compile Include="WorkspaceAppHostTests.fs" />
     </ItemGroup>
 
     <ItemGroup>
@@ -22,6 +22,7 @@
     </ItemGroup>
 
     <ItemGroup>
+        <ProjectReference Include="../../src/Dotnet.CLI.Plus.Core/Dotnet.CLI.Plus.Core.fsproj" />
         <ProjectReference Include="../../src/Dotnet.CLI.Plus/Dotnet.CLI.Plus.fsproj" />
         <ProjectReference Include="../../src/Dotnet.CLI.Plus.Solution/Dotnet.CLI.Plus.Solution.fsproj" />
         <ProjectReference Include="../../src/Dotnet.CLI.Plus.Transport/Dotnet.CLI.Plus.Transport.fsproj" />

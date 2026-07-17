@@ -5,7 +5,6 @@ namespace Dotnet.CLI.Plus
 open System
 open System.Collections.Concurrent
 open System.IO
-open System.Text
 open System.Threading
 open System.Threading.Tasks
 open Dotnet.CLI.Plus.Core
@@ -47,30 +46,6 @@ type internal ExportOperationState(sessionToken: CancellationToken) =
     member _.Complete() =
         Volatile.Write(&state, 3)
         cancellation.Dispose()
-
-module internal PipeTestHooks =
-    let canonicalSignature (groups: seq<seq<string>>) =
-        use stream = new MemoryStream()
-        use writer = new BinaryWriter(stream, Encoding.UTF8, true)
-        let values = groups |> Seq.map Seq.toArray |> Seq.toArray
-        writer.Write values.Length
-
-        for group in values do
-            writer.Write group.Length
-
-            for value in group do
-                let bytes = Encoding.UTF8.GetBytes value
-                writer.Write bytes.Length
-                writer.Write bytes
-
-        writer.Flush()
-        stream.ToArray()
-
-    let nextRevision (revision: int64) (before: byte array) (after: byte array) =
-        if before.AsSpan().SequenceEqual after then
-            revision
-        else
-            revision + 1L
 
 module internal Pipe =
     let private openWorkspace target cancellationToken =

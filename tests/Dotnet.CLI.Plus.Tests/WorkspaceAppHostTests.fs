@@ -7,7 +7,6 @@ open System.Diagnostics
 open System.IO
 open System.Threading
 open System.Threading.Tasks
-open Dotnet.CLI.Plus
 open Dotnet.CLI.Plus.Transport
 open Microsoft.VisualStudio.SolutionPersistence.Model
 open Microsoft.VisualStudio.SolutionPersistence.Serializer
@@ -166,62 +165,7 @@ module private PipeTest =
 
         child.Dispose()
 
-type PipeTests() =
-    [<Fact>]
-    member _.``cancellation barriers release only after operation cancellation``() =
-        let verify cancel =
-            for _ in 1..100 do
-                let operation = ExportOperationState(CancellationToken.None)
-                let token = operation.Token
-                use cancellationEntered = new ManualResetEventSlim(false)
-                use allowCancellationToReturn = new ManualResetEventSlim(false)
-
-                use registration =
-                    token.Register(fun () ->
-                        cancellationEntered.Set()
-                        allowCancellationToReturn.Wait())
-
-                let cancellationReserved =
-                    if cancel then operation.TryReserveCancellation() else true
-
-                let completion =
-                    task {
-                        do! operation.WaitForCancellationResponseAsync()
-                        let cancellationObserved = token.IsCancellationRequested
-                        let completionReserved = operation.TryReserveCompletion()
-                        operation.Complete()
-                        return cancellationObserved, completionReserved
-                    }
-
-                let committing =
-                    Task.Run(
-                        Action(fun () ->
-                            if cancel then
-                                operation.CommitCancellationAfterResponse()
-                            else
-                                operation.CancelForShutdown())
-                    )
-
-                let mutable cancellationStarted = false
-                let mutable barrierReleasedEarly = false
-
-                try
-                    cancellationStarted <- cancellationEntered.Wait(TimeSpan.FromSeconds 5.0)
-                    barrierReleasedEarly <- operation.WaitForCancellationResponseAsync().IsCompleted
-                finally
-                    allowCancellationToReturn.Set()
-
-                committing.GetAwaiter().GetResult()
-                let cancellationObserved, completionReserved = completion.GetAwaiter().GetResult()
-                Assert.True(cancellationReserved)
-                Assert.True(cancellationStarted)
-                Assert.False(barrierReleasedEarly)
-                Assert.True(cancellationObserved)
-                Assert.False(completionReserved)
-
-        verify true
-        verify false
-
+type WorkspaceAppHostTests() =
     [<Theory>]
     [<InlineData("solution")>]
     [<InlineData("sln")>]
@@ -340,31 +284,6 @@ type PipeTests() =
                 Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``built apphost rejects reserved notification methods as requests``() =
-        let directory = PipeTest.temporaryDirectory "pipe-notification-requests"
-
-        try
-            let solution = Path.Combine(directory, "Demo.slnx")
-            PipeTest.save solution (SolutionModel())
-            use child = PipeTest.startPipe "solution" solution
-
-            try
-                PipeTest.send child false (PipeTest.request 1u "initialize" PipeTest.initialize)
-                PipeTest.readFrame child |> PipeTest.response 1u |> ignore
-
-                for id, methodName in [ 2u, "workspace/exportChunk"; 3u, "operation/completed" ] do
-                    PipeTest.send child false (PipeTest.request id methodName RpcValue.emptyMap)
-                    let rpcError, _ = PipeTest.readFrame child |> PipeTest.response id
-                    Assert.Equal("unknown_method", rpcError.Value.Code)
-
-                PipeTest.shutdown child 4u
-            finally
-                PipeTest.disposeProcess child
-        finally
-            if Directory.Exists directory then
-                Directory.Delete(directory, true)
-
-    [<Fact>]
     member _.``built apphost pages hydrated children and watches a real project edit``() =
         let directory = PipeTest.temporaryDirectory "pipe-children-watch"
 
@@ -440,62 +359,6 @@ type PipeTests() =
                 Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``concurrent export cancellation is accepted and completes exactly once``() =
-        let directory = PipeTest.temporaryDirectory "pipe-cancel"
-
-        try
-            let solution = Path.Combine(directory, "Demo.slnx")
-            let model = SolutionModel()
-
-            for index in 1..20 do
-                model.AddProject($"Project{index}.fsproj", $"Project{index}", null) |> ignore
-                PipeTest.writeProject (Path.Combine(directory, $"Project{index}.fsproj"))
-
-            PipeTest.save solution model
-            use child = PipeTest.startPipe "solution" solution
-
-            try
-                PipeTest.send child false (PipeTest.request 1u "initialize" PipeTest.initialize)
-                PipeTest.readFrame child |> PipeTest.response 1u |> ignore
-                PipeTest.send child false (PipeTest.request 2u "workspace/export" RpcValue.emptyMap)
-                let _, exportResult = PipeTest.readFrame child |> PipeTest.response 2u
-
-                let operationId =
-                    PipeTest.field "operationId" exportResult
-                    |> RpcValue.requireString "operationId"
-
-                let cancel = PipeTest.map [ "operationId", RpcValue.String operationId ]
-                PipeTest.send child false (PipeTest.request 3u "operation/cancel" cancel)
-                let mutable cancelResponseSeen = false
-                let mutable completions = 0
-                let mutable completed = false
-
-                while not completed do
-                    match PipeTest.readFrame child with
-                    | Notification("workspace/exportChunk", _) when not cancelResponseSeen -> ()
-                    | Response(3u, cancelError, cancelResult) ->
-                        Assert.True(cancelError.IsNone)
-                        Assert.Equal(RpcValue.Boolean true, PipeTest.field "accepted" cancelResult)
-                        cancelResponseSeen <- true
-                    | Notification("operation/completed", parameters) ->
-                        Assert.True(cancelResponseSeen, "Cancellation completion preceded its response.")
-                        Assert.Equal(RpcValue.String operationId, PipeTest.field "operationId" parameters)
-                        Assert.Equal(RpcValue.String "cancelled", PipeTest.field "outcome" parameters)
-                        Assert.NotEmpty(PipeTest.field "diagnostics" parameters |> RpcValue.requireArray "diagnostics")
-                        completions <- completions + 1
-                        completed <- true
-                    | frame -> failwithf "Unexpected cancellation frame: %A" frame
-
-                Assert.True(cancelResponseSeen)
-                Assert.Equal(1, completions)
-                PipeTest.shutdown child 4u
-            finally
-                PipeTest.disposeProcess child
-        finally
-            if Directory.Exists directory then
-                Directory.Delete(directory, true)
-
-    [<Fact>]
     member _.``global negotiated frame limit covers responses errors and export notifications``() =
         let directory = PipeTest.temporaryDirectory "pipe-global-limit"
 
@@ -558,78 +421,6 @@ type PipeTests() =
                 PipeTest.shutdown child 5u
             finally
                 PipeTest.disposeProcess child
-        finally
-            if Directory.Exists directory then
-                Directory.Delete(directory, true)
-
-    [<Fact>]
-    member _.``canonical projection encoding distinguishes old delimiter collisions and advances revision``() =
-        let left = [ [ "a|b"; "c" ]; [ "line1\nline2,tail" ] ]
-        let right = [ [ "a"; "b|c" ]; [ "line1\nline2,tail" ] ]
-
-        let legacy values =
-            values |> List.map (String.concat "|") |> String.concat "\n"
-
-        Assert.Equal(legacy left, legacy right)
-
-        let leftSignature =
-            PipeTestHooks.canonicalSignature (left |> Seq.map (fun group -> group :> seq<string>))
-
-        let rightSignature =
-            PipeTestHooks.canonicalSignature (right |> Seq.map (fun group -> group :> seq<string>))
-
-        Assert.False(leftSignature.AsSpan().SequenceEqual(rightSignature.AsSpan()))
-        Assert.Equal(8L, PipeTestHooks.nextRevision 7L leftSignature rightSignature)
-
-    [<Fact>]
-    member _.``slnf writes fail before deferred command handling``() =
-        let directory = PipeTest.temporaryDirectory "pipe-filter"
-
-        try
-            let backing = Path.Combine(directory, "Demo.slnx")
-            let filter = Path.Combine(directory, "Demo.slnf")
-            PipeTest.save backing (SolutionModel())
-            File.WriteAllText(filter, "{ \"solution\": { \"path\": \"Demo.slnx\" } }")
-
-            let execute =
-                PipeTest.map
-                    [ "commandId", RpcValue.String "anything"
-                      "arguments", RpcValue.emptyMap
-                      "expectedRevision", RpcValue.Integer 0L ]
-
-            let input =
-                Array.concat
-                    [ PipeTest.request 1u "initialize" PipeTest.initialize
-                      PipeTest.request 2u "command/execute" execute
-                      PipeTest.request 3u "shutdown" RpcValue.emptyMap ]
-
-            use stdin = new MemoryStream(input)
-            use stdout = new MemoryStream()
-            use stderr = new StringWriter()
-            Assert.Equal(0, Pipe.runAsync filter stdin stdout stderr CancellationToken.None |> _.Result)
-            let bytes = stdout.ToArray()
-            let mutable offset = 0
-            let frames = ResizeArray<RpcFrame>()
-
-            while offset < bytes.Length do
-                let remaining = bytes[offset..]
-
-                let length =
-                    RpcCodec.tryReadValueLength RpcCodec.secureLimits remaining
-                    |> Result.defaultWith (fun error -> failwithf "%A" error)
-
-                match RpcCodec.decodeFrame RpcCodec.secureLimits remaining[.. length - 1] with
-                | Ok(RpcFrameDecodeResult.Frame frame) -> frames.Add frame
-                | result -> failwithf "%A" result
-
-                offset <- offset + length
-
-            Assert.Contains(
-                frames,
-                function
-                | Response(2u, Some error, _) when error.Code = "unsupported_capability" -> true
-                | _ -> false
-            )
         finally
             if Directory.Exists directory then
                 Directory.Delete(directory, true)

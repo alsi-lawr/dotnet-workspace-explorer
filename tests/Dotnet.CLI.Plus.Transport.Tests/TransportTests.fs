@@ -17,35 +17,35 @@ module private Test =
     let request id name parameters =
         RpcCodec.encodeFrame (Request(id, name, parameters))
 
-    let decodeAll (bytes: byte array) =
-        let rec consume offset frames =
+    let decode (bytes: byte array) =
+        let rec consume offset decoded =
             if offset = bytes.Length then
-                List.rev frames
+                List.rev decoded
             else
                 match RpcCodec.tryReadValueLength RpcCodec.secureLimits bytes[offset..] with
-                | Ok used ->
-                    match RpcCodec.decodeFrame RpcCodec.secureLimits bytes[offset .. offset + used - 1] with
-                    | Ok(RpcFrameDecodeResult.Frame frame) -> consume (offset + used) (frame :: frames)
-                    | Ok(RpcFrameDecodeResult.RecoverableError(id, error)) ->
-                        consume (offset + used) (Response(id, Some error, RpcValue.Nil) :: frames)
-                    | Error error -> failwithf "decode failed: %A" error
-                | Error error -> failwithf "value decode failed: %A" error
+                | Ok size ->
+                    match RpcCodec.decodeFrame RpcCodec.secureLimits bytes[offset .. offset + size - 1] with
+                    | Ok(RpcFrameDecodeResult.Frame frame) -> consume (offset + size) ((frame, size) :: decoded)
+                    | result -> failwithf "Response decode failed: %A" result
+                | Error error -> failwithf "Response length decode failed: %A" error
 
         consume 0 []
 
-    let decodeAllWithSizes (bytes: byte array) =
-        let rec consume offset frames =
-            if offset = bytes.Length then
-                List.rev frames
-            else
-                match RpcCodec.tryReadValueLength RpcCodec.secureLimits bytes[offset..] with
-                | Ok used ->
-                    match RpcCodec.decodeFrame RpcCodec.secureLimits bytes[offset .. offset + used - 1] with
-                    | Ok(RpcFrameDecodeResult.Frame frame) -> consume (offset + used) ((frame, used) :: frames)
-                    | result -> failwithf "decode failed: %A" result
-                | Error error -> failwithf "value decode failed: %A" error
+    let frames bytes = decode bytes |> List.map fst
 
-        consume 0 []
+    let profile name methods =
+        methods
+        |> Seq.map (fun (methodName, classification) ->
+            { Name = methodName
+              Classification = classification })
+        |> RpcProfile.create name 1 0
+
+    let dispatchResult result stop =
+        { Result = result
+          Notifications = []
+          BackgroundWork = None
+          AfterResponse = None
+          StopAfterResponse = stop }
 
     let configurationWithLimit profile getOutboundLimit initialize dispatch =
         { Profile = profile
@@ -63,15 +63,10 @@ module private Test =
             (fun _ _ -> Task.FromResult(Ok(map [ "ok", RpcValue.Boolean true ])))
             (fun _ methodName _ _ ->
                 Task.FromResult(
-                    Ok
-                        { Result = map [ "method", RpcValue.String methodName ]
-                          Notifications = []
-                          BackgroundWork = None
-                          AfterResponse = None
-                          StopAfterResponse = methodName = "shutdown" }
+                    Ok(dispatchResult (map [ "method", RpcValue.String methodName ]) (methodName = "shutdown"))
                 ))
 
-    let runWithToken configuration (input: Stream) cancellationToken =
+    let runStream configuration (input: Stream) cancellationToken =
         task {
             use output = new MemoryStream()
             use errors = new StringWriter()
@@ -80,46 +75,28 @@ module private Test =
         }
 
     let run configuration (input: byte array) =
-        use source = new MemoryStream(input)
-        runWithToken configuration source CancellationToken.None |> _.Result
+        use stream = new MemoryStream(input)
+        runStream configuration stream CancellationToken.None |> _.Result
 
-    let errorCode =
-        function
-        | Response(_, Some error, _) -> Some error.Code
-        | _ -> None
+    let responseErrors bytes =
+        frames bytes
+        |> List.choose (function
+            | Response(id, Some error, _) -> Some(id, error.Code)
+            | _ -> None)
 
 type private ChunkedReadStream(data: byte array, chunkSize: int) =
     inherit MemoryStream(data)
 
     override this.ReadAsync(buffer: Memory<byte>, cancellationToken: CancellationToken) =
         cancellationToken.ThrowIfCancellationRequested()
-        let count = min chunkSize buffer.Length
-        ValueTask<int>(this.Read(buffer.Span.Slice(0, count)))
+        ValueTask<int>(this.Read(buffer.Span.Slice(0, min chunkSize buffer.Length)))
 
-type private BlockingReadStream() =
-    inherit Stream()
-    override _.CanRead = true
-    override _.CanSeek = false
-    override _.CanWrite = false
-    override _.Length = 0L
-
-    override _.Position
-        with get () = 0L
-        and set _ = raise (NotSupportedException())
-
-    override _.Flush() = ()
-    override _.Read(_, _, _) = raise (NotSupportedException())
-    override _.Seek(_, _) = raise (NotSupportedException())
-    override _.SetLength _ = raise (NotSupportedException())
-    override _.Write(_, _, _) = raise (NotSupportedException())
+type private CancellingReadStream(cancellation: CancellationTokenSource) =
+    inherit MemoryStream()
 
     override _.ReadAsync(_: Memory<byte>, cancellationToken: CancellationToken) =
-        ValueTask<int>(
-            task {
-                do! Task.Delay(Timeout.Infinite, cancellationToken)
-                return 0
-            }
-        )
+        cancellation.Cancel()
+        ValueTask<int>(Task.FromCanceled<int>(cancellationToken))
 
 type private BlockingAfterDataStream(data: byte array) =
     inherit Stream()
@@ -142,7 +119,7 @@ type private BlockingAfterDataStream(data: byte array) =
     override _.ReadAsync(buffer: Memory<byte>, cancellationToken: CancellationToken) =
         if offset < data.Length then
             let count = min buffer.Length (data.Length - offset)
-            data.AsSpan(offset, count).CopyTo buffer.Span
+            data.AsSpan(offset, count).CopyTo(buffer.Span)
             offset <- offset + count
             ValueTask<int>(count)
         else
@@ -175,32 +152,81 @@ type private FailingWriteStream() =
 
 type TransportTests() =
     [<Fact>]
-    member _.``codec round trips standard frames and nested values``() =
-        let nested =
-            Test.map [ "items", RpcValue.array [ RpcValue.Integer -4L; Test.map [ "nested", RpcValue.Boolean true ] ] ]
+    member _.``standard request response error and notification frames retain their golden wire shapes``() =
+        let error =
+            { Code = "e"
+              Message = "m"
+              Data = Some(Test.map [ "d", RpcValue.Integer 1L ]) }
 
-        let frames =
-            [ Request(1u, "workspace/root", nested)
-              Response(
-                  1u,
-                  Some
-                      { Code = "invalid_params"
-                        Message = "bad"
-                        Data = Some nested },
-                  RpcValue.Nil
-              )
-              Notification("workspace/reset", nested) ]
+        let cases =
+            [ Request(7u, "x", Test.empty), [| 0x94uy; 0x00uy; 0x07uy; 0xa1uy; 0x78uy; 0x80uy |]
+              Response(7u, Some error, Test.empty),
+              [| 0x94uy
+                 0x01uy
+                 0x07uy
+                 0x83uy
+                 0xa4uy
+                 0x63uy
+                 0x6fuy
+                 0x64uy
+                 0x65uy
+                 0xa1uy
+                 0x65uy
+                 0xa4uy
+                 0x64uy
+                 0x61uy
+                 0x74uy
+                 0x61uy
+                 0x81uy
+                 0xa1uy
+                 0x64uy
+                 0x01uy
+                 0xa7uy
+                 0x6duy
+                 0x65uy
+                 0x73uy
+                 0x73uy
+                 0x61uy
+                 0x67uy
+                 0x65uy
+                 0xa1uy
+                 0x6duy
+                 0x80uy |]
+              Notification("n", Test.map [ "v", RpcValue.Boolean true ]),
+              [| 0x93uy; 0x02uy; 0xa1uy; 0x6euy; 0x81uy; 0xa1uy; 0x76uy; 0xc3uy |] ]
 
-        let encoded =
-            frames |> List.collect (RpcCodec.encodeFrame >> Array.toList) |> List.toArray
+        for frame, golden in cases do
+            Assert.Equal<byte>(golden, RpcCodec.encodeFrame frame)
 
-        Assert.Equal(3, (Test.decodeAll encoded).Length)
+            match RpcCodec.decodeFrame RpcCodec.secureLimits golden with
+            | Ok(RpcFrameDecodeResult.Frame(Request(7u, "x", RpcValue.Map fields))) -> Assert.Empty(fields)
+            | Ok(RpcFrameDecodeResult.Frame(Response(7u, Some decoded, RpcValue.Map result))) ->
+                Assert.Equal("e", decoded.Code)
+                Assert.Equal("m", decoded.Message)
+                Assert.Equal(Some(RpcValue.Unsigned 1UL), decoded.Data |> Option.bind (RpcValue.tryField "d"))
+                Assert.Empty(result)
+            | Ok(RpcFrameDecodeResult.Frame(Notification("n", parameters))) ->
+                Assert.Equal(Some(RpcValue.Boolean true), RpcValue.tryField "v" parameters)
+            | result -> failwithf "Golden frame no longer decodes: %A" result
 
     [<Fact>]
-    member _.``empty short arrays and incomplete error maps never throw``() =
-        let values =
-            [ [| 0x90uy |]
-              [| 0x91uy; 0uy |]
+    member _.``malformed values preserve recoverable IDs and session continuation``() =
+        let invalidValues =
+            [ "invalid UTF-8", [| 0xa1uy; 0xffuy |]
+              "extension", [| 0xd4uy; 0uy; 0uy |]
+              "non-string map key", [| 0x81uy; 1uy; 0xc0uy |]
+              "duplicate map key", [| 0x82uy; 0xa1uy; byte 'x'; 1uy; 0xa1uy; byte 'x'; 2uy |]
+              "excessive depth", Array.append (Array.replicate 65 0x91uy) [| 0xc0uy |] ]
+
+        for name, bytes in invalidValues do
+            match RpcCodec.tryDecodeValue RpcCodec.secureLimits bytes with
+            | Error(RpcDecodeError.Invalid _) -> ()
+            | result -> failwithf "%s: expected invalid value, got %A" name result
+
+        let invalidFrames =
+            [ "empty frame", [| 0x90uy |]
+              "short request", [| 0x91uy; 0uy |]
+              "incomplete error map",
               RpcCodec.encodeValue (
                   RpcValue.array
                       [ RpcValue.Unsigned 1UL
@@ -209,110 +235,10 @@ type TransportTests() =
                         RpcValue.Nil ]
               ) ]
 
-        for value in values do
-            match RpcCodec.decodeFrame RpcCodec.secureLimits value with
+        for name, bytes in invalidFrames do
+            match RpcCodec.decodeFrame RpcCodec.secureLimits bytes with
             | Error(RpcDecodeError.Invalid _) -> ()
-            | result -> failwithf "Expected a typed decode error, got %A" result
-
-    [<Fact>]
-    member _.``correlatable malformed method and params preserve response IDs``() =
-        let invalidMethod =
-            RpcCodec.encodeValue (
-                RpcValue.array
-                    [ RpcValue.Unsigned 0UL
-                      RpcValue.Unsigned 41UL
-                      RpcValue.Integer 42L
-                      Test.empty ]
-            )
-
-        let invalidParams =
-            RpcCodec.encodeValue (
-                RpcValue.array
-                    [ RpcValue.Unsigned 0UL
-                      RpcValue.Unsigned 42UL
-                      RpcValue.String "workspace/root"
-                      RpcValue.Nil ]
-            )
-
-        match RpcCodec.decodeFrame RpcCodec.secureLimits invalidMethod with
-        | Ok(RpcFrameDecodeResult.RecoverableError(41u, error)) -> Assert.Equal("invalid_request", error.Code)
-        | result -> failwithf "%A" result
-
-        match RpcCodec.decodeFrame RpcCodec.secureLimits invalidParams with
-        | Ok(RpcFrameDecodeResult.RecoverableError(42u, error)) -> Assert.Equal("invalid_params", error.Code)
-        | result -> failwithf "%A" result
-
-        let invalidUtf8Method = [| 0x94uy; 0uy; 43uy; 0xa1uy; 0xffuy; 0x80uy |]
-        let invalidMapKey = [| 0x94uy; 0uy; 44uy; 0xa1uy; byte 'x'; 0x81uy; 1uy; 0xc0uy |]
-
-        match RpcCodec.decodeFrame RpcCodec.secureLimits invalidUtf8Method with
-        | Ok(RpcFrameDecodeResult.RecoverableError(43u, error)) -> Assert.Equal("invalid_request", error.Code)
-        | result -> failwithf "%A" result
-
-        match RpcCodec.decodeFrame RpcCodec.secureLimits invalidMapKey with
-        | Ok(RpcFrameDecodeResult.RecoverableError(44u, error)) -> Assert.Equal("invalid_params", error.Code)
-        | result -> failwithf "%A" result
-
-    [<Fact>]
-    member _.``session returns typed errors for correlatable malformed requests``() =
-        let invalidMethod =
-            RpcCodec.encodeValue (
-                RpcValue.array
-                    [ RpcValue.Unsigned 0UL
-                      RpcValue.Unsigned 21UL
-                      RpcValue.Integer 42L
-                      Test.empty ]
-            )
-
-        let invalidParams =
-            RpcCodec.encodeValue (
-                RpcValue.array
-                    [ RpcValue.Unsigned 0UL
-                      RpcValue.Unsigned 22UL
-                      RpcValue.String "workspace/root"
-                      RpcValue.Nil ]
-            )
-
-        let input =
-            Array.concat
-                [ Test.request 1u "initialize" Test.empty
-                  invalidMethod
-                  invalidParams
-                  Test.request 2u "shutdown" Test.empty ]
-
-        let exitCode, stdout, stderr =
-            Test.run (Test.defaultConfiguration RpcProfile.publicProfile) input
-
-        Assert.Equal(0, exitCode)
-        Assert.Equal(String.Empty, stderr)
-
-        Assert.Contains(
-            Test.decodeAll stdout,
-            function
-            | Response(21u, Some error, _) when error.Code = "invalid_request" -> true
-            | _ -> false
-        )
-
-        Assert.Contains(
-            Test.decodeAll stdout,
-            function
-            | Response(22u, Some error, _) when error.Code = "invalid_params" -> true
-            | _ -> false
-        )
-
-    [<Fact>]
-    member _.``strict application decoding rejects utf8 extensions keys duplicates depth and oversize``() =
-        let invalidValues =
-            [ [| 0xa1uy; 0xffuy |]
-              [| 0xd4uy; 0uy; 0uy |]
-              [| 0x81uy; 1uy; 0xc0uy |]
-              [| 0x82uy; 0xa1uy; byte 'x'; 1uy; 0xa1uy; byte 'x'; 2uy |]
-              Array.append (Array.replicate 65 0x91uy) [| 0xc0uy |] ]
-
-        for value in invalidValues do
-            match RpcCodec.tryDecodeValue RpcCodec.secureLimits value with
-            | Error(RpcDecodeError.Invalid _) -> ()
-            | result -> failwithf "Expected invalid value, got %A" result
+            | result -> failwithf "%s: expected invalid frame, got %A" name result
 
         match
             RpcCodec.tryReadValueLength
@@ -321,68 +247,270 @@ type TransportTests() =
                 [| 0xc4uy; 4uy; 0uy; 0uy; 0uy; 0uy |]
         with
         | Error(RpcDecodeError.TooLarge _) -> ()
-        | result -> failwithf "%A" result
+        | result -> failwithf "oversized value: expected too large, got %A" result
 
-    [<Fact>]
-    member _.``fragmented session reads and coalesced near limit values remain frame bounded``() =
-        let initialize = Test.request 1u "initialize" Test.empty
-        let payload = Array.zeroCreate<byte> (RpcCodec.secureLimits.MaximumValueBytes - 256)
+        let recoverable =
+            [ "wrong arity",
+              RpcCodec.encodeValue (
+                  RpcValue.array
+                      [ RpcValue.Unsigned 0UL
+                        RpcValue.Unsigned 40UL
+                        RpcValue.String "workspace/root" ]
+              ),
+              40u,
+              "invalid_request"
+              "non-string method",
+              RpcCodec.encodeValue (
+                  RpcValue.array
+                      [ RpcValue.Unsigned 0UL
+                        RpcValue.Unsigned 41UL
+                        RpcValue.Integer 42L
+                        Test.empty ]
+              ),
+              41u,
+              "invalid_request"
+              "non-map params",
+              RpcCodec.encodeValue (
+                  RpcValue.array
+                      [ RpcValue.Unsigned 0UL
+                        RpcValue.Unsigned 42UL
+                        RpcValue.String "workspace/root"
+                        RpcValue.Nil ]
+              ),
+              42u,
+              "invalid_params"
+              "invalid UTF-8 method", [| 0x94uy; 0uy; 43uy; 0xa1uy; 0xffuy; 0x80uy |], 43u, "invalid_request"
+              "invalid params map key",
+              [| 0x94uy; 0uy; 44uy; 0xa1uy; byte 'x'; 0x81uy; 1uy; 0xc0uy |],
+              44u,
+              "invalid_params" ]
 
-        let large =
-            Test.request 2u "large" (Test.map [ "payload", RpcValue.Binary payload ])
+        for name, bytes, expectedId, expectedCode in recoverable do
+            match RpcCodec.decodeFrame RpcCodec.secureLimits bytes with
+            | Ok(RpcFrameDecodeResult.RecoverableError(id, error)) ->
+                Assert.Equal(expectedId, id)
+                Assert.Equal(expectedCode, error.Code)
+            | result -> failwithf "%s: expected recoverable error, got %A" name result
 
-        Assert.True(large.Length <= RpcCodec.secureLimits.MaximumValueBytes)
-        let shutdown = Test.request 3u "shutdown" Test.empty
-
-        let profile =
-            RpcProfile.create
-                "large"
-                1
-                0
-                [ { Name = "large"
-                    Classification = Read }
-                  { Name = "shutdown"
-                    Classification = Control } ]
-
-        use fragmented = new ChunkedReadStream(Array.concat [ initialize; shutdown ], 1)
-
-        let fragmentedExit, fragmentedOutput, fragmentedError =
-            Test.runWithToken (Test.defaultConfiguration profile) fragmented CancellationToken.None
-            |> _.Result
-
-        Assert.Equal(0, fragmentedExit)
-        Assert.Equal(String.Empty, fragmentedError)
-        Assert.Equal(2, (Test.decodeAll fragmentedOutput).Length)
+        let input =
+            [ yield Test.request 1u "initialize" Test.empty
+              yield! recoverable |> List.map (fun (_, bytes, _, _) -> bytes)
+              yield Test.request 2u "shutdown" Test.empty ]
+            |> Array.concat
 
         let exitCode, stdout, stderr =
-            Test.run (Test.defaultConfiguration profile) (Array.concat [ initialize; large; shutdown ])
+            Test.run (Test.defaultConfiguration RpcProfile.publicProfile) input
 
         Assert.Equal(0, exitCode)
         Assert.Equal(String.Empty, stderr)
-        Assert.Equal(3, (Test.decodeAll stdout).Length)
+
+        Assert.Equal<(uint32 * string) list>(
+            recoverable |> List.map (fun (_, _, id, code) -> id, code),
+            Test.responseErrors stdout
+        )
+
+        match Test.frames stdout |> List.last with
+        | Response(2u, None, _) -> ()
+        | frame -> failwithf "Session did not continue to shutdown: %A" frame
 
     [<Fact>]
-    member _.``truncated eof is fatal while clean eof is normal``() =
+    member _.``fragmented and coalesced streams stay frame bounded``() =
+        let limits =
+            { RpcCodec.secureLimits with
+                MaximumValueBytes = 4096 }
+
+        let profile = Test.profile "streams" [ "large", Read; "shutdown", Control ]
+        let initialize = Test.request 1u "initialize" Test.empty
+
+        let large =
+            Test.request 2u "large" (Test.map [ "payload", RpcValue.Binary(Array.zeroCreate 3900) ])
+
+        let shutdown = Test.request 3u "shutdown" Test.empty
+        Assert.InRange(large.Length, 3072, limits.MaximumValueBytes)
+
+        let configuration =
+            { Test.defaultConfiguration profile with
+                Limits = limits
+                GetOutboundFrameLimit = fun () -> limits.MaximumValueBytes }
+
+        let cases: (string * (unit -> Stream) * int) list =
+            [ "one-byte fragments", (fun () -> new ChunkedReadStream(Array.concat [ initialize; shutdown ], 1)), 2
+              "coalesced near-limit frames",
+              (fun () -> new MemoryStream(Array.concat [ initialize; large; shutdown ])),
+              3 ]
+
+        for name, createStream, expectedFrames in cases do
+            use stream = createStream ()
+
+            let exitCode, stdout, stderr =
+                Test.runStream configuration stream CancellationToken.None |> _.Result
+
+            Assert.True((exitCode = 0), $"{name}: exit {exitCode}, {stderr}")
+            Assert.Equal(expectedFrames, (Test.frames stdout).Length)
+
+    [<Fact>]
+    member _.``clean and truncated EOF have distinct outcomes``() =
         let configuration = Test.defaultConfiguration RpcProfile.publicProfile
 
-        let truncatedExit, truncatedOutput, truncatedError =
-            Test.run configuration [| 0x94uy; 0uy; 1uy |]
+        let cases =
+            [ "clean", Array.empty, 0, None
+              "truncated", [| 0x94uy; 0uy; 1uy |], 65, Some "incomplete" ]
 
-        Assert.Equal(65, truncatedExit)
-        Assert.Empty(truncatedOutput)
-        Assert.Contains("incomplete", truncatedError)
-        let cleanExit, cleanOutput, cleanError = Test.run configuration Array.empty
-        Assert.Equal(0, cleanExit)
-        Assert.Empty(cleanOutput)
-        Assert.Equal(String.Empty, cleanError)
+        for name, input, expectedExit, diagnostic in cases do
+            let exitCode, stdout, stderr = Test.run configuration input
+            Assert.True((exitCode = expectedExit), $"{name}: exit {exitCode}")
+            Assert.Empty(stdout)
+
+            match diagnostic with
+            | Some text -> Assert.Contains(text, stderr)
+            | None -> Assert.Equal(String.Empty, stderr)
 
     [<Fact>]
-    member _.``read cancellation returns 130 without stdout or stack trace``() =
-        use source = new BlockingReadStream()
-        use cancellation = new CancellationTokenSource(50)
+    member _.``initialization profiles and notification callability gate requests``() =
+        let worker = Test.profile "worker" [ "msbuild/evaluate", Read; "shutdown", Control ]
+
+        let notifications =
+            Test.profile
+                "notifications"
+                [ "workspace/exportChunk", NotificationMethod
+                  "operation/completed", NotificationMethod
+                  "shutdown", Control ]
+
+        let cases =
+            [ "initialization",
+              RpcProfile.publicProfile,
+              [ Test.request 1u "workspace/root" Test.empty
+                Test.request 2u "initialize" Test.empty
+                Test.request 3u "initialize" Test.empty
+                Test.request 4u "shutdown" Test.empty ],
+              [ 1u, "not_initialized"; 3u, "invalid_request" ]
+              "worker profile isolation",
+              worker,
+              [ Test.request 1u "initialize" Test.empty
+                Test.request 2u "workspace/root" Test.empty
+                Test.request 3u "msbuild/evaluate" Test.empty
+                Test.request 4u "shutdown" Test.empty ],
+              [ 2u, "unknown_method" ]
+              "public profile isolation",
+              RpcProfile.publicProfile,
+              [ Test.request 1u "initialize" Test.empty
+                Test.request 2u "msbuild/evaluate" Test.empty
+                Test.request 3u "shutdown" Test.empty ],
+              [ 2u, "unknown_method" ]
+              "notifications are not callable",
+              notifications,
+              [ Test.request 1u "initialize" Test.empty
+                Test.request 2u "workspace/exportChunk" Test.empty
+                Test.request 3u "operation/completed" Test.empty
+                Test.request 4u "shutdown" Test.empty ],
+              [ 2u, "unknown_method"; 3u, "unknown_method" ] ]
+
+        for name, profile, requests, expectedErrors in cases do
+            let exitCode, stdout, stderr =
+                requests |> Array.concat |> Test.run (Test.defaultConfiguration profile)
+
+            Assert.True((exitCode = 0), $"{name}: exit {exitCode}, {stderr}")
+            Assert.Equal<(uint32 * string) list>(expectedErrors, Test.responseErrors stdout)
+
+    [<Fact>]
+    member _.``public initialization and paging schemas remain stable``() =
+        let initialize major client capabilities limits =
+            let fields =
+                ResizeArray<string * RpcValue>(
+                    [ "protocolVersion", Test.map [ "major", RpcValue.Integer major; "minor", RpcValue.Integer 9L ]
+                      "clientInfo", Test.map [ "name", RpcValue.String client ]
+                      "capabilities", capabilities |> List.map RpcValue.String |> RpcValue.array ]
+                )
+
+            limits |> Option.iter (fun value -> fields.Add("limits", value))
+            Test.map fields
+
+        let valid =
+            initialize
+                1L
+                "test"
+                [ "workspace.root"; "unknown.claim"; "operation.cancel" ]
+                (Some(Test.map [ "maxFrameBytes", RpcValue.Integer 4096L; "maxPageSize", RpcValue.Integer 50L ]))
+
+        let request =
+            PublicProtocol.parseInitialize valid
+            |> Result.defaultWith (fun error -> failwith error.Message)
+
+        Assert.Equal(0, request.ProtocolMinor)
+        Assert.Equal(4096, request.MaximumFrameBytes)
+        Assert.Equal(50, request.MaximumPageSize)
+
+        let descriptor =
+            WorkspaceDescriptor.Create(
+                WorkspaceTargetPath.Create(Path.GetTempPath()),
+                HostFileSystemCaseSemantics.Sensitive,
+                WorkspaceFormat.Slnf,
+                WorkspaceRevision.Create 0L,
+                WorkspaceAccess.ReadWrite
+            )
+
+        let resultFields =
+            PublicProtocol.initializeResult descriptor 0L request
+            |> RpcValue.requireMap "initialize.result"
+
+        Assert.Equal<string list>(
+            [ "capabilities"; "limits"; "protocolVersion"; "serverInfo"; "workspace" ],
+            resultFields.Keys |> Seq.sort |> Seq.toList
+        )
+
+        let negotiated =
+            resultFields["capabilities"]
+            |> RpcValue.requireArray "capabilities"
+            |> Seq.map (RpcValue.requireString "capability")
+            |> Seq.toList
+
+        Assert.Equal<string list>([ "operation.cancel"; "workspace.root" ], negotiated)
+
+        let resultLimits = resultFields["limits"] |> RpcValue.requireMap "limits"
+        Assert.Equal(RpcValue.Integer 4096L, resultLimits["maxFrameBytes"])
+        Assert.Equal(RpcValue.Integer 50L, resultLimits["maxPageSize"])
+
+        let invalid =
+            [ "missing fields", Test.empty
+              "unsupported major", initialize 2L "test" [] None
+              "blank client", initialize 1L "" [] None
+              "duplicate capability", initialize 1L "test" [ "x"; "x" ] None ]
+
+        for name, parameters in invalid do
+            match PublicProtocol.parseInitialize parameters with
+            | Error error -> Assert.Equal("invalid_params", error.Code)
+            | Ok value -> failwithf "%s: expected invalid initialize, got %A" name value
+
+        let defaults =
+            initialize 1L "test" [] None
+            |> PublicProtocol.parseInitialize
+            |> Result.defaultWith (fun error -> failwith error.Message)
+
+        Assert.Equal(256, defaults.MaximumPageSize)
+
+        let children pageSize =
+            PublicProtocol.parseRequest
+                "workspace/children"
+                (Test.map
+                    [ "parentId", RpcValue.String "parent"
+                      "pageSize", RpcValue.Integer pageSize
+                      "continuationToken", RpcValue.String "next" ])
+
+        match children 4096L with
+        | Ok(PublicRequest.Children("parent", Some 4096, Some "next")) -> ()
+        | result -> failwithf "maximum page and continuation schema changed: %A" result
+
+        match children 4097L with
+        | Error error -> Assert.Equal("invalid_params", error.Code)
+        | result -> failwithf "oversized page should be rejected: %A" result
+
+    [<Fact>]
+    member _.``read cancellation exits 130 without protocol output``() =
+        use cancellation = new CancellationTokenSource()
+        use source = new CancellingReadStream(cancellation)
 
         let exitCode, stdout, stderr =
-            Test.runWithToken (Test.defaultConfiguration RpcProfile.publicProfile) source cancellation.Token
+            Test.runStream (Test.defaultConfiguration RpcProfile.publicProfile) source cancellation.Token
             |> _.Result
 
         Assert.Equal(130, exitCode)
@@ -390,127 +518,26 @@ type TransportTests() =
         Assert.Equal(String.Empty, stderr)
 
     [<Fact>]
-    member _.``session enforces initialization reinitialize and profile isolation``() =
-        let worker =
-            RpcProfile.create
-                "worker"
-                1
-                0
-                [ { Name = "msbuild/evaluate"
-                    Classification = Read }
-                  { Name = "shutdown"
-                    Classification = Control } ]
-
-        let input =
-            [ Test.request 1u "workspace/root" Test.empty
-              Test.request 2u "initialize" Test.empty
-              Test.request 3u "initialize" Test.empty
-              Test.request 4u "workspace/root" Test.empty
-              Test.request 5u "msbuild/evaluate" Test.empty
-              Test.request 6u "shutdown" Test.empty ]
-            |> Array.concat
-
-        let exitCode, stdout, stderr = Test.run (Test.defaultConfiguration worker) input
-        Assert.Equal(0, exitCode)
-        Assert.Equal(String.Empty, stderr)
-
-        Assert.Equal<string list>(
-            [ "not_initialized"; "invalid_request"; "unknown_method" ],
-            Test.decodeAll stdout |> List.choose Test.errorCode
-        )
-
-    [<Fact>]
-    member _.``public profile rejects worker methods``() =
-        let input =
-            Array.concat
-                [ Test.request 1u "initialize" Test.empty
-                  Test.request 2u "msbuild/evaluate" Test.empty
-                  Test.request 3u "shutdown" Test.empty ]
-
-        let _, stdout, _ =
-            Test.run (Test.defaultConfiguration RpcProfile.publicProfile) input
-
-        Assert.Contains(
-            Test.decodeAll stdout,
-            function
-            | Response(2u, Some error, _) when error.Code = "unknown_method" -> true
-            | _ -> false
-        )
-
-    [<Theory>]
-    [<InlineData("workspace/exportChunk")>]
-    [<InlineData("operation/completed")>]
-    member _.``notification descriptors are not callable requests``(methodName: string) =
-        let profile =
-            RpcProfile.create
-                "generic-notifications"
-                1
-                0
-                [ { Name = methodName
-                    Classification = NotificationMethod }
-                  { Name = "shutdown"
-                    Classification = Control } ]
-
-        let input =
-            Array.concat
-                [ Test.request 1u "initialize" Test.empty
-                  Test.request 2u methodName Test.empty
-                  Test.request 3u "shutdown" Test.empty ]
-
-        let exitCode, stdout, stderr = Test.run (Test.defaultConfiguration profile) input
-
-        Assert.Equal(0, exitCode)
-        Assert.Equal(String.Empty, stderr)
-
-        Assert.Contains(
-            Test.decodeAll stdout,
-            function
-            | Response(2u, Some error, _) when error.Code = "unknown_method" -> true
-            | _ -> false
-        )
-
-    [<Fact>]
-    member _.``shutdown cancels background work and emits no frames after its response``() =
-        let profile =
-            RpcProfile.create
-                "background"
-                1
-                0
-                [ { Name = "start"
-                    Classification = Read }
-                  { Name = "shutdown"
-                    Classification = Control } ]
+    member _.``shutdown cancels background work before its final response``() =
+        let profile = Test.profile "background" [ "start", Read; "shutdown", Control ]
 
         let dispatch _ methodName _ _ =
-            task {
-                if methodName = "start" then
-                    let background (sink: RpcNotificationSink) cancellationToken =
-                        task {
-                            try
-                                do! Task.Delay(Timeout.Infinite, cancellationToken)
-                            with :? OperationCanceledException ->
-                                do! sink.WriteAsync(Notification("operation/completed", Test.empty))
-                        }
+            if methodName = "start" then
+                let background (sink: RpcNotificationSink) cancellationToken =
+                    task {
+                        try
+                            do! Task.Delay(Timeout.Infinite, cancellationToken)
+                        with :? OperationCanceledException ->
+                            do! sink.WriteAsync(Notification("operation/completed", Test.empty))
+                    }
 
-                    return
-                        Ok
-                            { Result = Test.empty
-                              Notifications = []
-                              BackgroundWork = Some background
-                              AfterResponse = None
-                              StopAfterResponse = false }
-                else
-                    return
-                        Ok
-                            { Result = Test.empty
-                              Notifications = []
-                              BackgroundWork = None
-                              AfterResponse = None
-                              StopAfterResponse = true }
-            }
-
-        let configuration =
-            Test.configuration profile (fun _ _ -> Task.FromResult(Ok Test.empty)) dispatch
+                Task.FromResult(
+                    Ok
+                        { Test.dispatchResult Test.empty false with
+                            BackgroundWork = Some background }
+                )
+            else
+                Task.FromResult(Ok(Test.dispatchResult Test.empty true))
 
         let input =
             Array.concat
@@ -518,69 +545,22 @@ type TransportTests() =
                   Test.request 2u "start" Test.empty
                   Test.request 3u "shutdown" Test.empty ]
 
-        let exitCode, stdout, stderr = Test.run configuration input
-        Assert.Equal(0, exitCode)
-        Assert.Equal(String.Empty, stderr)
-        let frames = Test.decodeAll stdout
-        Assert.Equal(4, frames.Length)
-
-        match frames[2] with
-        | Notification("operation/completed", RpcValue.Map fields) -> Assert.Empty fields
-        | frame -> failwithf "Expected completion before shutdown, got %A" frame
-
-        match frames[3] with
-        | Response(3u, None, _) -> ()
-        | frame -> failwithf "Shutdown response was not the final frame: %A" frame
-
-    [<Fact>]
-    member _.``request dispatch remains serialized for mutation handlers``() =
-        let mutable active = 0
-        let mutable maximum = 0
-
-        let profile =
-            RpcProfile.create
-                "mutations"
-                1
-                0
-                [ { Name = "mutate"
-                    Classification = Mutation }
-                  { Name = "shutdown"
-                    Classification = Control } ]
-
-        let dispatch _ methodName _ _ =
-            task {
-                if methodName = "mutate" then
-                    let current = Interlocked.Increment &active
-                    maximum <- max maximum current
-                    do! Task.Delay 20
-                    Interlocked.Decrement &active |> ignore
-
-                return
-                    Ok
-                        { Result = Test.empty
-                          Notifications = []
-                          BackgroundWork = None
-                          AfterResponse = None
-                          StopAfterResponse = methodName = "shutdown" }
-            }
-
         let configuration =
             Test.configuration profile (fun _ _ -> Task.FromResult(Ok Test.empty)) dispatch
 
-        let input =
-            Array.concat
-                [ Test.request 1u "initialize" Test.empty
-                  Test.request 2u "mutate" Test.empty
-                  Test.request 3u "mutate" Test.empty
-                  Test.request 4u "shutdown" Test.empty ]
-
-        let exitCode, stdout, _ = Test.run configuration input
+        let exitCode, stdout, stderr = Test.run configuration input
         Assert.Equal(0, exitCode)
-        Assert.Equal(1, maximum)
-        Assert.Equal(4, (Test.decodeAll stdout).Length)
+        Assert.Equal(String.Empty, stderr)
+
+        match Test.frames stdout with
+        | [ Response(1u, None, _)
+            Response(2u, None, _)
+            Notification("operation/completed", RpcValue.Map fields)
+            Response(3u, None, _) ] -> Assert.Empty(fields)
+        | frames -> failwithf "Shutdown ordering changed: %A" frames
 
     [<Fact>]
-    member _.``irrecoverable output failure is fatal and never exits zero``() =
+    member _.``output failure is fatal``() =
         use input = new MemoryStream(Test.request 1u "initialize" Test.empty)
         use output = new FailingWriteStream()
         use errors = new StringWriter()
@@ -598,82 +578,126 @@ type TransportTests() =
         Assert.Contains("failed while reading or writing", errors.ToString())
 
     [<Fact>]
-    member _.``negotiated outbound limit replaces oversized initialize and request responses``() =
-        let mutable outboundLimit = RpcCodec.secureLimits.MaximumValueBytes
+    member _.``background faults are fatal while reading and during shutdown``() =
+        let cases = [ "while reading", false; "during shutdown", true ]
 
-        let profile =
-            RpcProfile.create
-                "limits"
-                1
-                0
-                [ { Name = "big"; Classification = Read }
-                  { Name = "shutdown"
-                    Classification = Control } ]
+        for name, failOnCancellation in cases do
+            let methods =
+                if failOnCancellation then
+                    [ "start", Read; "shutdown", Control ]
+                else
+                    [ "start", Read ]
 
-        let initialize _ _ =
-            outboundLimit <- 1024
-            Task.FromResult(Ok(Test.map [ "payload", RpcValue.String(String('x', 5000)) ]))
+            let profile = Test.profile $"fault-{name}" methods
 
-        let dispatch _ methodName _ _ =
-            Task.FromResult(
-                Ok
-                    { Result = Test.map [ "payload", RpcValue.String(String('y', 5000)) ]
-                      Notifications = []
-                      BackgroundWork = None
-                      AfterResponse = None
-                      StopAfterResponse = methodName = "shutdown" }
-            )
+            let dispatch _ methodName _ _ =
+                if methodName = "start" then
+                    let background (_: RpcNotificationSink) cancellationToken =
+                        if failOnCancellation then
+                            task {
+                                try
+                                    do! Task.Delay(Timeout.Infinite, cancellationToken)
+                                with :? OperationCanceledException ->
+                                    return raise (InvalidOperationException("shutdown fault"))
+                            }
+                        else
+                            Task.FromException<unit>(InvalidOperationException("background fault"))
 
-        let configuration =
-            Test.configurationWithLimit profile (fun () -> outboundLimit) initialize dispatch
+                    Task.FromResult(
+                        Ok
+                            { Test.dispatchResult Test.empty false with
+                                BackgroundWork = Some background }
+                    )
+                else
+                    Task.FromResult(Ok(Test.dispatchResult Test.empty true))
 
-        let input =
-            Array.concat [ Test.request 1u "initialize" Test.empty; Test.request 2u "big" Test.empty ]
+            let input =
+                [ Test.request 1u "initialize" Test.empty
+                  Test.request 2u "start" Test.empty
+                  if failOnCancellation then
+                      Test.request 3u "shutdown" Test.empty ]
+                |> Array.concat
 
-        let exitCode, stdout, stderr = Test.run configuration input
-        Assert.Equal(0, exitCode)
-        Assert.Equal(String.Empty, stderr)
-        let frames = Test.decodeAllWithSizes stdout
-        Assert.All(frames, fun (_, size) -> Assert.True(size <= 1024))
+            use source =
+                if failOnCancellation then
+                    new MemoryStream(input) :> Stream
+                else
+                    new BlockingAfterDataStream(input)
 
-        match frames[0] |> fst with
-        | Response(1u, Some error, _) -> Assert.Equal("response_too_large", error.Code)
-        | frame -> failwithf "%A" frame
+            let configuration =
+                Test.configuration profile (fun _ _ -> Task.FromResult(Ok Test.empty)) dispatch
 
-        match frames[1] |> fst with
-        | Response(2u, Some error, _) -> Assert.Equal("not_initialized", error.Code)
-        | frame -> failwithf "%A" frame
+            let exitCode, stdout, stderr =
+                Test.runStream configuration source CancellationToken.None |> _.Result
+
+            Assert.True((exitCode = 65), $"{name}: exit {exitCode}")
+            Assert.Equal(2, (Test.frames stdout).Length)
+            Assert.Contains("background RPC operation failed", stderr)
 
     [<Fact>]
-    member _.``oversized background notification can complete as a bounded typed failure``() =
-        let mutable outboundLimit = RpcCodec.secureLimits.MaximumValueBytes
+    member _.``outbound limits bound responses and background notifications``() =
+        let limit = 1024
+        let oversized = Test.map [ "payload", RpcValue.String(String('x', 5000)) ]
 
         let profile =
-            RpcProfile.create
-                "bounded-background"
-                1
-                0
-                [ { Name = "start"
-                    Classification = Read }
-                  { Name = "shutdown"
-                    Classification = Control } ]
+            Test.profile "limits" [ "big", Read; "start", Read; "shutdown", Control ]
 
-        let initialize _ _ =
-            outboundLimit <- 1024
-            Task.FromResult(Ok Test.empty)
+        let run initialize dispatch input =
+            let mutable outboundLimit = RpcCodec.secureLimits.MaximumValueBytes
 
-        let dispatch _ methodName _ _ =
+            let configuration =
+                Test.configurationWithLimit
+                    profile
+                    (fun () -> outboundLimit)
+                    (fun parameters token ->
+                        outboundLimit <- limit
+                        initialize parameters token)
+                    dispatch
+
+            Test.run configuration input
+
+        let assertBounded name stdout =
+            Test.decode stdout
+            |> List.iter (fun (_, size) -> Assert.True(size <= limit, $"{name}: {size}-byte frame"))
+
+        let initializeInput =
+            Array.concat [ Test.request 1u "initialize" Test.empty; Test.request 2u "big" Test.empty ]
+
+        let initializeExit, initializeOutput, initializeError =
+            run
+                (fun _ _ -> Task.FromResult(Ok oversized))
+                (fun _ _ _ _ -> Task.FromResult(Ok(Test.dispatchResult Test.empty false)))
+                initializeInput
+
+        Assert.Equal(0, initializeExit)
+        Assert.Equal(String.Empty, initializeError)
+        assertBounded "initialize" initializeOutput
+
+        Assert.Equal<(uint32 * string) list>(
+            [ 1u, "response_too_large"; 2u, "not_initialized" ],
+            Test.responseErrors initializeOutput
+        )
+
+        let requestInput =
+            Array.concat [ Test.request 1u "initialize" Test.empty; Test.request 2u "big" Test.empty ]
+
+        let requestExit, requestOutput, requestError =
+            run
+                (fun _ _ -> Task.FromResult(Ok Test.empty))
+                (fun _ _ _ _ -> Task.FromResult(Ok(Test.dispatchResult oversized false)))
+                requestInput
+
+        Assert.Equal(0, requestExit)
+        Assert.Equal(String.Empty, requestError)
+        assertBounded "request" requestOutput
+        Assert.Equal<(uint32 * string) list>([ 2u, "response_too_large" ], Test.responseErrors requestOutput)
+
+        let backgroundDispatch _ methodName _ _ =
             if methodName = "start" then
                 let background (sink: RpcNotificationSink) _ =
                     task {
                         try
-                            do!
-                                sink.WriteAsync(
-                                    Notification(
-                                        "operation/output",
-                                        Test.map [ "text", RpcValue.String(String('x', 5000)) ]
-                                    )
-                                )
+                            do! sink.WriteAsync(Notification("operation/output", oversized))
                         with :? RpcOutboundFrameTooLargeException ->
                             do!
                                 sink.WriteAsync(
@@ -688,218 +712,29 @@ type TransportTests() =
 
                 Task.FromResult(
                     Ok
-                        { Result = Test.empty
-                          Notifications = []
-                          BackgroundWork = Some background
-                          AfterResponse = None
-                          StopAfterResponse = false }
+                        { Test.dispatchResult Test.empty false with
+                            BackgroundWork = Some background }
                 )
             else
-                Task.FromResult(
-                    Ok
-                        { Result = Test.empty
-                          Notifications = []
-                          BackgroundWork = None
-                          AfterResponse = None
-                          StopAfterResponse = true }
-                )
+                Task.FromResult(Ok(Test.dispatchResult Test.empty true))
 
-        let input =
+        let backgroundInput =
             Array.concat
                 [ Test.request 1u "initialize" Test.empty
                   Test.request 2u "start" Test.empty
                   Test.request 3u "shutdown" Test.empty ]
 
-        let exitCode, stdout, stderr =
-            Test.run (Test.configurationWithLimit profile (fun () -> outboundLimit) initialize dispatch) input
+        let backgroundExit, backgroundOutput, backgroundError =
+            run (fun _ _ -> Task.FromResult(Ok Test.empty)) backgroundDispatch backgroundInput
 
-        Assert.Equal(0, exitCode)
-        Assert.Equal(String.Empty, stderr)
-        let frames = Test.decodeAllWithSizes stdout
-        Assert.All(frames, fun (_, size) -> Assert.True(size <= 1024))
+        Assert.Equal(0, backgroundExit)
+        Assert.Equal(String.Empty, backgroundError)
+        assertBounded "background" backgroundOutput
 
         Assert.Contains(
-            frames |> List.map fst,
+            Test.frames backgroundOutput,
             function
             | Notification("operation/completed", parameters) ->
-                parameters |> RpcValue.tryField "code" = Some(RpcValue.String "response_too_large")
+                RpcValue.tryField "code" parameters = Some(RpcValue.String "response_too_large")
             | _ -> false
         )
-
-    [<Fact>]
-    member _.``faulted background work wakes reads and exits with protocol failure``() =
-        let profile =
-            RpcProfile.create
-                "fault"
-                1
-                0
-                [ { Name = "start"
-                    Classification = Read } ]
-
-        let dispatch _ _ _ _ =
-            let background (_: RpcNotificationSink) _ =
-                task {
-                    do! Task.Yield()
-                    failwith "boom"
-                }
-
-            Task.FromResult(
-                Ok
-                    { Result = Test.empty
-                      Notifications = []
-                      BackgroundWork = Some background
-                      AfterResponse = None
-                      StopAfterResponse = false }
-            )
-
-        let input =
-            Array.concat [ Test.request 1u "initialize" Test.empty; Test.request 2u "start" Test.empty ]
-
-        use source = new BlockingAfterDataStream(input)
-
-        let exitCode, stdout, stderr =
-            Test.runWithToken
-                (Test.configuration profile (fun _ _ -> Task.FromResult(Ok Test.empty)) dispatch)
-                source
-                CancellationToken.None
-            |> _.Result
-
-        Assert.Equal(65, exitCode)
-        Assert.Equal(2, (Test.decodeAll stdout).Length)
-        Assert.Contains("background RPC operation failed", stderr)
-
-    [<Fact>]
-    member _.``background fault during shutdown prevents a false successful shutdown``() =
-        let profile =
-            RpcProfile.create
-                "shutdown-fault"
-                1
-                0
-                [ { Name = "start"
-                    Classification = Read }
-                  { Name = "shutdown"
-                    Classification = Control } ]
-
-        let dispatch _ methodName _ _ =
-            if methodName = "start" then
-                let background (_: RpcNotificationSink) cancellationToken =
-                    task {
-                        try
-                            do! Task.Delay(Timeout.Infinite, cancellationToken)
-                        with :? OperationCanceledException ->
-                            failwith "shutdown fault"
-                    }
-
-                Task.FromResult(
-                    Ok
-                        { Result = Test.empty
-                          Notifications = []
-                          BackgroundWork = Some background
-                          AfterResponse = None
-                          StopAfterResponse = false }
-                )
-            else
-                Task.FromResult(
-                    Ok
-                        { Result = Test.empty
-                          Notifications = []
-                          BackgroundWork = None
-                          AfterResponse = None
-                          StopAfterResponse = true }
-                )
-
-        let input =
-            Array.concat
-                [ Test.request 1u "initialize" Test.empty
-                  Test.request 2u "start" Test.empty
-                  Test.request 3u "shutdown" Test.empty ]
-
-        let exitCode, stdout, stderr =
-            Test.run (Test.configuration profile (fun _ _ -> Task.FromResult(Ok Test.empty)) dispatch) input
-
-        Assert.Equal(65, exitCode)
-        Assert.Equal(2, (Test.decodeAll stdout).Length)
-        Assert.Contains("background RPC operation failed", stderr)
-
-    [<Fact>]
-    member _.``initialize validation negotiates version capabilities and limits``() =
-        let valid =
-            Test.map
-                [ "protocolVersion", Test.map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 9L ]
-                  "clientInfo", Test.map [ "name", RpcValue.String "test" ]
-                  "capabilities",
-                  RpcValue.array
-                      [ RpcValue.String "workspace.root"
-                        RpcValue.String "unknown.claim"
-                        RpcValue.String "operation.cancel" ]
-                  "limits", Test.map [ "maxFrameBytes", RpcValue.Integer 4096L; "maxPageSize", RpcValue.Integer 50L ] ]
-
-        let request =
-            PublicProtocol.parseInitialize valid
-            |> Result.defaultWith (fun error -> failwith error.Message)
-
-        Assert.Equal(0, request.ProtocolMinor)
-        Assert.Equal(4096, request.MaximumFrameBytes)
-
-        let descriptor =
-            WorkspaceDescriptor.Create(
-                WorkspaceTargetPath.Create(Path.GetTempPath()),
-                HostFileSystemCaseSemantics.Sensitive,
-                WorkspaceFormat.Slnf,
-                WorkspaceRevision.Create 0L,
-                WorkspaceAccess.ReadWrite
-            )
-
-        let result = PublicProtocol.initializeResult descriptor 0L request
-
-        let capabilities =
-            result
-            |> RpcValue.tryField "capabilities"
-            |> Option.map (RpcValue.requireArray "capabilities")
-
-        Assert.Equal(2, capabilities.Value.Length)
-
-        let invalid =
-            [ Test.empty
-              Test.map
-                  [ "protocolVersion", Test.map [ "major", RpcValue.Integer 2L; "minor", RpcValue.Integer 0L ]
-                    "clientInfo", Test.map [ "name", RpcValue.String "test" ]
-                    "capabilities", RpcValue.array [] ]
-              Test.map
-                  [ "protocolVersion", Test.map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 0L ]
-                    "clientInfo", Test.map [ "name", RpcValue.String "" ]
-                    "capabilities", RpcValue.array [] ]
-              Test.map
-                  [ "protocolVersion", Test.map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 0L ]
-                    "clientInfo", Test.map [ "name", RpcValue.String "test" ]
-                    "capabilities", RpcValue.array [ RpcValue.String "x"; RpcValue.String "x" ] ] ]
-
-        for parameters in invalid do
-            match PublicProtocol.parseInitialize parameters with
-            | Error error -> Assert.Equal("invalid_params", error.Code)
-            | Ok value -> failwithf "Expected invalid initialize, got %A" value
-
-    [<Fact>]
-    member _.``workspace pages default to 256 and reject values above 4096``() =
-        let initialize =
-            Test.map
-                [ "protocolVersion", Test.map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 0L ]
-                  "clientInfo", Test.map [ "name", RpcValue.String "test" ]
-                  "capabilities", RpcValue.array [] ]
-
-        let request =
-            PublicProtocol.parseInitialize initialize
-            |> Result.defaultWith (fun error -> failwith error.Message)
-
-        Assert.Equal(256, request.MaximumPageSize)
-
-        let children size =
-            PublicProtocol.parseRequest
-                "workspace/children"
-                (Test.map [ "parentId", RpcValue.String "parent"; "pageSize", RpcValue.Integer size ])
-
-        Assert.True(children 4096L |> Result.isOk)
-
-        match children 4097L with
-        | Error error -> Assert.Equal("invalid_params", error.Code)
-        | Ok value -> failwithf "Expected invalid page size, got %A" value

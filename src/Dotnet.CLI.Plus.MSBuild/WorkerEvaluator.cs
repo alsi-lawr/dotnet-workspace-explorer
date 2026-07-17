@@ -13,23 +13,14 @@ internal sealed class WorkerEvaluator : IDisposable
         ? StringComparer.OrdinalIgnoreCase
         : StringComparer.Ordinal;
 
-    private readonly int cacheCapacity;
     private readonly ProjectCollection collection = new();
     private readonly Dictionary<string, CacheEntry> cache;
     private readonly LinkedList<string> recency = new();
 
-    internal WorkerEvaluator(int cacheCapacity = DefaultCacheCapacity)
+    internal WorkerEvaluator()
     {
-        if (cacheCapacity < 1)
-        {
-            throw new ArgumentOutOfRangeException(nameof(cacheCapacity));
-        }
-
-        this.cacheCapacity = cacheCapacity;
         cache = new Dictionary<string, CacheEntry>(PathComparer);
     }
-
-    internal int CachedProjectCount => cache.Count;
 
     internal WorkspaceOutcome<EvaluationSnapshot> Evaluate(
         WorkspaceArtifactPath requestedProjectPath
@@ -500,7 +491,7 @@ internal sealed class WorkerEvaluator : IDisposable
         ImmutableArray<Project> projects
     )
     {
-        if (cache.Count == cacheCapacity)
+        if (cache.Count == DefaultCacheCapacity)
         {
             Remove(recency.Last!.Value);
         }

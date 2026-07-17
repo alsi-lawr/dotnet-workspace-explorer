@@ -5,7 +5,6 @@ namespace Dotnet.CLI.Plus.FakeHost
 open System
 open System.Diagnostics
 open System.IO
-open System.Reflection
 open System.Text.Json
 open System.Threading
 
@@ -19,7 +18,8 @@ module Program =
     let main arguments =
         match arguments |> Array.toList, setting "DOTNET_PLUS_FAKE_HOST_MODE" with
         | [ "--child" ], _ ->
-            Thread.Sleep Timeout.Infinite
+            use blocked = new ManualResetEventSlim(false)
+            blocked.Wait()
             0
         | _, Some "capture" ->
             Console.Out.Write(JsonSerializer.Serialize arguments)
@@ -32,20 +32,20 @@ module Program =
             | Some path -> File.WriteAllText(path, "first")
             | None -> ()
 
-            Thread.Sleep 1000
+            match setting "DOTNET_PLUS_FAKE_HOST_RELEASE" with
+            | Some path when not (File.Exists path) ->
+                use watcher =
+                    new FileSystemWatcher(Path.GetDirectoryName path, Path.GetFileName path)
+
+                watcher.EnableRaisingEvents <- true
+                watcher.WaitForChanged(WatcherChangeTypes.Created) |> ignore
+            | _ -> ()
+
             Console.Out.Write("second")
             0
         | _, Some "failure" ->
-            Console.Error.Write("failure")
+            Console.Error.Write("\u001b[31mfailure\u001b[0m")
             23
-        | _, Some "stderr-flood" ->
-            let block = String('x', 4096)
-
-            for _ in 1..256 do
-                Console.Error.Write block
-
-            Console.Error.Flush()
-            71
         | _, Some "marker" ->
             match setting "DOTNET_PLUS_FAKE_HOST_MARKER" with
             | Some path -> File.WriteAllText(path, "started")
@@ -69,12 +69,11 @@ module Program =
             let startInfo = ProcessStartInfo()
 
             startInfo.FileName <-
-                Environment.GetEnvironmentVariable "DOTNET_HOST_PATH"
+                Environment.ProcessPath
                 |> Option.ofObj
-                |> Option.defaultValue "dotnet"
+                |> Option.defaultWith (fun () -> invalidOp "The fake host process path is unavailable.")
 
             startInfo.UseShellExecute <- false
-            startInfo.ArgumentList.Add(Assembly.GetExecutingAssembly().Location)
             startInfo.ArgumentList.Add("--child")
             use child = Process.Start startInfo
 

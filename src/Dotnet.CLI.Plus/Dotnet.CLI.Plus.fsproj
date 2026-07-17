@@ -21,7 +21,6 @@
     </ItemGroup>
 
     <ItemGroup>
-        <Compile Include="AssemblyInfo.fs" />
         <Compile Include="Compatibility.fs" />
         <Compile Include="WorkspaceState.fs" />
         <Compile Include="WorkspaceWatcher.fs" />

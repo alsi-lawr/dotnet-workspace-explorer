@@ -3,18 +3,15 @@ namespace Dotnet.CLI.Plus.MSBuild.Tests
 #nowarn "3261"
 
 open System
-open System.Collections.Concurrent
-open System.Collections.Immutable
+open System.Collections.Generic
 open System.Diagnostics
 open System.IO
-open System.Threading
-open Dotnet.CLI.Plus.Core
-open Dotnet.CLI.Plus.FakeHost
-open Dotnet.CLI.Plus.MSBuild
 open Dotnet.CLI.Plus.Transport
 open Xunit
 
 module private Test =
+    let private pendingFrames = Dictionary<int, ResizeArray<byte>>()
+
     let temporaryDirectory name =
         let path =
             Path.Combine(Path.GetTempPath(), $"dotnet-cli-plus-msbuild-{name}-{Guid.NewGuid():N}")
@@ -22,20 +19,27 @@ module private Test =
         Directory.CreateDirectory path |> ignore
         path
 
-    let rec repositoryRoot (directory: string) =
+    let rec private tryRepositoryRoot (directory: string) =
         if File.Exists(Path.Combine(directory, "Directory.Packages.props")) then
-            directory
+            Some directory
         else
             match Directory.GetParent directory with
-            | null -> failwith "Could not locate the repository root."
-            | parent -> repositoryRoot parent.FullName
+            | null -> None
+            | parent -> tryRepositoryRoot parent.FullName
+
+    let repositoryRoot directory =
+        [ directory; Directory.GetCurrentDirectory() ]
+        |> Seq.choose tryRepositoryRoot
+        |> Seq.tryHead
+        |> Option.defaultWith (fun () -> failwith "Could not locate the repository root.")
 
     let configuration =
         let baseDirectory = DirectoryInfo(AppContext.BaseDirectory)
 
         match baseDirectory.Parent with
         | null -> failwith "Could not determine the build configuration."
-        | parent -> parent.Name
+        | parent when parent.Name = "Debug" || parent.Name = "Release" -> parent.Name
+        | _ -> "Debug"
 
     let apphost =
         let name =
@@ -54,32 +58,7 @@ module private Test =
             name
         )
 
-    let fakeHostAssembly = typeof<FakeHostAssemblyMarker>.Assembly.Location
-    let path (value: string) = WorkspaceArtifactPath.Create value
     let write (path: string) (contents: string) = File.WriteAllText(path, contents)
-
-    let success outcome =
-        match outcome with
-        | WorkspaceOutcome.Success value -> value
-        | WorkspaceOutcome.Failure failure ->
-            failwithf "%s: %s" failure.Diagnostic.DiagnosticCode.Value failure.Diagnostic.Message
-
-    let failure outcome =
-        match outcome with
-        | WorkspaceOutcome.Success _ -> failwith "Expected a typed workspace failure."
-        | WorkspaceOutcome.Failure failure -> failure
-
-    let settings onStarted =
-        WorkerLaunchSettings(apphost, null, "dotnet", onStarted)
-
-    let client onStarted =
-        new MsBuildEvaluationClient(settings onStarted)
-
-    let writeGlobalJson directory version =
-        let contents =
-            sprintf """{"sdk":{"version":"%s","rollForward":"disable","allowPrerelease":false}}""" version
-
-        write (Path.Combine(directory, "global.json")) contents
 
     let simpleProject directory name extension =
         let project = Path.Combine(directory, name + extension)
@@ -92,76 +71,123 @@ module private Test =
 
         project
 
-    let currentSdkVersion workingDirectory =
+    let writeGlobalJson directory version =
+        write
+            (Path.Combine(directory, "global.json"))
+            (sprintf """{"sdk":{"version":"%s","rollForward":"disable","allowPrerelease":false}}""" version)
+
+    let writeSolution directory (projects: seq<string>) =
+        let solution = Path.Combine(directory, "Demo.slnx")
+
+        projects
+        |> Seq.map (fun project -> $"  <Project Path=\"{Path.GetFileName project}\" />")
+        |> String.concat Environment.NewLine
+        |> fun entries -> $"<Solution>{Environment.NewLine}{entries}{Environment.NewLine}</Solution>"
+        |> write solution
+
+        solution
+
+    let runDotnet workingDirectory argument =
         let start = ProcessStartInfo("dotnet")
         start.WorkingDirectory <- workingDirectory
-        start.ArgumentList.Add "--version"
+        start.ArgumentList.Add argument
         start.RedirectStandardOutput <- true
+        start.RedirectStandardError <- true
         start.UseShellExecute <- false
-        use child = Process.Start start
-        child.WaitForExit()
-        child.StandardOutput.ReadToEnd().Trim()
 
-    let installedSdks () =
-        let start = ProcessStartInfo("dotnet")
-        start.ArgumentList.Add "--list-sdks"
-        start.RedirectStandardOutput <- true
-        start.UseShellExecute <- false
         use child = Process.Start start
         let output = child.StandardOutput.ReadToEnd()
+        let error = child.StandardError.ReadToEnd()
         child.WaitForExit()
 
-        output.Split('\n', StringSplitOptions.RemoveEmptyEntries ||| StringSplitOptions.TrimEntries)
-        |> Array.choose (fun line ->
-            let parts = line.Split(" [", StringSplitOptions.TrimEntries)
-            if parts.Length = 2 then Some parts[0] else None)
+        if child.ExitCode <> 0 then
+            failwithf "dotnet %s failed with exit code %d: %s" argument child.ExitCode error
 
-    let processExists processId =
-        try
-            use child = Process.GetProcessById processId
-            not child.HasExited
-        with :? ArgumentException ->
-            false
+        output
 
-    let request id name parameters =
-        RpcCodec.encodeFrame (Request(id, name, parameters))
+    let currentSdkVersion workingDirectory =
+        runDotnet workingDirectory "--version" |> _.Trim()
 
-    let startWorker toolsetPath =
+    let currentToolsetPath workingDirectory =
+        runDotnet workingDirectory "--info"
+        |> _.Split('\n', StringSplitOptions.RemoveEmptyEntries ||| StringSplitOptions.TrimEntries)
+        |> Array.tryPick (fun line ->
+            let prefix = "Base Path:"
+
+            if line.StartsWith(prefix, StringComparison.Ordinal) then
+                Some(line.Substring(prefix.Length).Trim() |> Path.TrimEndingDirectorySeparator)
+            else
+                None)
+        |> Option.defaultWith (fun () -> failwith "dotnet --info did not report the selected SDK base path.")
+
+    let start arguments =
         let start = ProcessStartInfo(apphost)
-        start.ArgumentList.Add "internal"
-        start.ArgumentList.Add "msbuild-host"
-        start.ArgumentList.Add "--toolset"
-        start.ArgumentList.Add toolsetPath
+
+        for argument in arguments do
+            start.ArgumentList.Add argument
+
         start.RedirectStandardInput <- true
         start.RedirectStandardOutput <- true
         start.RedirectStandardError <- true
         start.UseShellExecute <- false
-        Process.Start start
+        start.CreateNoWindow <- true
 
-    let send (child: Process) bytes =
+        match Process.Start start with
+        | null -> failwith "Could not start the built apphost."
+        | child -> child
+
+    let startWorker toolsetPath =
+        start [ "internal"; "msbuild-host"; "--toolset"; toolsetPath ]
+
+    let startPipe solution =
+        start [ "solution"; solution; "--pipe" ]
+
+    let disposeProcess (child: Process) =
+        if not child.HasExited then
+            child.Kill(true)
+            child.WaitForExit()
+
+        pendingFrames.Remove child.Id |> ignore
+        child.Dispose()
+
+    let request id name parameters =
+        RpcCodec.encodeFrame (Request(id, name, parameters))
+
+    let send (child: Process) id name parameters =
+        let bytes = request id name parameters
         child.StandardInput.BaseStream.Write(bytes, 0, bytes.Length)
         child.StandardInput.BaseStream.Flush()
 
     let readFrame (child: Process) =
-        let bytes = ResizeArray<byte>()
+        let bytes =
+            match pendingFrames.TryGetValue child.Id with
+            | true, pending -> pending
+            | false, _ ->
+                let pending = ResizeArray<byte>()
+                pendingFrames.Add(child.Id, pending)
+                pending
+
         let mutable frame = None
 
         while frame.IsNone do
-            let value = child.StandardOutput.BaseStream.ReadByte()
-
-            if value < 0 then
-                failwith "Worker stdout ended before a complete frame."
-
-            bytes.Add(byte value)
-
             match RpcCodec.tryReadValueLength RpcCodec.secureLimits (bytes.ToArray()) with
-            | Error RpcDecodeError.Incomplete -> ()
-            | Error error -> failwithf "Invalid worker frame: %A" error
-            | Ok length when length = bytes.Count ->
-                match RpcCodec.decodeFrame RpcCodec.secureLimits (bytes.ToArray()) with
+            | Error RpcDecodeError.Incomplete ->
+                let buffer = Array.zeroCreate<byte> 8192
+                let count = child.StandardOutput.BaseStream.Read(buffer, 0, buffer.Length)
+
+                if count = 0 then
+                    failwith "Apphost stdout ended before a complete frame."
+
+                for index in 0 .. count - 1 do
+                    bytes.Add buffer[index]
+            | Error error -> failwithf "Invalid apphost frame: %A" error
+            | Ok length ->
+                let encoded = bytes.GetRange(0, length).ToArray()
+                bytes.RemoveRange(0, length)
+
+                match RpcCodec.decodeFrame RpcCodec.secureLimits encoded with
                 | Ok(RpcFrameDecodeResult.Frame decoded) -> frame <- Some decoded
-                | decoded -> failwithf "Invalid worker frame: %A" decoded
-            | Ok _ -> failwith "Worker frame length was inconsistent."
+                | decoded -> failwithf "Invalid apphost frame: %A" decoded
 
         frame.Value
 
@@ -170,603 +196,412 @@ module private Test =
         | Response(id, error, result) when id = expectedId -> error, result
         | frame -> failwithf "Expected response %d, got %A" expectedId frame
 
-    let currentToolset directory =
-        DotnetSdkDiscovery.DiscoverAsync(path directory, "dotnet", CancellationToken.None)
-        |> _.GetAwaiter().GetResult()
-        |> success
+    let field name value =
+        value |> RpcValue.requireMap "value" |> RpcValue.requireField name
+
+    let stringField name value =
+        field name value |> RpcValue.requireString name
+
+    let values name value =
+        field name value |> RpcValue.requireArray name
+
+    let strings name value =
+        values name value |> Seq.map (RpcValue.requireString name)
+
+    let requireSuccess id child =
+        let error, result = readFrame child |> response id
+
+        match error with
+        | None -> result
+        | Some failure -> failwithf "%s: %s" failure.Code failure.Message
+
+    let workerInitialize frameLimit =
+        RpcValue.map
+            [ "profile", RpcValue.String "dotnet-cli-plus/msbuild"
+              "protocolVersion", RpcValue.map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 0L ]
+              "limits", RpcValue.map [ "maxFrameBytes", RpcValue.Integer(int64 frameLimit) ] ]
+
+    let initializeWorker child id =
+        send child id "initialize" (workerInitialize RpcCodec.secureLimits.MaximumValueBytes)
+        requireSuccess id child |> ignore
+
+    let pipeInitialize =
+        RpcValue.map
+            [ "protocolVersion", RpcValue.map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 0L ]
+              "clientInfo", RpcValue.map [ "name", RpcValue.String "msbuild-contract-tests" ]
+              "capabilities",
+              RpcValue.array
+                  [ RpcValue.String "workspace.root"
+                    RpcValue.String "workspace.children"
+                    RpcValue.String "workspace.delta"
+                    RpcValue.String "workspace.refresh"
+                    RpcValue.String "workspace.export"
+                    RpcValue.String "operation.cancel" ]
+              "limits",
+              RpcValue.map
+                  [ "maxFrameBytes", RpcValue.Integer 1048576L
+                    "maxPageSize", RpcValue.Integer 100L ] ]
+
+    let initializePipe child id =
+        send child id "initialize" pipeInitialize
+        requireSuccess id child |> ignore
+
+    let evaluate child id project =
+        send child id "msbuild/evaluate" (RpcValue.map [ "projectPath", RpcValue.String project ])
+        readFrame child |> response id
+
+    let invalidate child id paths =
+        let parameters =
+            RpcValue.map [ "paths", paths |> Seq.map RpcValue.String |> RpcValue.array ]
+
+        send child id "msbuild/invalidate" parameters
+        requireSuccess id child
+
+    let shutdown child id =
+        send child id "shutdown" RpcValue.emptyMap
+        let result = requireSuccess id child
+        Assert.Equal(Some(RpcValue.Boolean true), RpcValue.tryField "accepted" result)
+        child.StandardInput.Close()
+        Assert.True(child.WaitForExit 5000, "The apphost did not exit after shutdown.")
+        Assert.Equal(-1, child.StandardOutput.BaseStream.ReadByte())
+        Assert.Equal(0, child.ExitCode)
+        Assert.Equal(String.Empty, child.StandardError.ReadToEnd())
+
+    let withWorker directory action =
+        let worker = startWorker (currentToolsetPath directory)
+
+        try
+            initializeWorker worker 1u
+            action worker |> shutdown worker
+        finally
+            disposeProcess worker
+
+    let withPipe solution action =
+        let app = startPipe solution
+
+        try
+            initializePipe app 1u
+            action app |> shutdown app
+        finally
+            disposeProcess app
+
+    let hydrateProject child firstId =
+        send child firstId "workspace/root" RpcValue.emptyMap
+        let root = requireSuccess firstId child
+
+        let projectId =
+            values "nodes" root
+            |> Seq.filter (fun node -> stringField "kind" node = "project")
+            |> Seq.map (stringField "id")
+            |> Seq.exactlyOne
+
+        let parameters =
+            RpcValue.map [ "parentId", RpcValue.String projectId; "pageSize", RpcValue.Integer 100L ]
+
+        send child (firstId + 1u) "workspace/children" parameters
+        requireSuccess (firstId + 1u) child |> ignore
+
+        match readFrame child with
+        | Notification("workspace/delta", _) -> ()
+        | frame -> failwithf "Expected hydration delta, got %A" frame
 
 type MsBuildHostTests() =
     [<Fact>]
-    member _.``rich project snapshot is dimensional invalidatable and evaluation-only``() =
-        let directory = Test.temporaryDirectory "rich"
+    member _.``real worker projects dimensions and invalidates imports and globs``() =
+        let directory = Test.temporaryDirectory "projection"
 
         try
-            Directory.CreateDirectory(Path.Combine(directory, "lib")) |> ignore
-            Directory.CreateDirectory(Path.Combine(directory, "analyzers")) |> ignore
-            Test.write (Path.Combine(directory, "lib", "Thing.dll")) String.Empty
-            Test.write (Path.Combine(directory, "analyzers", "Rules.dll")) String.Empty
-            Test.write (Path.Combine(directory, "Linked.cs")) "class Linked {}"
-            Test.write (Path.Combine(directory, "Nine.cs")) "class Nine {}"
+            let generatedDirectory = Path.Combine(directory, "Generated")
+            Directory.CreateDirectory generatedDirectory |> ignore
+            Test.write (Path.Combine(directory, "Eight.cs")) "class Eight {}"
+            let props = Path.Combine(directory, "Directory.Build.props")
 
             Test.write
-                (Path.Combine(directory, "Other.csproj"))
-                "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>"
-
-            Test.write
-                (Path.Combine(directory, "Directory.Build.props"))
-                "<Project><PropertyGroup><ImportedProperty>imported</ImportedProperty></PropertyGroup></Project>"
-
-            Test.write
-                (Path.Combine(directory, "Directory.Packages.props"))
-                "<Project><PropertyGroup><ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally></PropertyGroup><ItemGroup><PackageVersion Include=\"Example.Package\" Version=\"2.0.0\" /></ItemGroup></Project>"
+                props
+                "<Project><PropertyGroup><ImportedProperty>before</ImportedProperty></PropertyGroup></Project>"
 
             let project = Path.Combine(directory, "Demo.csproj")
 
             Test.write
                 project
                 """
-<Project Sdk="Microsoft.NET.Sdk" DefaultTargets="Marker">
+<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><TargetFrameworks>net8.0;net9.0</TargetFrameworks><EnableDefaultCompileItems>false</EnableDefaultCompileItems></PropertyGroup>
-  <PropertyGroup Condition="'$(TargetFramework)' == 'net8.0'"><ConditionalProperty>eight</ConditionalProperty></PropertyGroup>
   <ItemGroup>
-    <Compile Include="Linked.cs"><Link>Virtual/Linked.cs</Link></Compile>
+    <Compile Include="Eight.cs" Condition="'$(TargetFramework)' == 'net8.0'" />
     <Compile Include="Generated/**/*.cs" />
-    <Compile Include="Nine.cs" Condition="'$(TargetFramework)' == 'net9.0'" />
-    <ProjectReference Include="Other.csproj" />
-    <Reference Include="Thing"><HintPath>lib/Thing.dll</HintPath></Reference>
-    <PackageReference Include="Example.Package" />
-    <Analyzer Include="analyzers/Rules.dll" />
   </ItemGroup>
-  <Target Name="Marker" BeforeTargets="Build"><WriteLinesToFile File="marker-ran.txt" Lines="ran" /></Target>
 </Project>
 """
 
-            let client = Test.client null
+            Test.withWorker directory (fun worker ->
+                let error, snapshot = Test.evaluate worker 2u project
+                Assert.True(error.IsNone)
+                let dimensions = Test.values "dimensions" snapshot
+                Assert.Equal(3, dimensions.Length)
 
-            let snapshot =
-                client.EvaluateAsync(Test.path project, Test.path directory).GetAwaiter().GetResult()
-                |> Test.success
+                let dimension framework =
+                    dimensions
+                    |> Seq.find (fun value -> Test.field "targetFramework" value = RpcValue.String framework)
 
-            Assert.Equal(3, snapshot.Dimensions.Length)
-            let outer = snapshot.Dimensions |> Seq.find _.IsOuterBuild
+                let includes value =
+                    Test.values "items" value |> Seq.map (Test.stringField "include")
 
-            let net8 =
-                snapshot.Dimensions
-                |> Seq.find (fun dimension ->
-                    dimension.TargetFramework.HasValue
-                    && dimension.TargetFramework.Value.Value = "net8.0")
+                Assert.Contains("Eight.cs", dimension "net8.0" |> includes)
+                Assert.DoesNotContain("Eight.cs", dimension "net9.0" |> includes)
+                Assert.Contains(props, Test.strings "imports" snapshot)
+                Assert.Contains(generatedDirectory, Test.strings "globRoots" snapshot)
 
-            let net9 =
-                snapshot.Dimensions
-                |> Seq.find (fun dimension ->
-                    dimension.TargetFramework.HasValue
-                    && dimension.TargetFramework.Value.Value = "net9.0")
+                let importedProperties =
+                    dimensions
+                    |> Seq.collect (Test.values "properties")
+                    |> Seq.filter (fun value -> Test.stringField "name" value = "ImportedProperty")
+                    |> Seq.map (Test.stringField "value")
 
-            Assert.Contains(
-                outer.Properties,
-                fun property -> property.Name = "ImportedProperty" && property.Value = "imported"
-            )
+                Assert.Contains("before", importedProperties)
 
-            Assert.Contains(
-                net8.Properties,
-                fun property -> property.Name = "ConditionalProperty" && property.Value = "eight"
-            )
+                let generated = Path.Combine(generatedDirectory, "New.cs")
+                Test.write generated "class New {}"
 
-            Assert.DoesNotContain(net8.Items, fun item -> item.EvaluatedInclude = "Nine.cs")
-            Assert.Contains(net9.Items, fun item -> item.EvaluatedInclude = "Nine.cs")
+                let globInvalidation = Test.invalidate worker 3u [ generated ]
+                Assert.Contains(project, Test.strings "invalidatedProjects" globInvalidation)
 
-            Assert.Contains(
-                net8.Items,
-                fun item ->
-                    item.Metadata
-                    |> Seq.exists (fun metadata -> metadata.Name = "Link" && metadata.Value = "Virtual/Linked.cs")
-            )
+                let _, withGenerated = Test.evaluate worker 4u project
 
-            Assert.Contains(
-                net8.ProjectReferences,
-                fun reference -> reference.ResolvedPath.Value.EndsWith("Other.csproj", StringComparison.Ordinal)
-            )
+                Assert.Contains(
+                    withGenerated
+                    |> Test.values "dimensions"
+                    |> Seq.collect (Test.values "items")
+                    |> Seq.map (Test.stringField "include"),
+                    fun itemInclude ->
+                        itemInclude.Replace('\\', '/').EndsWith("Generated/New.cs", StringComparison.Ordinal)
+                )
 
-            Assert.Contains(
-                net8.References,
-                fun reference -> reference.ResolvedPath.Value.EndsWith("Thing.dll", StringComparison.Ordinal)
-            )
+                Test.write
+                    props
+                    "<Project><PropertyGroup><ImportedProperty>after</ImportedProperty></PropertyGroup></Project>"
 
-            Assert.Contains(net8.Packages, fun package -> package.Id = "Example.Package" && package.Version = "2.0.0")
+                let importInvalidation = Test.invalidate worker 5u [ props ]
+                Assert.Contains(project, Test.strings "invalidatedProjects" importInvalidation)
+                let _, changed = Test.evaluate worker 6u project
 
-            Assert.Contains(
-                net8.Analyzers,
-                fun analyzer -> analyzer.Value.EndsWith("Rules.dll", StringComparison.Ordinal)
-            )
+                Assert.Contains(
+                    changed |> Test.values "dimensions" |> Seq.collect (Test.values "properties"),
+                    fun value ->
+                        Test.stringField "name" value = "ImportedProperty"
+                        && Test.stringField "value" value = "after"
+                )
 
-            Assert.Contains(
-                snapshot.Imports,
-                fun import -> import.Value.EndsWith("Directory.Build.props", StringComparison.Ordinal)
-            )
-
-            Assert.Contains(
-                snapshot.Imports,
-                fun import -> import.Value.EndsWith("Directory.Packages.props", StringComparison.Ordinal)
-            )
-
-            Assert.Contains(snapshot.GlobRoots, fun root -> root.Value = Path.Combine(directory, "Generated"))
-
-            Assert.Contains(
-                snapshot.Diagnostics,
-                fun diagnostic -> diagnostic.DiagnosticCode.Value = "msbuild.assets_missing"
-            )
-
-            Assert.False(File.Exists(Path.Combine(directory, "marker-ran.txt")))
-            Assert.False(Directory.Exists(Path.Combine(directory, "obj")))
-
-            let unrelatedPath =
-                Path.Combine(Path.GetTempPath(), $"outside-{Guid.NewGuid():N}.txt")
-
-            let unrelated =
-                client.InvalidateAsync([ Test.path unrelatedPath ]).GetAwaiter().GetResult()
-                |> Test.success
-
-            Assert.Equal(MsBuildInvalidationKind.None, unrelated)
-            Directory.CreateDirectory(Path.Combine(directory, "Generated")) |> ignore
-            let generated = Path.Combine(directory, "Generated", "New.cs")
-            Test.write generated "class New {}"
-
-            let invalidated =
-                client.InvalidateAsync([ Test.path generated ]).GetAwaiter().GetResult()
-                |> Test.success
-
-            Assert.Equal(MsBuildInvalidationKind.ProjectOrImport, invalidated)
-
-            let refreshed =
-                client.EvaluateAsync(Test.path project, Test.path directory).GetAwaiter().GetResult()
-                |> Test.success
-
-            Assert.Contains(
-                refreshed.Dimensions |> Seq.collect _.Items,
-                fun item ->
-                    item.EvaluatedInclude.EndsWith("Generated/New.cs", StringComparison.Ordinal)
-                    || item.EvaluatedInclude.EndsWith("Generated\\New.cs", StringComparison.Ordinal)
-            )
-
-            let directoryProps = Path.Combine(directory, "Directory.Build.props")
-
-            Test.write
-                directoryProps
-                "<Project><PropertyGroup><ImportedProperty>changed</ImportedProperty></PropertyGroup></Project>"
-
-            let importInvalidation =
-                client.InvalidateAsync([ Test.path directoryProps ]).GetAwaiter().GetResult()
-                |> Test.success
-
-            Assert.Equal(MsBuildInvalidationKind.ProjectOrImport, importInvalidation)
-
-            let imported =
-                client.EvaluateAsync(Test.path project, Test.path directory).GetAwaiter().GetResult()
-                |> Test.success
-
-            Assert.Contains(
-                imported.Dimensions |> Seq.collect _.Properties,
-                fun property -> property.Name = "ImportedProperty" && property.Value = "changed"
-            )
-
-            client.DisposeAsync().AsTask().GetAwaiter().GetResult()
+                7u)
         finally
             Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``managed languages use Core full capabilities and unknown projects are read-only``() =
+    member _.``managed projects are writable and unknown projects are read only``() =
         let directory = Test.temporaryDirectory "capabilities"
 
         try
+            let unknown = Path.Combine(directory, "Unknown.proj")
+            Test.write unknown "<Project><PropertyGroup><Value>readable</Value></PropertyGroup></Project>"
+
             let projects =
-                [ Test.simpleProject directory "FSharp" ".fsproj", WorkspaceCapabilityProfile.Full
-                  Test.simpleProject directory "CSharp" ".csproj", WorkspaceCapabilityProfile.Full
-                  Test.simpleProject directory "VisualBasic" ".vbproj", WorkspaceCapabilityProfile.Full
-                  let unknown = Path.Combine(directory, "Unknown.proj")
-                  Test.write unknown "<Project><PropertyGroup><Value>readable</Value></PropertyGroup></Project>"
-                  unknown, WorkspaceCapabilityProfile.UnknownProjectSystem ]
+                [ Test.simpleProject directory "CSharp" ".csproj", "Full", true
+                  unknown, "UnknownProjectSystem", false ]
 
-            let client = Test.client null
+            Test.withWorker directory (fun worker ->
+                for index, (project, expectedProfile, expectedWrite) in Seq.indexed projects do
+                    let error, snapshot = Test.evaluate worker (uint32 index + 2u) project
+                    Assert.True(error.IsNone)
+                    Assert.Equal(expectedProfile, Test.stringField "capabilityProfile" snapshot)
+                    let capabilities = Test.strings "capabilities" snapshot |> Seq.toArray
+                    Assert.Contains("workspace.read", capabilities)
+                    Assert.Equal(expectedWrite, capabilities |> Array.contains "workspace.write")
 
-            for project, expectedProfile in projects do
-                let outcome =
-                    client.EvaluateAsync(Test.path project, Test.path directory).GetAwaiter().GetResult()
-
-                let snapshot =
-                    match outcome with
-                    | WorkspaceOutcome.Success value -> value
-                    | WorkspaceOutcome.Failure failure ->
-                        failwithf
-                            "%s: %s: %s"
-                            project
-                            failure.Diagnostic.DiagnosticCode.Value
-                            failure.Diagnostic.Message
-
-                Assert.Equal(expectedProfile, snapshot.CapabilityProfile)
-                Assert.Contains(WorkspaceCapabilityId.Read, snapshot.Capabilities)
-
-                let supportsWrite = snapshot.Capabilities.Contains(WorkspaceCapabilityId.Write)
-                Assert.Equal((expectedProfile = WorkspaceCapabilityProfile.Full), supportsWrite)
-
-            client.DisposeAsync().AsTask().GetAwaiter().GetResult()
+                4u)
         finally
             Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``private host enforces strict initialize profile isolation and shutdown``() =
+    member _.``private worker enforces initialization and shuts down cleanly``() =
         let directory = Test.temporaryDirectory "protocol"
 
         try
-            let toolset = Test.currentToolset directory
-            use worker = Test.startWorker toolset.ToolsetPath.Value
-
-            let malformed =
-                RpcValue.map
-                    [ "profile", RpcValue.String "dotnet-cli-plus/msbuild"
-                      "protocolVersion", RpcValue.map [ "major", RpcValue.Integer 1L ]
-                      "limits", RpcValue.map [ "maxFrameBytes", RpcValue.Integer 1024L ] ]
-
-            let wrongProfile =
-                RpcValue.map
-                    [ "profile", RpcValue.String "dotnet-cli-plus/workspace"
-                      "protocolVersion", RpcValue.map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 0L ]
-                      "limits", RpcValue.map [ "maxFrameBytes", RpcValue.Integer 1024L ] ]
-
-            let extraLimit =
-                RpcValue.map
-                    [ "profile", RpcValue.String "dotnet-cli-plus/msbuild"
-                      "protocolVersion", RpcValue.map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 0L ]
-                      "limits", RpcValue.map [ "maxFrameBytes", RpcValue.Integer 1024L; "extra", RpcValue.Integer 1L ] ]
-
-            for id, parameters in [ 1u, malformed; 2u, wrongProfile; 3u, extraLimit ] do
-                Test.send worker (Test.request id "initialize" parameters)
-                let error, _ = Test.readFrame worker |> Test.response id
-                Assert.Equal("invalid_params", error.Value.Code)
-
-            Test.send worker (Test.request 4u "initialize" (WorkerProtocol.InitializeRequest 4096))
-            let initializeError, initializeResult = Test.readFrame worker |> Test.response 4u
-            Assert.True(initializeError.IsNone)
-            Assert.Equal(4096, WorkerProtocol.DecodeInitializeResult initializeResult)
-
-            for id, methodName in [ 5u, "workspace/root"; 6u, "workspace/exportChunk"; 7u, "command/list" ] do
-                Test.send worker (Test.request id methodName RpcValue.emptyMap)
-                let error, _ = Test.readFrame worker |> Test.response id
-                Assert.Equal("unknown_method", error.Value.Code)
-
-            Test.send worker (Test.request 8u "shutdown" RpcValue.emptyMap)
-            let shutdownError, shutdownResult = Test.readFrame worker |> Test.response 8u
-            Assert.True(shutdownError.IsNone)
-            WorkerProtocol.ValidateShutdownResult shutdownResult
-            worker.StandardInput.Close()
-            Assert.True(worker.WaitForExit 5000)
-            Assert.Equal(0, worker.ExitCode)
-            Assert.Equal(String.Empty, worker.StandardError.ReadToEnd())
-        finally
-            Directory.Delete(directory, true)
-
-    [<Fact>]
-    member _.``refresh waits for active evaluation and disposal is idempotent``() =
-        let directory = Test.temporaryDirectory "lifetime"
-
-        try
-            let project = Test.simpleProject directory "Lifetime" ".csproj"
-            use releaseFirstLaunch = new ManualResetEventSlim(false)
-
-            let firstStarted =
-                Threading.Tasks.TaskCompletionSource<unit>(
-                    Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
-                )
-
-            let firstExit =
-                Threading.Tasks.TaskCompletionSource<int>(
-                    Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
-                )
-
-            let secondExit =
-                Threading.Tasks.TaskCompletionSource<int>(
-                    Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
-                )
-
-            let mutable launchCount = 0
-
-            let started =
-                Action<Process>(fun child ->
-                    let launch = Interlocked.Increment(&launchCount)
-                    child.EnableRaisingEvents <- true
-
-                    child.Exited.Add(fun _ ->
-                        let completion = if launch = 1 then firstExit else secondExit
-                        completion.TrySetResult child.ExitCode |> ignore)
-
-                    if launch = 1 then
-                        firstStarted.TrySetResult() |> ignore
-                        releaseFirstLaunch.Wait())
-
-            let client = Test.client started
+            let worker = Test.startWorker (Test.currentToolsetPath directory)
 
             try
-                let evaluation = client.EvaluateAsync(Test.path project, Test.path directory)
+                let wrongProfile =
+                    Test.workerInitialize 4096
+                    |> function
+                        | RpcValue.Map fields ->
+                            fields.SetItem("profile", RpcValue.String "dotnet-cli-plus/workspace")
+                            |> RpcValue.Map
+                        | _ -> failwith "Initialize payload was not a map."
 
-                firstStarted.Task.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult()
-                let refresh = client.RefreshAsync()
-                Assert.False(refresh.IsCompleted)
-                releaseFirstLaunch.Set()
+                Test.send worker 1u "initialize" wrongProfile
+                let rejected, _ = Test.readFrame worker |> Test.response 1u
+                Assert.Equal("invalid_params", rejected.Value.Code)
 
-                evaluation.GetAwaiter().GetResult() |> Test.success |> ignore
-                refresh.GetAwaiter().GetResult()
-                Assert.Equal(0, firstExit.Task.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult())
+                Test.send worker 2u "initialize" (Test.workerInitialize 4096)
+                let initialized = Test.requireSuccess 2u worker
 
-                client.EvaluateAsync(Test.path project, Test.path directory).GetAwaiter().GetResult()
-                |> Test.success
-                |> ignore
+                Assert.Equal(
+                    4096L,
+                    initialized
+                    |> Test.field "limits"
+                    |> Test.field "maxFrameBytes"
+                    |> RpcValue.requireInteger "maxFrameBytes"
+                )
 
-                client.DisposeAsync().AsTask().GetAwaiter().GetResult()
-                client.DisposeAsync().AsTask().GetAwaiter().GetResult()
-                Assert.Equal(0, secondExit.Task.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult())
-                Assert.Equal(2, launchCount)
-
-                let closed =
-                    client.EvaluateAsync(Test.path project, Test.path directory).GetAwaiter().GetResult()
-                    |> Test.failure
-
-                Assert.Equal("msbuild.worker_closed", closed.Diagnostic.DiagnosticCode.Value)
-                Assert.Equal(2, launchCount)
+                Test.shutdown worker 3u
             finally
-                releaseFirstLaunch.Set()
-                client.DisposeAsync().AsTask().GetAwaiter().GetResult()
+                Test.disposeProcess worker
         finally
             Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``cancellation kills and reaps the worker``() =
-        let directory = Test.temporaryDirectory "cancel"
-
-        try
-            let project = Test.simpleProject directory "Cancel" ".csproj"
-            use cancellation = new CancellationTokenSource()
-            let processIds = ConcurrentBag<int>()
-
-            let client =
-                Test.client (
-                    Action<Process>(fun child ->
-                        processIds.Add child.Id
-                        cancellation.Cancel())
-                )
-
-            let failure =
-                client
-                    .EvaluateAsync(Test.path project, Test.path directory, cancellation.Token)
-                    .GetAwaiter()
-                    .GetResult()
-                |> Test.failure
-
-            Assert.True(failure.IsCancelled)
-            Assert.All(processIds, fun processId -> Assert.False(Test.processExists processId))
-            client.DisposeAsync().AsTask().GetAwaiter().GetResult()
-        finally
-            Directory.Delete(directory, true)
-
-    [<Fact>]
-    member _.``transport crash retries once disables and refresh recovers``() =
-        let directory = Test.temporaryDirectory "crash"
-
-        try
-            let project = Test.simpleProject directory "Crash" ".csproj"
-            let mutable kill = true
-            let launches = ConcurrentBag<int>()
-
-            let client =
-                Test.client (
-                    Action<Process>(fun child ->
-                        launches.Add child.Id
-
-                        if kill then
-                            child.Kill(true))
-                )
-
-            let crashed =
-                client.EvaluateAsync(Test.path project, Test.path directory).GetAwaiter().GetResult()
-                |> Test.failure
-
-            Assert.Equal("msbuild.worker_crashed", crashed.Diagnostic.DiagnosticCode.Value)
-            Assert.Equal(2, launches.Count)
-
-            let disabled =
-                client.EvaluateAsync(Test.path project, Test.path directory).GetAwaiter().GetResult()
-                |> Test.failure
-
-            Assert.Equal("msbuild.worker_disabled", disabled.Diagnostic.DiagnosticCode.Value)
-            Assert.Equal(2, launches.Count)
-            client.RefreshAsync().GetAwaiter().GetResult()
-            kill <- false
-
-            client.EvaluateAsync(Test.path project, Test.path directory).GetAwaiter().GetResult()
-            |> Test.success
-            |> ignore
-
-            Assert.Equal(3, launches.Count)
-            client.DisposeAsync().AsTask().GetAwaiter().GetResult()
-        finally
-            Directory.Delete(directory, true)
-
-    [<Fact>]
-    member _.``same toolset keeps distinct global json bindings and restarts the shared worker``() =
-        let directory = Test.temporaryDirectory "bindings"
+    member _.``global json selection invalidation recovers through public refresh``() =
+        let directory = Test.temporaryDirectory "global-json"
 
         try
             let version = Test.currentSdkVersion directory
-            let first = Path.Combine(directory, "first")
-            let second = Path.Combine(directory, "second")
-            Directory.CreateDirectory first |> ignore
-            Directory.CreateDirectory second |> ignore
-            Test.writeGlobalJson first version
-            Test.writeGlobalJson second version
-            let firstProject = Test.simpleProject first "First" ".csproj"
-            let secondProject = Test.simpleProject second "Second" ".csproj"
-            let launches = ConcurrentBag<int>()
-            let client = Test.client (Action<Process>(fun child -> launches.Add child.Id))
+            let globalJson = Path.Combine(directory, "global.json")
+            Test.writeGlobalJson directory version
+            let project = Test.simpleProject directory "Selected" ".csproj"
+            let solution = Test.writeSolution directory [ project ]
 
-            let firstSnapshot =
-                client.EvaluateAsync(Test.path firstProject, Test.path first).GetAwaiter().GetResult()
-                |> Test.success
+            Test.withPipe solution (fun app ->
+                Test.hydrateProject app 2u
+                Test.writeGlobalJson directory "99.0.100"
+                Test.send app 4u "workspace/refresh" RpcValue.emptyMap
+                let unavailable = Test.requireSuccess 4u app
+                Assert.Equal(RpcValue.Boolean true, Test.field "reset" unavailable)
 
-            let secondSnapshot =
-                client.EvaluateAsync(Test.path secondProject, Test.path second).GetAwaiter().GetResult()
-                |> Test.success
+                match Test.readFrame app with
+                | Notification("workspace/reset", parameters) ->
+                    Assert.Contains(
+                        Test.values "diagnostics" parameters,
+                        fun diagnostic -> Test.stringField "code" diagnostic = "workspace.refresh_unverified"
+                    )
+                | frame -> failwithf "Expected selection failure reset, got %A" frame
 
-            Assert.Contains(firstSnapshot.WatchInputs, fun path -> path.Value = Path.Combine(first, "global.json"))
-
-            Assert.Contains(secondSnapshot.WatchInputs, fun path -> path.Value = Path.Combine(second, "global.json"))
-
-            Assert.Equal(1, launches.Count)
-
-            let kind =
-                client.InvalidateAsync([ Test.path (Path.Combine(first, "global.json")) ]).GetAwaiter().GetResult()
-                |> Test.success
-
-            Assert.Equal(MsBuildInvalidationKind.ToolsetSelection, kind)
-
-            client.EvaluateAsync(Test.path secondProject, Test.path second).GetAwaiter().GetResult()
-            |> Test.success
-            |> ignore
-
-            client.EvaluateAsync(Test.path firstProject, Test.path first).GetAwaiter().GetResult()
-            |> Test.success
-            |> ignore
-
-            Assert.Equal(2, launches.Count)
-            client.DisposeAsync().AsTask().GetAwaiter().GetResult()
+                Test.writeGlobalJson directory version
+                Test.send app 5u "workspace/refresh" RpcValue.emptyMap
+                let recovered = Test.requireSuccess 5u app
+                Assert.Equal(RpcValue.Boolean false, Test.field "reset" recovered)
+                Test.hydrateProject app 6u
+                Assert.True(File.Exists globalJson)
+                8u)
         finally
             Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``installed SDKs use isolated workers and unavailable SDK is typed``() =
-        let directory = Test.temporaryDirectory "sdks"
-
-        try
-            let available =
-                Test.installedSdks ()
-                |> Array.filter (fun version -> version = "8.0.422" || version = "9.0.315" || version = "10.0.301")
-
-            let launches = ConcurrentBag<int>()
-            let client = Test.client (Action<Process>(fun child -> launches.Add child.Id))
-
-            for version in available do
-                let workspace = Path.Combine(directory, version)
-                Directory.CreateDirectory workspace |> ignore
-                Test.writeGlobalJson workspace version
-                let project = Test.simpleProject workspace "Sdk" ".csproj"
-
-                client.EvaluateAsync(Test.path project, Test.path workspace).GetAwaiter().GetResult()
-                |> Test.success
-                |> ignore
-
-            Assert.Equal(available.Length, launches.Count)
-            let missing = Path.Combine(directory, "missing")
-            Directory.CreateDirectory missing |> ignore
-            Test.writeGlobalJson missing "99.0.100"
-            let missingProject = Test.simpleProject missing "Missing" ".csproj"
-
-            let failure =
-                client.EvaluateAsync(Test.path missingProject, Test.path missing).GetAwaiter().GetResult()
-                |> Test.failure
-
-            Assert.True(failure.IsExternalToolFailed)
-            Assert.Equal("msbuild.sdk_selection_failed", failure.Diagnostic.DiagnosticCode.Value)
-            client.DisposeAsync().AsTask().GetAwaiter().GetResult()
-        finally
-            Directory.Delete(directory, true)
-
-    [<Fact>]
-    member _.``malformed missing and incompatible projects return distinct Core failures``() =
+    member _.``missing malformed and incompatible inputs have stable failure mappings``() =
         let directory = Test.temporaryDirectory "failures"
 
         try
             let malformed = Path.Combine(directory, "Malformed.csproj")
             Test.write malformed "<Project><PropertyGroup>"
-            let client = Test.client null
 
-            let malformedFailure =
-                client.EvaluateAsync(Test.path malformed, Test.path directory).GetAwaiter().GetResult()
-                |> Test.failure
+            Test.withWorker directory (fun worker ->
+                let missing, _ = Test.evaluate worker 2u (Path.Combine(directory, "Missing.csproj"))
+                Assert.Equal("msbuild.project_not_found", missing.Value.Code)
+                let malformedFailure, _ = Test.evaluate worker 3u malformed
+                Assert.Equal("msbuild.project_malformed", malformedFailure.Value.Code)
+                4u)
 
-            Assert.True(malformedFailure.IsInvalidInput)
-            Assert.Equal("msbuild.project_malformed", malformedFailure.Diagnostic.DiagnosticCode.Value)
-            let missing = Test.path (Path.Combine(directory, "Missing.csproj"))
+            let incompatibleToolset = Path.Combine(directory, "not-an-sdk")
+            Directory.CreateDirectory incompatibleToolset |> ignore
+            use incompatible = Test.startWorker incompatibleToolset
+            let stdout = incompatible.StandardOutput.ReadToEnd()
+            let stderr = incompatible.StandardError.ReadToEnd()
+            incompatible.WaitForExit()
 
-            let missingFailure =
-                client.EvaluateAsync(missing, Test.path directory).GetAwaiter().GetResult()
-                |> Test.failure
-
-            Assert.True(missingFailure.IsNotFound)
-
-            let selection =
-                ToolsetSelection(Test.path (Path.Combine(directory, "not-a-toolset")), null)
-
-            let worker = new WorkerClient(Test.settings null, selection)
-
-            let incompatible =
-                worker.EvaluateAsync(Test.path malformed, CancellationToken.None).GetAwaiter().GetResult()
-                |> Test.failure
-
-            Assert.True(incompatible.IsExternalToolFailed)
-            Assert.Equal("msbuild.toolset_incompatible", incompatible.Diagnostic.DiagnosticCode.Value)
-            worker.DisposeAsync().AsTask().GetAwaiter().GetResult()
-            worker.DisposeAsync().AsTask().GetAwaiter().GetResult()
-
-            let closedWorker =
-                worker.EvaluateAsync(Test.path malformed, CancellationToken.None).GetAwaiter().GetResult()
-                |> Test.failure
-
-            Assert.Equal("msbuild.worker_closed", closedWorker.Diagnostic.DiagnosticCode.Value)
-            client.DisposeAsync().AsTask().GetAwaiter().GetResult()
+            Assert.Equal(70, incompatible.ExitCode)
+            Assert.Equal(String.Empty, stdout)
+            Assert.Equal("msbuild-host:toolset-load-failed", stderr.Trim())
         finally
             Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``bounded stderr flood cannot deadlock worker restart``() =
-        let directory = Test.temporaryDirectory "stderr"
+    member _.``failed inner dimension can be repaired in the same worker``() =
+        let directory = Test.temporaryDirectory "dimension-recovery"
 
         try
-            let project = Test.simpleProject directory "Flood" ".csproj"
-            Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MODE", "stderr-flood")
-            let settings = WorkerLaunchSettings("dotnet", Test.fakeHostAssembly, "dotnet", null)
-            let client = new MsBuildEvaluationClient(settings)
+            let brokenImport = Path.Combine(directory, "Broken.targets")
+            Test.write brokenImport "<Project><PropertyGroup>"
+            let project = Path.Combine(directory, "Repairable.csproj")
 
-            let failure =
-                client
-                    .EvaluateAsync(Test.path project, Test.path directory)
-                    .WaitAsync(TimeSpan.FromSeconds 5.0)
-                    .GetAwaiter()
-                    .GetResult()
-                |> Test.failure
+            Test.write
+                project
+                """
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFrameworks>net8.0;net9.0</TargetFrameworks></PropertyGroup>
+  <Import Project="Broken.targets" Condition="'$(TargetFramework)' == 'net9.0'" />
+</Project>
+"""
 
-            Assert.Equal("msbuild.worker_crashed", failure.Diagnostic.DiagnosticCode.Value)
-            client.DisposeAsync().AsTask().GetAwaiter().GetResult()
+            Test.withWorker directory (fun worker ->
+                let failed, _ = Test.evaluate worker 2u project
+                Assert.Equal("msbuild.project_malformed", failed.Value.Code)
+
+                Test.write
+                    brokenImport
+                    "<Project><PropertyGroup><RepairMarker>repaired</RepairMarker></PropertyGroup></Project>"
+
+                let repairedError, repaired = Test.evaluate worker 3u project
+                Assert.True(repairedError.IsNone)
+                Assert.Equal(3, (Test.values "dimensions" repaired).Length)
+
+                let net9 =
+                    Test.values "dimensions" repaired
+                    |> Seq.find (fun value -> Test.field "targetFramework" value = RpcValue.String "net9.0")
+
+                Assert.Contains(
+                    Test.values "properties" net9,
+                    fun value ->
+                        Test.stringField "name" value = "RepairMarker"
+                        && Test.stringField "value" value = "repaired"
+                )
+
+                4u)
         finally
-            Environment.SetEnvironmentVariable("DOTNET_PLUS_FAKE_HOST_MODE", null)
             Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``normal test process and packaged apphost contain no MSBuild runtime assemblies``() =
-        Assert.DoesNotContain(
-            AppDomain.CurrentDomain.GetAssemblies(),
-            fun assembly ->
-                match assembly.GetName().Name with
-                | null -> false
-                | name ->
-                    name = "Microsoft.Build"
-                    || name = "Microsoft.Build.Framework"
-                    || name.StartsWith("Microsoft.Build.Utilities", StringComparison.Ordinal)
-                    || name.StartsWith("Microsoft.Build.Tasks", StringComparison.Ordinal)
-        )
+    member _.``cancelled export completes once and apphost reaps resources on shutdown``() =
+        let directory = Test.temporaryDirectory "cancellation"
 
-        let output = Path.GetDirectoryName(Test.apphost)
+        try
+            let projects =
+                [ for index in 1..20 -> Test.simpleProject directory $"Project{index}" ".fsproj" ]
 
-        let forbidden =
-            Directory.EnumerateFiles(output, "Microsoft.Build*.dll")
-            |> Seq.filter (fun path ->
-                not (Path.GetFileName(path).Equals("Microsoft.Build.Locator.dll", StringComparison.OrdinalIgnoreCase)))
-            |> Seq.toArray
+            let solution = Test.writeSolution directory projects
 
-        Assert.Empty forbidden
+            Test.withPipe solution (fun app ->
+                Test.send app 2u "workspace/export" RpcValue.emptyMap
+                let export = Test.requireSuccess 2u app
+                let operationId = Test.stringField "operationId" export
+
+                Test.send app 3u "operation/cancel" (RpcValue.map [ "operationId", RpcValue.String operationId ])
+
+                let mutable cancelAccepted = false
+                let mutable completions = 0
+
+                while completions = 0 do
+                    match Test.readFrame app with
+                    | Notification("workspace/exportChunk", _) -> ()
+                    | Response(3u, error, result) ->
+                        Assert.True(error.IsNone)
+                        Assert.Equal(RpcValue.Boolean true, Test.field "accepted" result)
+                        cancelAccepted <- true
+                    | Notification("operation/completed", parameters) ->
+                        Assert.Equal(operationId, Test.stringField "operationId" parameters)
+                        Assert.Equal("cancelled", Test.stringField "outcome" parameters)
+                        completions <- completions + 1
+                    | frame -> failwithf "Unexpected cancellation frame: %A" frame
+
+                Assert.True(cancelAccepted)
+                Assert.Equal(1, completions)
+                4u)
+        finally
+            Directory.Delete(directory, true)

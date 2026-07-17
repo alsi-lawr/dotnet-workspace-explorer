@@ -248,8 +248,7 @@ public sealed class MsBuildEvaluationClient : IAsyncDisposable
 internal sealed record WorkerLaunchSettings(
     string HostExecutable,
     string? HostAssembly,
-    string DotnetExecutable,
-    Action<Process>? ProcessStarted = null
+    string DotnetExecutable
 )
 {
     internal static WorkerLaunchSettings ForCurrentProcess() =>
