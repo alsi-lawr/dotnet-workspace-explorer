@@ -136,23 +136,18 @@ module internal Pipe =
                     WorkspaceWatcher(state, 128, (fun () -> maximumFrameBytes), publicationGate)
 
                 let prepareWatcher requestCancellationToken =
-                    let rec activate attempts =
-                        task {
-                            watcher.Resume()
+                    task {
+                        watcher.Resume()
+                        let! handoff = watcher.ActivateAsync requestCancellationToken
 
-                            let! active =
-                                watcher.RebuildAndRevalidateAsync(
-                                    (fun _ -> Task.FromResult(())),
-                                    requestCancellationToken
-                                )
-
-                            if active || attempts = 0 then
-                                return active
-                            else
-                                return! activate (attempts - 1)
-                        }
-
-                    activate 1
+                        match handoff with
+                        | WatcherHandoff.Complete -> return true
+                        | WatcherHandoff.Revalidate _
+                        | WatcherHandoff.RevalidateWorkspace ->
+                            watcher.QueueActivationHandoff handoff
+                            return true
+                        | WatcherHandoff.Uncertain -> return false
+                    }
 
                 let rebuildWatcher requestCancellationToken =
                     task {
