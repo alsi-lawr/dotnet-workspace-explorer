@@ -13,6 +13,7 @@
         <Compile Include="Diagnostics.fs" />
         <Compile Include="Nodes.fs" />
         <Compile Include="Commands.fs" />
+        <Compile Include="Mutations.fs" />
         <Compile Include="Outcomes.fs" />
     </ItemGroup>
 </Project>
