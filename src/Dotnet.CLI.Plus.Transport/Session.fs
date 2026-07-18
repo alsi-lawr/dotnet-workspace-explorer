@@ -326,18 +326,19 @@ module RpcSession =
                                         | Ok result ->
                                             let! outcome = writer.WriteResponseAsync(id, None, result.Result)
 
-                                            if outcome = OriginalResponse then
+                                            try
+                                                if outcome = OriginalResponse then
+                                                    for notification in result.Notifications do
+                                                        do! writer.WriteNotificationAsync notification
+
+                                                    result.BackgroundWork |> Option.iter startBackground
+                                            finally
                                                 result.AfterResponse
                                                 |> Option.iter (fun action ->
                                                     try
                                                         action ()
                                                     with exceptionValue ->
                                                         reportBackgroundFault exceptionValue)
-
-                                                for notification in result.Notifications do
-                                                    do! writer.WriteNotificationAsync notification
-
-                                                result.BackgroundWork |> Option.iter startBackground
                                 | Notification _ -> ()
                                 | Response _ ->
                                     do! fatalDiagnostic "Clients may not send response frames."

@@ -309,9 +309,9 @@ module internal WorkspaceStatePure =
 
                 let placement =
                     if showDimension then
-                        representative.Logical @ [ dimensions ]
+                        representative.Logical @ [ dimensions; node.NodeId.Value ]
                     else
-                        representative.Logical
+                        representative.Logical @ [ node.NodeId.Value ]
 
                 placement, node))
         |> Seq.sortBy fst
@@ -470,6 +470,37 @@ module internal WorkspaceStatePure =
         let oldByKey = oldPlacements |> Seq.map (fun value -> value.Key, value) |> Map.ofSeq
         let newByKey = newPlacements |> Seq.map (fun value -> value.Key, value) |> Map.ofSeq
 
+        let depths (placements: Placement array) =
+            let byId = placements |> Seq.map (fun value -> value.Node.NodeId, value) |> dict
+            let values = Dictionary<NodeId, int>()
+
+            let rec depth (visiting: Set<string>) (nodeId: NodeId) =
+                match values.TryGetValue nodeId with
+                | true, value -> value
+                | _ when visiting |> Set.contains nodeId.Value -> 0
+                | _ ->
+                    let value =
+                        match byId.TryGetValue nodeId with
+                        | true, placement ->
+                            placement.ParentId
+                            |> Option.map (fun parentId -> 1 + depth (visiting |> Set.add nodeId.Value) parentId)
+                            |> Option.defaultValue 0
+                        | _ -> 0
+
+                    values[nodeId] <- value
+                    value
+
+            for placement in placements do
+                depth Set.empty placement.Node.NodeId |> ignore
+
+            fun nodeId ->
+                match values.TryGetValue nodeId with
+                | true, value -> value
+                | _ -> 0
+
+        let oldDepth = depths oldPlacements
+        let newDepth = depths newPlacements
+
         let removals =
             oldByKey
             |> Seq.choose (fun (KeyValue(key, oldValue)) ->
@@ -477,7 +508,8 @@ module internal WorkspaceStatePure =
                     None
                 else
                     Some(key, oldValue))
-            |> Seq.sortBy (fun (key, value) -> value.ParentId |> Option.map _.Value, -value.Index, key)
+            |> Seq.sortBy (fun (key, value) ->
+                -oldDepth value.Node.NodeId, value.ParentId |> Option.map _.Value, -value.Index, key)
             |> Seq.map (fun (_, value) -> WorkspaceChange.Removed(value.Node.NodeId, value.ParentId, value.Index))
 
         let replacements, moves, updates =
@@ -488,6 +520,7 @@ module internal WorkspaceStatePure =
                 (fun (replaceValues, moveValues, updateValues) (key, oldValue, newValue) ->
                     if oldValue.Node.NodeId <> newValue.Node.NodeId then
                         ((key,
+                          newValue,
                           WorkspaceChange.Replaced(
                               oldValue.Node.NodeId,
                               newValue.Node,
@@ -501,6 +534,7 @@ module internal WorkspaceStatePure =
                         let nextMoves =
                             if oldValue.ParentId <> newValue.ParentId then
                                 (key,
+                                 newValue,
                                  WorkspaceChange.Moved(
                                      newValue.Node.NodeId,
                                      oldValue.ParentId,
@@ -514,7 +548,9 @@ module internal WorkspaceStatePure =
 
                         let nextUpdates =
                             if not (nodeEqual oldValue.Node newValue.Node) then
-                                (key, WorkspaceChange.Updated(newValue.Node, newValue.ParentId, newValue.Index))
+                                (key,
+                                 newValue,
+                                 WorkspaceChange.Updated(newValue.Node, newValue.ParentId, newValue.Index))
                                 :: updateValues
                             else
                                 updateValues
@@ -522,7 +558,10 @@ module internal WorkspaceStatePure =
                         replaceValues, nextMoves, nextUpdates)
                 ([], [], [])
 
-        let ordered values = values |> Seq.sortBy fst |> Seq.map snd
+        let ordered values =
+            values
+            |> Seq.sortBy (fun (key, placement, _) -> newDepth placement.Node.NodeId, key)
+            |> Seq.map (fun (_, _, change) -> change)
 
         let additions =
             newByKey
@@ -531,7 +570,8 @@ module internal WorkspaceStatePure =
                     None
                 else
                     Some(key, newValue))
-            |> Seq.sortBy (fun (key, value) -> value.ParentId |> Option.map _.Value, value.Index, key)
+            |> Seq.sortBy (fun (key, value) ->
+                newDepth value.Node.NodeId, value.ParentId |> Option.map _.Value, value.Index, key)
             |> Seq.map (fun (_, value) -> WorkspaceChange.Added(value.Node, value.ParentId, value.Index))
 
         let changes =
@@ -617,7 +657,8 @@ module internal WorkspaceStatePure =
                     for name in
                         [ "Directory.Build.props"
                           "Directory.Build.targets"
-                          "Directory.Packages.props" ] do
+                          "Directory.Packages.props"
+                          "global.json" ] do
                         exact (Path.Combine(current.FullName, name))
 
                     directory <- current.Parent |> Option.ofObj)

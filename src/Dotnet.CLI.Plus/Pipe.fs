@@ -60,36 +60,48 @@ module internal Pipe =
 
     let private chunkNodes maximumFrameBytes descriptor operationId revision (nodes: WorkspaceNode array) =
         let chunks = ResizeArray<WorkspaceNode array>()
-        let current = ResizeArray<WorkspaceNode>()
 
-        let encodedSize candidate =
+        let encodedSize offset count =
+            let candidate =
+                ArraySegment<WorkspaceNode>(nodes, offset, count) :> seq<WorkspaceNode>
+
             PublicProtocol.exportChunk descriptor operationId chunks.Count revision candidate false
             |> RpcCodec.encodeFrame
             |> _.Length
 
-        let flush () =
-            if current.Count > 0 then
-                chunks.Add(current.ToArray())
-                current.Clear()
-
-        for node in nodes do
-            let candidate = Array.append (current.ToArray()) [| node |]
-
-            if encodedSize candidate <= maximumFrameBytes then
-                current.Add node
-            else
-                flush ()
-                let actual = encodedSize [| node |]
-
-                if actual > maximumFrameBytes then
-                    raise (RpcOutboundFrameTooLargeException(maximumFrameBytes, actual))
-
-                current.Add node
-
-        flush ()
-
-        if chunks.Count = 0 then
+        if nodes.Length = 0 then
             chunks.Add Array.empty
+        else
+            let mutable offset = 0
+
+            while offset < nodes.Length do
+                let remaining = nodes.Length - offset
+                let firstSize = encodedSize offset 1
+
+                if firstSize > maximumFrameBytes then
+                    raise (RpcOutboundFrameTooLargeException(maximumFrameBytes, firstSize))
+
+                let mutable accepted = 1
+                let mutable probe = 2
+
+                while probe <= remaining && encodedSize offset probe <= maximumFrameBytes do
+                    accepted <- probe
+                    probe <- probe * 2
+
+                let mutable low = accepted + 1
+                let mutable high = min remaining (probe - 1)
+
+                while low <= high do
+                    let middle = low + (high - low) / 2
+
+                    if encodedSize offset middle <= maximumFrameBytes then
+                        accepted <- middle
+                        low <- middle + 1
+                    else
+                        high <- middle - 1
+
+                chunks.Add(nodes[offset .. offset + accepted - 1])
+                offset <- offset + accepted
 
         chunks.ToArray()
 
@@ -118,7 +130,10 @@ module internal Pipe =
                 let mutable watcherStarted = false
                 let mutable maximumFrameBytes = RpcCodec.secureLimits.MaximumValueBytes
                 let mutable maximumPageSize = 256
-                let watcher = WorkspaceWatcher(state, 128, fun () -> maximumFrameBytes)
+                use publicationGate = new SemaphoreSlim(1, 1)
+
+                let watcher =
+                    WorkspaceWatcher(state, 128, (fun () -> maximumFrameBytes), publicationGate)
 
                 let activeExports =
                     ConcurrentDictionary<string, ExportOperationState>(StringComparer.Ordinal)
@@ -145,7 +160,7 @@ module internal Pipe =
                             return Ok(PublicProtocol.initializeResult state.Descriptor state.Revision request)
                     }
 
-                let dispatch (_: RpcSessionContext) methodName parameters requestCancellationToken =
+                let dispatchCore (_: RpcSessionContext) methodName parameters requestCancellationToken =
                     task {
                         match PublicProtocol.parseRequest methodName parameters with
                         | Error rpcError -> return Error rpcError
@@ -157,6 +172,10 @@ module internal Pipe =
                                 match rooted with
                                 | Error rpcError -> return Error rpcError
                                 | Ok(revision, nodes) ->
+                                    if watcherStarted then
+                                        watcher.Resume()
+                                        do! watcher.RebuildAsync requestCancellationToken
+
                                     return
                                         Ok
                                             { Result = PublicProtocol.rootResult state.Descriptor revision nodes
@@ -183,7 +202,7 @@ module internal Pipe =
                                         |> Option.defaultValue []
 
                                     if watcherStarted then
-                                        do! watcher.RequestRebuildAsync()
+                                        do! watcher.RebuildAsync requestCancellationToken
 
                                     return
                                         Ok
@@ -239,7 +258,7 @@ module internal Pipe =
                                         watcher.Pause()
                                     elif watcherStarted then
                                         watcher.Resume()
-                                        do! watcher.RequestRebuildAsync()
+                                        do! watcher.RebuildAsync requestCancellationToken
 
                                     return
                                         Ok
@@ -348,6 +367,15 @@ module internal Pipe =
                                                                 "The workspace export could not be completed safely."
                                                             )
                                                         )
+                                                | :? ArgumentException
+                                                | :? FormatException ->
+                                                    do!
+                                                        reserveFailure (
+                                                            PublicOperationOutcome.Failed(
+                                                                "export_failed",
+                                                                "The workspace export could not be completed safely."
+                                                            )
+                                                        )
 
                                                 do!
                                                     sink.WriteAsync(
@@ -407,6 +435,44 @@ module internal Pipe =
                                         Error(
                                             RpcErrors.unsupported "Workspace mutations are not implemented until T-007."
                                         )
+                    }
+
+                let dispatch
+                    (context: RpcSessionContext)
+                    (methodName: string)
+                    (parameters: RpcValue)
+                    (requestCancellationToken: CancellationToken)
+                    =
+                    task {
+                        let serialized =
+                            match PublicProtocol.parseRequest methodName parameters with
+                            | Ok PublicRequest.Root
+                            | Ok(PublicRequest.Children _)
+                            | Ok(PublicRequest.Refresh _) -> true
+                            | _ -> false
+
+                        if serialized then
+                            do! publicationGate.WaitAsync requestCancellationToken
+
+                        try
+                            let! result = dispatchCore context methodName parameters requestCancellationToken
+
+                            return
+                                match result with
+                                | Ok value when serialized ->
+                                    Ok
+                                        { value with
+                                            AfterResponse = Some(fun () -> publicationGate.Release() |> ignore) }
+                                | _ ->
+                                    if serialized then
+                                        publicationGate.Release() |> ignore
+
+                                    result
+                        with exceptionValue ->
+                            if serialized then
+                                publicationGate.Release() |> ignore
+
+                            return raise exceptionValue
                     }
 
                 let configuration =

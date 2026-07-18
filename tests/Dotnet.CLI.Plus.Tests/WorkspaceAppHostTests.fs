@@ -3,6 +3,7 @@ namespace Dotnet.CLI.Plus.Tests
 #nowarn "3261"
 
 open System
+open System.Collections.Generic
 open System.Diagnostics
 open System.IO
 open System.Threading
@@ -77,6 +78,9 @@ module private PipeTest =
                 "Dotnet.CLI.Plus"
 
         Path.Combine(root, "src", "Dotnet.CLI.Plus", "bin", buildConfiguration, "net10.0", name)
+
+    let globalJson =
+        Path.Combine(repositoryRoot AppContext.BaseDirectory, "global.json")
 
     let startPipe alias solution =
         let start = ProcessStartInfo(apphost)
@@ -247,7 +251,8 @@ type WorkspaceAppHostTests() =
                 Assert.Equal(0L, PipeTest.field "revision" noOpResult |> RpcValue.requireInteger "revision")
                 Assert.Equal(RpcValue.Boolean false, PipeTest.field "reset" noOpResult)
 
-                model.AddProject("Second.fsproj", "Second", null) |> ignore
+                let folder = model.AddFolder "/nested/"
+                model.AddProject("Second.fsproj", "Second", folder) |> ignore
                 PipeTest.writeProject (Path.Combine(directory, "Second.fsproj"))
                 PipeTest.save solution model
 
@@ -255,18 +260,39 @@ type WorkspaceAppHostTests() =
                 PipeTest.send child false (PipeTest.request 5u "workspace/refresh" expected)
                 let changedError, changedResult = PipeTest.readFrame child |> PipeTest.response 5u
                 Assert.True(changedError.IsNone)
-                Assert.Equal(1L, PipeTest.field "revision" changedResult |> RpcValue.requireInteger "revision")
-                Assert.Equal(RpcValue.Boolean false, PipeTest.field "reset" changedResult)
+
+                let changedRevision =
+                    PipeTest.field "revision" changedResult |> RpcValue.requireInteger "revision"
+
+                Assert.True(changedRevision > 0L)
 
                 match PipeTest.readFrame child with
                 | Notification("workspace/delta", parameters) ->
                     Assert.Equal(
-                        0L,
+                        changedRevision - 1L,
                         PipeTest.field "baseRevision" parameters
                         |> RpcValue.requireInteger "baseRevision"
                     )
 
-                    Assert.Equal(1L, PipeTest.field "newRevision" parameters |> RpcValue.requireInteger "newRevision")
+                    Assert.Equal(
+                        changedRevision,
+                        PipeTest.field "newRevision" parameters |> RpcValue.requireInteger "newRevision"
+                    )
+
+                    let added = HashSet<string>(StringComparer.Ordinal)
+
+                    for change in PipeTest.field "changes" parameters |> RpcValue.requireArray "changes" do
+                        if PipeTest.field "kind" change = RpcValue.String "add" then
+                            match PipeTest.field "parentId" change with
+                            | RpcValue.String parentId -> Assert.Contains(parentId, added)
+                            | RpcValue.Nil -> ()
+                            | value -> failwithf "Unexpected parent ID: %A" value
+
+                            PipeTest.field "node" change
+                            |> PipeTest.field "id"
+                            |> RpcValue.requireString "id"
+                            |> added.Add
+                            |> ignore
                 | frame -> failwithf "Expected refresh delta, got %A" frame
 
                 PipeTest.send child false (PipeTest.request 6u "workspace/refresh" expected)
@@ -337,6 +363,25 @@ type WorkspaceAppHostTests() =
                     Assert.Equal(1L, PipeTest.field "newRevision" parameters |> RpcValue.requireInteger "revision")
                 | frame -> failwithf "Expected hydration delta, got %A" frame
 
+                let token = PipeTest.field "nextToken" page |> RpcValue.requireString "nextToken"
+
+                let forged =
+                    token[.. token.Length - 2]
+                    + (if token.EndsWith("A", StringComparison.Ordinal) then
+                           "B"
+                       else
+                           "A")
+
+                let invalidPage =
+                    PipeTest.map
+                        [ "parentId", RpcValue.String projectId
+                          "pageSize", RpcValue.Integer 1L
+                          "continuationToken", RpcValue.String forged ]
+
+                PipeTest.send child false (PipeTest.request 4u "workspace/children" invalidPage)
+                let tokenError, _ = PipeTest.readFrame child |> PipeTest.response 4u
+                Assert.Equal("invalid_params", tokenError.Value.Code)
+
                 File.WriteAllText(
                     project,
                     "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework><WatchedValue>changed</WatchedValue></PropertyGroup></Project>"
@@ -344,14 +389,28 @@ type WorkspaceAppHostTests() =
 
                 let watching = Task.Run(fun () -> PipeTest.readFrame child)
                 Assert.True(watching.Wait(TimeSpan.FromSeconds 10.0), "The watcher did not publish a transition.")
+                let mutable watchedRevision = 1L
 
                 match watching.Result with
                 | Notification("workspace/delta", parameters) ->
                     Assert.Equal(1L, PipeTest.field "baseRevision" parameters |> RpcValue.requireInteger "revision")
-                    Assert.Equal(2L, PipeTest.field "newRevision" parameters |> RpcValue.requireInteger "revision")
+                    watchedRevision <- PipeTest.field "newRevision" parameters |> RpcValue.requireInteger "revision"
+                    Assert.True(watchedRevision > 1L)
                 | frame -> failwithf "Expected watcher delta, got %A" frame
 
-                PipeTest.shutdown child 4u
+                File.Copy(PipeTest.globalJson, Path.Combine(directory, "global.json"))
+                let selection = Task.Run(fun () -> PipeTest.readFrame child)
+                Assert.True(selection.Wait(TimeSpan.FromSeconds 10.0), "global.json creation was not observed.")
+
+                match selection.Result with
+                | Notification("workspace/reset", parameters) ->
+                    let resetRevision =
+                        PipeTest.field "revision" parameters |> RpcValue.requireInteger "revision"
+
+                    Assert.True(resetRevision > watchedRevision)
+                | frame -> failwithf "Expected a toolset reset, got %A" frame
+
+                PipeTest.shutdown child 5u
             finally
                 PipeTest.disposeProcess child
         finally
