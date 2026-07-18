@@ -14,5 +14,6 @@
         <Compile Include="Nodes.fs" />
         <Compile Include="Commands.fs" />
         <Compile Include="Outcomes.fs" />
+        <Compile Include="Mutations.fs" />
     </ItemGroup>
 </Project>

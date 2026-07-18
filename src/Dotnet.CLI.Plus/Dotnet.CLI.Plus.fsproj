@@ -22,6 +22,7 @@
 
     <ItemGroup>
         <Compile Include="Compatibility.fs" />
+        <Compile Include="MutationCoordinator.fs" />
         <Compile Include="WorkspaceState.fs" />
         <Compile Include="WorkspaceWatcher.fs" />
         <Compile Include="Pipe.fs" />

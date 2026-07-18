@@ -8,6 +8,7 @@
 
     <ItemGroup>
         <Compile Include="CoreContractTests.fs" />
+        <Compile Include="MutationCoordinatorTests.fs" />
         <Compile Include="ConformanceFixtureTests.fs" />
         <Compile Include="SolutionContractTests.fs" />
         <Compile Include="BrokerProcessTests.fs" />
