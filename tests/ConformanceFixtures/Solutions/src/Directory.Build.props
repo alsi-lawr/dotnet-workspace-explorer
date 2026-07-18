@@ -1,5 +1,5 @@
 <Project>
-  <PropertyGroup>
-    <SharedFixture>true</SharedFixture>
-  </PropertyGroup>
+    <PropertyGroup>
+        <SharedFixture>true</SharedFixture>
+    </PropertyGroup>
 </Project>

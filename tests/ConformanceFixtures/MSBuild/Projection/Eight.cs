@@ -1,1 +1,1 @@
-class Eight {}
+class Eight { }

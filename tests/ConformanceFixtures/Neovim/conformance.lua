@@ -6,6 +6,7 @@ local stdout = uv.new_pipe(false)
 local stderr = uv.new_pipe(false)
 local pending, frames, notifications, errors = "", {}, {}, ""
 local exited, exit_code, exit_signal = false, nil, nil
+local operation_id, completion_count = nil, 0
 
 local function fail(message)
   error(message .. (errors == "" and "" or ": " .. errors))
@@ -67,6 +68,10 @@ end
 
 local function record_notification(frame)
   if frame[1] == 2 then
+    if frame[2] == "operation/completed" and operation_id ~= nil and frame[3].operationId == operation_id then
+      completion_count = completion_count + 1
+    end
+
     table.insert(notifications, frame)
     return true
   end
@@ -127,7 +132,8 @@ send(1, "initialize", {
   },
   limits = { maxFrameBytes = 65536, maxPageSize = 16 },
 })
-response(1)
+local initialized = response(1)
+local workspace_id = initialized.workspace.id
 
 send(2, "workspace/root", vim.empty_dict())
 local root = response(2)
@@ -146,9 +152,13 @@ end
 
 send(3, "workspace/children", { parentId = project_id, pageSize = 1 })
 local page = response(3)
-notification("workspace/delta")
+local page_delta = notification("workspace/delta")
 
-local project = directory .. "/src/Included.csproj"
+if page_delta.workspaceId ~= workspace_id or page_delta.baseRevision ~= root.revision or page_delta.newRevision ~= page.revision then
+  fail("the page delta was not part of the expected workspace lifecycle")
+end
+
+local project = directory .. "/Included.csproj"
 local contents = vim.fn.readfile(project)
 
 for index, line in ipairs(contents) do
@@ -157,23 +167,37 @@ end
 
 vim.fn.writefile(contents, project)
 send(4, "workspace/refresh", vim.empty_dict())
-response(4)
-notification("workspace/delta")
+local refreshed = response(4)
+local refresh_delta = notification("workspace/delta")
+
+if refresh_delta.workspaceId ~= workspace_id or refresh_delta.newRevision ~= refreshed.revision or refresh_delta.newRevision <= page.revision then
+  fail("the refresh delta was not part of the expected workspace lifecycle")
+end
 
 if not uv.fs_copyfile(global_json, directory .. "/global.json") then
   fail("could not copy global.json for the reset lifecycle")
 end
 
-notification("workspace/reset")
+local reset = notification("workspace/reset")
+
+if reset.workspaceId ~= workspace_id or reset.revision <= refreshed.revision then
+  fail("the reset was not part of the expected workspace lifecycle")
+end
+
 send(5, "workspace/export", vim.empty_dict())
 local export = response(5)
-send(6, "operation/cancel", { operationId = export.operationId })
-response(6)
+operation_id = export.operationId
+send(6, "operation/cancel", { operationId = operation_id })
+local cancellation = response(6)
+
+if cancellation.accepted ~= true then
+  fail("the apphost did not accept the export cancellation")
+end
 
 local completed = notification("operation/completed")
 
-if completed.outcome == nil then
-  fail("the export did not complete")
+if completed.operationId ~= operation_id or completed.outcome ~= "cancelled" or completion_count ~= 1 then
+  fail("the export cancellation did not complete exactly once")
 end
 
 send(7, "shutdown", vim.empty_dict())

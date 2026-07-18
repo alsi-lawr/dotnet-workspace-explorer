@@ -404,12 +404,17 @@ type WorkspaceAppHostTests() =
         let directory = PipeTest.temporaryDirectory "nvim-conformance"
 
         try
-            let source = PipeTest.fixturePath "Solutions"
+            let solution = Path.Combine(directory, "Neovim.slnx")
+            let model = SolutionModel()
+            model.AddProject("Included.csproj", "Included", null) |> ignore
+            PipeTest.writeProject (Path.Combine(directory, "Included.csproj"))
 
-            for path in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories) do
-                let destination = Path.Combine(directory, Path.GetRelativePath(source, path))
-                Directory.CreateDirectory(Path.GetDirectoryName destination) |> ignore
-                File.Copy(path, destination)
+            for index in 1..20 do
+                let name = $"Project{index}"
+                model.AddProject($"{name}.csproj", name, null) |> ignore
+                PipeTest.writeProject (Path.Combine(directory, $"{name}.csproj"))
+
+            PipeTest.save solution model
 
             let start = ProcessStartInfo("nvim")
             start.WorkingDirectory <- directory
@@ -427,14 +432,20 @@ type WorkspaceAppHostTests() =
                   "-l"
                   PipeTest.fixturePath "Neovim/conformance.lua"
                   PipeTest.apphost
-                  Path.Combine(directory, "Filters", "Canonical.slnf")
+                  solution
                   directory
                   PipeTest.globalJson ] do
                 start.ArgumentList.Add argument
 
             use nvim = Process.Start start
             Assert.NotNull nvim
-            Assert.True(nvim.WaitForExit(30000), "The headless Neovim client did not complete its lifecycle.")
+            let completed = nvim.WaitForExit(30000)
+
+            if not completed then
+                nvim.Kill(true)
+                nvim.WaitForExit()
+
+            Assert.True(completed, "The headless Neovim client did not complete its lifecycle.")
             let stdout = nvim.StandardOutput.ReadToEnd()
             let stderr = nvim.StandardError.ReadToEnd()
             Assert.True((nvim.ExitCode = 0), $"Neovim exited {nvim.ExitCode}: {stdout}{stderr}")

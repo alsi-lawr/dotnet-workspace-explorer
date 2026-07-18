@@ -1,1 +1,1 @@
-class Existing {}
+class Existing { }

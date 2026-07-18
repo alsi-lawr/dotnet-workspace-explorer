@@ -1,9 +1,14 @@
 namespace Dotnet.CLI.Plus.Tests
 
+#nowarn "3261"
+
 open System
 open System.IO
 open System.Text
+open System.Threading
 open System.Xml.Linq
+open Microsoft.VisualStudio.SolutionPersistence.Model
+open Microsoft.VisualStudio.SolutionPersistence.Serializer
 open Xunit
 
 module private ConformanceFixture =
@@ -13,9 +18,121 @@ module private ConformanceFixture =
         use writer = new StreamWriter(path, false, utf8)
         contents writer
 
+    let private writeLines path lines =
+        File.WriteAllText(path, String.concat "\n" lines + "\n", utf8)
+
+    let private files directory =
+        Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories)
+        |> Seq.map (fun path -> Path.GetRelativePath(directory, path))
+        |> Seq.sort
+        |> Seq.toArray
+
+    let compareDirectories expected actual =
+        let expectedFiles = files expected
+        Assert.Equal<string>(expectedFiles, files actual)
+
+        for relative in expectedFiles do
+            Assert.Equal<byte>(
+                File.ReadAllBytes(Path.Combine(expected, relative)),
+                File.ReadAllBytes(Path.Combine(actual, relative))
+            )
+
+    let private normalizeSlnx path =
+        File.ReadAllLines path
+        |> Array.map (fun line ->
+            let indentation = line |> Seq.takeWhile Char.IsWhiteSpace |> Seq.length
+            String(' ', indentation * 2) + line.TrimStart())
+        |> fun lines -> writeLines path lines
+
+    let generateSmall directory =
+        let solutions = Path.Combine(directory, "Solutions")
+        let msbuild = Path.Combine(directory, "MSBuild")
+        let solutionSource = Path.Combine(solutions, "src")
+        let projection = Path.Combine(msbuild, "Projection")
+        Directory.CreateDirectory(Path.Combine(solutions, "Filters")) |> ignore
+        Directory.CreateDirectory(solutionSource) |> ignore
+        Directory.CreateDirectory(Path.Combine(projection, "Generated")) |> ignore
+
+        writeLines
+            (Path.Combine(solutionSource, "Directory.Build.props"))
+            [ "<Project>"
+              "    <PropertyGroup>"
+              "        <SharedFixture>true</SharedFixture>"
+              "    </PropertyGroup>"
+              "</Project>" ]
+
+        writeLines
+            (Path.Combine(solutionSource, "Included.csproj"))
+            [ "<Project Sdk=\"Microsoft.NET.Sdk\">"
+              "    <PropertyGroup>"
+              "        <TargetFramework>net10.0</TargetFramework>"
+              "        <ConformanceMarker>initial</ConformanceMarker>"
+              "    </PropertyGroup>"
+              "</Project>" ]
+
+        writeLines
+            (Path.Combine(solutions, "Filters", "Canonical.slnf"))
+            [ "{"
+              "  \"solution\": {"
+              "    \"path\": \"../Canonical.slnx\","
+              "    \"projects\": [ \"src/Included.csproj\" ]"
+              "  }"
+              "}" ]
+
+        writeLines
+            (Path.Combine(projection, "Directory.Build.props"))
+            [ "<Project>"
+              "    <PropertyGroup>"
+              "        <ImportedProperty>before</ImportedProperty>"
+              "    </PropertyGroup>"
+              "</Project>" ]
+
+        writeLines
+            (Path.Combine(projection, "Project.csproj"))
+            [ "<Project Sdk=\"Microsoft.NET.Sdk\">"
+              "    <PropertyGroup>"
+              "        <TargetFrameworks>net8.0;net9.0</TargetFrameworks>"
+              "        <EnableDefaultCompileItems>false</EnableDefaultCompileItems>"
+              "    </PropertyGroup>"
+              "    <ItemGroup>"
+              "        <Compile Include=\"Eight.cs\" Condition=\"'$(TargetFramework)' == 'net8.0'\" />"
+              "        <Compile Include=\"Generated/**/*.cs\" />"
+              "    </ItemGroup>"
+              "</Project>" ]
+
+        writeLines (Path.Combine(projection, "Eight.cs")) [ "class Eight { }" ]
+        writeLines (Path.Combine(projection, "Generated", "Existing.cs")) [ "class Existing { }" ]
+
+        writeLines
+            (Path.Combine(msbuild, "Unknown.proj"))
+            [ "<Project>"
+              "  <PropertyGroup>"
+              "    <Value>readable</Value>"
+              "  </PropertyGroup>"
+              "</Project>" ]
+
+        let model = SolutionModel()
+        let folder = model.AddFolder "/src/"
+        folder.AddFile "Directory.Build.props"
+        let included = model.AddProject("src/Included.csproj", "Included", null)
+        let external = model.AddProject("../external/External.csproj", "External", null)
+        included.AddDependency external
+        model.AddBuildType "Debug"
+        model.AddPlatform "Any CPU"
+
+        for name in [ "Canonical.sln"; "Canonical.slnx" ] do
+            let path = Path.Combine(solutions, name)
+
+            SolutionSerializers
+                .GetSerializerByMoniker(path)
+                .SaveAsync(path, model, CancellationToken.None)
+                .GetAwaiter()
+                .GetResult()
+
+        normalizeSlnx (Path.Combine(solutions, "Canonical.slnx"))
+
     let generateScale directory =
         let solution = Path.Combine(directory, "Scale.slnx")
-        let nodes = Path.Combine(directory, "ExplorerNodes.tsv")
 
         write solution (fun writer ->
             writer.WriteLine("<Solution>")
@@ -25,12 +142,26 @@ module private ConformanceFixture =
 
             writer.WriteLine("</Solution>"))
 
-        write nodes (fun writer ->
-            for project in 1..500 do
-                for node in 1..500 do
-                    writer.WriteLine($"P{project:D4}\tN{node:D4}\tprojectItem"))
+        for project in 1..500 do
+            let directory = Path.Combine(directory, "src", $"P{project:D4}")
+            Directory.CreateDirectory directory |> ignore
 
-        solution, nodes
+            write (Path.Combine(directory, $"P{project:D4}.csproj")) (fun writer ->
+                writer.WriteLine("<Project Sdk=\"Microsoft.NET.Sdk\">")
+
+                writer.WriteLine(
+                    "  <PropertyGroup><TargetFramework>net10.0</TargetFramework><EnableDefaultCompileItems>false</EnableDefaultCompileItems></PropertyGroup>"
+                )
+
+                writer.WriteLine("  <ItemGroup>")
+
+                for node in 1..500 do
+                    writer.WriteLine($"    <Compile Include=\"Items/N{node:D4}.cs\" />")
+
+                writer.WriteLine("  </ItemGroup>")
+                writer.WriteLine("</Project>"))
+
+        solution
 
     let rec repositoryRoot directory =
         if File.Exists(Path.Combine(directory, "Directory.Packages.props")) then
@@ -42,7 +173,9 @@ module private ConformanceFixture =
 
 type ConformanceFixtureTests() =
     [<Fact>]
-    member _.``scale fixture regeneration is exact and conformance assets are explicitly non-packable``() =
+    member _.``shared fixtures and scale corpus regenerate exactly and conformance assets are explicitly non-packable``
+        ()
+        =
         let root = ConformanceFixture.repositoryRoot AppContext.BaseDirectory
 
         for project in
@@ -67,17 +200,37 @@ type ConformanceFixtureTests() =
                     | pack -> Assert.Equal("false", pack.Value)
             )
 
+        let fixtureRoot = Path.Combine(root, "tests", "ConformanceFixtures")
+
         let first =
             Path.Combine(Path.GetTempPath(), $"dotnet-cli-plus-scale-{Guid.NewGuid():N}")
 
         let second =
             Path.Combine(Path.GetTempPath(), $"dotnet-cli-plus-scale-{Guid.NewGuid():N}")
 
+        let small =
+            Path.Combine(Path.GetTempPath(), $"dotnet-cli-plus-small-fixtures-{Guid.NewGuid():N}")
+
         try
             Directory.CreateDirectory first |> ignore
             Directory.CreateDirectory second |> ignore
-            let firstSolution, firstNodes = ConformanceFixture.generateScale first
-            let secondSolution, secondNodes = ConformanceFixture.generateScale second
+            Directory.CreateDirectory small |> ignore
+            ConformanceFixture.generateSmall small
+
+            ConformanceFixture.compareDirectories
+                (Path.Combine(fixtureRoot, "Solutions"))
+                (Path.Combine(small, "Solutions"))
+
+            ConformanceFixture.compareDirectories
+                (Path.Combine(fixtureRoot, "MSBuild"))
+                (Path.Combine(small, "MSBuild"))
+
+            let firstSolution = ConformanceFixture.generateScale first
+            let secondSolution = ConformanceFixture.generateScale second
+
+            let firstProjects =
+                Directory.EnumerateFiles(Path.Combine(first, "src"), "*.csproj", SearchOption.AllDirectories)
+                |> Seq.toArray
 
             Assert.Equal(
                 500,
@@ -86,12 +239,24 @@ type ConformanceFixtureTests() =
                 |> Seq.length
             )
 
-            Assert.Equal(250000, File.ReadLines(firstNodes) |> Seq.length)
-            Assert.Equal<byte>(File.ReadAllBytes(firstSolution), File.ReadAllBytes(secondSolution))
-            Assert.Equal<byte>(File.ReadAllBytes(firstNodes), File.ReadAllBytes(secondNodes))
+            Assert.Equal(500, firstProjects.Length)
+
+            Assert.Equal(
+                250000,
+                firstProjects
+                |> Seq.sumBy (fun project ->
+                    File.ReadLines(project)
+                    |> Seq.filter (_.Contains("<Compile Include="))
+                    |> Seq.length)
+            )
+
+            ConformanceFixture.compareDirectories first second
         finally
             if Directory.Exists first then
                 Directory.Delete(first, true)
 
             if Directory.Exists second then
                 Directory.Delete(second, true)
+
+            if Directory.Exists small then
+                Directory.Delete(small, true)

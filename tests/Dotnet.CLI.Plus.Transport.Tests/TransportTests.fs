@@ -358,6 +358,28 @@ type TransportTests() =
         let profile = Test.profile "streams" [ "large", Read; "shutdown", Control ]
         let fragmented = Test.golden "fragmented-stream.mpack"
         let coalesced = Test.golden "coalesced-stream.mpack"
+
+        let initialize =
+            RpcCodec.encodeFrame (
+                Request(
+                    10u,
+                    "initialize",
+                    Test.map
+                        [ "protocolVersion", Test.map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 0L ]
+                          "clientInfo", Test.map [ "name", RpcValue.String "fixture" ]
+                          "capabilities", RpcValue.array [ RpcValue.String "workspace.root" ]
+                          "limits",
+                          Test.map [ "maxFrameBytes", RpcValue.Integer 4096L; "maxPageSize", RpcValue.Integer 1L ] ]
+                )
+            )
+
+        let shutdown = RpcCodec.encodeFrame (Request(15u, "shutdown", Test.empty))
+
+        let large =
+            Test.request 2u "large" (Test.map [ "payload", RpcValue.Binary(Array.zeroCreate 3900) ])
+
+        Assert.Equal<byte>(Array.concat [ initialize; shutdown ], fragmented)
+        Assert.Equal<byte>(Array.concat [ initialize; large; shutdown ], coalesced)
         Assert.InRange(coalesced.Length, 3072, limits.MaximumValueBytes)
         Assert.Equal(2, (Test.frames fragmented).Length)
         Assert.Equal(3, (Test.frames coalesced).Length)
