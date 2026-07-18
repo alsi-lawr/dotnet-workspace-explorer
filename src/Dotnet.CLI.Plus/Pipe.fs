@@ -231,12 +231,35 @@ module internal Pipe =
                                     match page with
                                     | Error rpcError -> return Error rpcError
                                     | Ok result ->
-                                        let stateNotifications =
-                                            result.Delta
-                                            |> Option.map (PublicProtocol.workspaceDelta >> List.singleton)
-                                            |> Option.defaultValue []
+                                        let! stateNotifications, reset =
+                                            match result.Delta |> Option.map PublicProtocol.workspaceDelta with
+                                            | Some notification when
+                                                (RpcCodec.encodeFrame notification).Length > maximumFrameBytes
+                                                ->
+                                                task {
+                                                    let diagnostic =
+                                                        WorkspaceDiagnostic.CreateSimple(
+                                                            WorkspaceDiagnosticSeverity.Warning,
+                                                            WorkspaceDiagnosticCode.Create "workspace.delta_pressure",
+                                                            "The verified delta exceeded delivery capacity; request a fresh workspace graph.",
+                                                            true,
+                                                            CorrelationId.New()
+                                                        )
 
-                                        let! handoffNotifications = rebuildWatcher requestCancellationToken
+                                                    let! reset = state.ResetAsync(diagnostic, requestCancellationToken)
+                                                    return [ PublicProtocol.workspaceReset reset ], true
+                                                }
+                                            | Some notification -> Task.FromResult([ notification ], false)
+                                            | None -> Task.FromResult([], false)
+
+                                        if reset then
+                                            watcher.Pause()
+
+                                        let! handoffNotifications =
+                                            if reset then
+                                                Task.FromResult []
+                                            else
+                                                rebuildWatcher requestCancellationToken
 
                                         return
                                             Ok
@@ -248,7 +271,7 @@ module internal Pipe =
                                                         result.Nodes
                                                         result.NextToken
                                                   Notifications = stateNotifications @ handoffNotifications
-                                                  BackgroundWork = startWatcher true
+                                                  BackgroundWork = if reset then None else startWatcher true
                                                   AfterResponse = None
                                                   StopAfterResponse = false }
                             | PublicRequest.Refresh expectedRevision ->
