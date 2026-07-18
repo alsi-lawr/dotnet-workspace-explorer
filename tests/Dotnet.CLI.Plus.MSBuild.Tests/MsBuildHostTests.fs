@@ -7,6 +7,7 @@ open System.Collections.Generic
 open System.Diagnostics
 open System.IO
 open Dotnet.CLI.Plus.Transport
+open FsUnit.Xunit
 open Xunit
 
 module private Test =
@@ -313,7 +314,7 @@ module private Test =
         child.StandardInput.Close()
         Assert.True(child.WaitForExit 5000, "The apphost did not exit after shutdown.")
         Assert.Equal(-1, child.StandardOutput.BaseStream.ReadByte())
-        Assert.Equal(0, child.ExitCode)
+        child.ExitCode |> should equal 0
         Assert.Equal(String.Empty, child.StandardError.ReadToEnd())
 
     let withWorker directory action =
@@ -402,7 +403,7 @@ module private Test =
 
 type MsBuildHostTests() =
     [<Fact>]
-    member _.``real worker projects dimensions and invalidates imports and globs``() =
+    member _.``should project dimensions and invalidate imports and globs in the real worker``() =
         let directory = Test.temporaryDirectory "projection"
 
         try
@@ -474,7 +475,7 @@ type MsBuildHostTests() =
             Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``managed projects are writable and unknown projects are read only``() =
+    member _.``should make managed projects writable and unknown projects read only``() =
         let directory = Test.temporaryDirectory "capabilities"
 
         try
@@ -499,7 +500,7 @@ type MsBuildHostTests() =
             Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``private worker enforces initialization and shuts down cleanly``() =
+    member _.``should enforce initialization and shut down the private worker cleanly``() =
         let directory = Test.temporaryDirectory "protocol"
 
         try
@@ -536,7 +537,7 @@ type MsBuildHostTests() =
             Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``global json selection invalidation recovers through public refresh``() =
+    member _.``should recover global json selection invalidation through public refresh``() =
         let directory = Test.temporaryDirectory "global-json"
 
         try
@@ -589,7 +590,7 @@ type MsBuildHostTests() =
             Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``missing malformed and incompatible inputs have stable failure mappings``() =
+    member _.``should keep stable failure mappings for missing malformed and incompatible inputs``() =
         let directory = Test.temporaryDirectory "failures"
 
         try
@@ -617,7 +618,7 @@ type MsBuildHostTests() =
             Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``failed inner dimension can be repaired in the same worker``() =
+    member _.``should repair a failed inner dimension in the same worker``() =
         let directory = Test.temporaryDirectory "dimension-recovery"
 
         try
@@ -662,7 +663,7 @@ type MsBuildHostTests() =
             Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``cancelled export completes once and apphost reaps resources on shutdown``() =
+    member _.``should complete cancelled export once and reap apphost resources on shutdown``() =
         let directory = Test.temporaryDirectory "cancellation"
 
         try

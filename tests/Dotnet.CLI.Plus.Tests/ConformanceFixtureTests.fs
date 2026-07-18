@@ -173,9 +173,7 @@ module private ConformanceFixture =
 
 type ConformanceFixtureTests() =
     [<Fact>]
-    member _.``shared fixtures and scale corpus regenerate exactly and conformance assets are explicitly non-packable``
-        ()
-        =
+    member _.``should regenerate shared fixtures and the scale corpus exactly with non-packable assets``() =
         let root = ConformanceFixture.repositoryRoot AppContext.BaseDirectory
 
         for project in

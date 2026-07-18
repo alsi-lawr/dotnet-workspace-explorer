@@ -133,7 +133,7 @@ module private BrokerProcess =
 
 type BrokerProcessTests() =
     [<Fact>]
-    member _.``mutation preflight rejects unsafe targets before launching dotnet``() =
+    member _.``should reject unsafe mutation targets before launching dotnet``() =
         let directory = BrokerProcess.temporaryDirectory "broker-preflight"
 
         try
@@ -162,7 +162,7 @@ type BrokerProcessTests() =
             BrokerProcess.delete directory
 
     [<Fact>]
-    member _.``package reference template file and output mutations require verified postconditions``() =
+    member _.``should require verified postconditions for package reference template file and output mutations``() =
         let directory = BrokerProcess.temporaryDirectory "broker-postconditions"
 
         try
@@ -208,7 +208,7 @@ type BrokerProcessTests() =
             BrokerProcess.delete directory
 
     [<Fact>]
-    member _.``glob sentinel and backing-volume case rules verify exact solution membership``() =
+    member _.``should verify exact solution membership with glob sentinel and backing-volume case rules``() =
         let directory = BrokerProcess.temporaryDirectory "broker-paths"
 
         try
@@ -242,7 +242,7 @@ type BrokerProcessTests() =
     [<Theory>]
     [<InlineData(".sln", "directory")>]
     [<InlineData(".slnx", "dir")>]
-    member _.``legacy directory aliases persist nested folders without invoking dotnet``
+    member _.``should persist nested folders for legacy directory aliases without invoking dotnet``
         (extension: string, alias: string)
         =
         let directory = BrokerProcess.temporaryDirectory "broker-legacy"
@@ -271,7 +271,7 @@ type BrokerProcessTests() =
             BrokerProcess.delete directory
 
     [<Fact>]
-    member _.``json failure envelope sanitizes child output and preserves external exit mapping``() =
+    member _.``should sanitize child output and preserve external exit mapping in the json failure envelope``() =
         let directory = BrokerProcess.temporaryDirectory "broker-failure"
 
         try
@@ -291,7 +291,7 @@ type BrokerProcessTests() =
             BrokerProcess.delete directory
 
     [<Fact>]
-    member _.``redirected human output is sanitized and streamed before child completion``() =
+    member _.``should sanitize and stream redirected human output before child completion``() =
         let directory = BrokerProcess.temporaryDirectory "broker-stream"
 
         try
@@ -319,7 +319,7 @@ type BrokerProcessTests() =
             BrokerProcess.delete directory
 
     [<Fact>]
-    member _.``interrupt cancellation reaps the broker-owned child tree``() =
+    member _.``should reap the broker-owned child tree after interrupt cancellation``() =
         if not (OperatingSystem.IsWindows()) then
             let directory = BrokerProcess.temporaryDirectory "broker-cancel"
 

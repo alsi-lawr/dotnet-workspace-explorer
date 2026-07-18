@@ -42,7 +42,7 @@ type SolutionContractTests() =
     [<Theory>]
     [<InlineData(".sln")>]
     [<InlineData(".slnx")>]
-    member _.``sln formats project hierarchy dependencies and external paths``(extension: string) =
+    member _.``should project hierarchy dependencies and external paths for sln formats``(extension: string) =
         let path = SolutionContract.fixturePath $"Canonical{extension}"
         let workspace = SolutionContract.openWorkspace path
         let root = workspace.RootProjection
@@ -75,7 +75,7 @@ type SolutionContractTests() =
         Assert.Contains(root.Platforms, fun node -> node.Name = "Any CPU")
 
     [<Fact>]
-    member _.``slnf resolves against its backing solution and projects excluded entries as read-only placeholders``() =
+    member _.``should resolve slnf against its backing solution with excluded read-only placeholders``() =
         let workspace =
             SolutionContract.openWorkspace (SolutionContract.fixturePath "Filters/Canonical.slnf")
 
@@ -93,7 +93,7 @@ type SolutionContractTests() =
         Assert.All(workspace.RootProjection.Nodes, fun node -> Assert.False(node.Supports WorkspaceCapabilityId.Write))
 
     [<Fact>]
-    member _.``ambiguous targets and invalid filter shapes retain distinct classifications``() =
+    member _.``should retain distinct classifications for ambiguous targets and invalid filters``() =
         let directory = SolutionContract.temporaryDirectory ()
 
         try
@@ -119,7 +119,7 @@ type SolutionContractTests() =
             SolutionContract.delete directory
 
     [<Fact>]
-    member _.``detected filesystem case semantics govern project and filter identity``() =
+    member _.``should govern project and filter identity with detected filesystem case semantics``() =
         let directory = SolutionContract.temporaryDirectory ()
 
         try

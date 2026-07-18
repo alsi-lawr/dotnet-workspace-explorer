@@ -8,6 +8,7 @@ open System.Threading
 open System.Threading.Tasks
 open Dotnet.CLI.Plus.Core
 open Dotnet.CLI.Plus.Transport
+open FsUnit.Xunit
 open Xunit
 
 module private Test =
@@ -167,7 +168,7 @@ type private FailingWriteStream() =
 
 type TransportTests() =
     [<Fact>]
-    member _.``shared standard and public protocol frames retain their golden wire shapes``() =
+    member _.``should retain golden wire shapes for shared standard and public protocol frames``() =
         let error =
             { Code = "e"
               Message = "m"
@@ -246,7 +247,7 @@ type TransportTests() =
             | result -> failwithf "%s decoded unexpectedly: %A" name result
 
     [<Fact>]
-    member _.``malformed values preserve recoverable IDs and session continuation``() =
+    member _.``should preserve recoverable IDs and session continuation for malformed values``() =
         let invalidValues =
             [ "invalid UTF-8", [| 0xa1uy; 0xffuy |]
               "extension", [| 0xd4uy; 0uy; 0uy |]
@@ -338,7 +339,7 @@ type TransportTests() =
             Test.run (Test.defaultConfiguration RpcProfile.publicProfile) input
 
         Assert.Equal(0, exitCode)
-        Assert.Equal(String.Empty, stderr)
+        stderr |> should equal String.Empty
 
         Assert.Equal<(uint32 * string) list>(
             recoverable |> List.map (fun (_, _, id, code) -> id, code),
@@ -350,7 +351,7 @@ type TransportTests() =
         | frame -> failwithf "Session did not continue to shutdown: %A" frame
 
     [<Fact>]
-    member _.``fragmented and coalesced streams stay frame bounded``() =
+    member _.``should keep fragmented and coalesced streams frame bounded``() =
         let limits =
             { RpcCodec.secureLimits with
                 MaximumValueBytes = 4096 }
@@ -403,7 +404,7 @@ type TransportTests() =
             Assert.Equal(expectedFrames, (Test.frames stdout).Length)
 
     [<Fact>]
-    member _.``clean and truncated EOF have distinct outcomes``() =
+    member _.``should distinguish clean and truncated EOF outcomes``() =
         let configuration = Test.defaultConfiguration RpcProfile.publicProfile
 
         let cases =
@@ -420,7 +421,7 @@ type TransportTests() =
             | None -> Assert.Equal(String.Empty, stderr)
 
     [<Fact>]
-    member _.``initialization profiles and notification callability gate requests``() =
+    member _.``should gate requests with initialization profiles and notification callability``() =
         let worker = Test.profile "worker" [ "msbuild/evaluate", Read; "shutdown", Control ]
 
         let notifications =
@@ -467,7 +468,7 @@ type TransportTests() =
             Assert.Equal<(uint32 * string) list>(expectedErrors, Test.responseErrors stdout)
 
     [<Fact>]
-    member _.``public initialization and paging schemas remain stable``() =
+    member _.``should keep public initialization and paging schemas stable``() =
         let initialize major client capabilities limits =
             let fields =
                 ResizeArray<string * RpcValue>(
@@ -559,7 +560,7 @@ type TransportTests() =
         | result -> failwithf "oversized page should be rejected: %A" result
 
     [<Fact>]
-    member _.``read cancellation exits 130 without protocol output``() =
+    member _.``should exit 130 without protocol output after read cancellation``() =
         use cancellation = new CancellationTokenSource()
         use source = new CancellingReadStream(cancellation)
 
@@ -572,7 +573,7 @@ type TransportTests() =
         Assert.Equal(String.Empty, stderr)
 
     [<Fact>]
-    member _.``shutdown cancels background work before its final response``() =
+    member _.``should cancel background work before the final shutdown response``() =
         let profile = Test.profile "background" [ "start", Read; "shutdown", Control ]
 
         let dispatch _ methodName _ _ =
@@ -614,7 +615,7 @@ type TransportTests() =
         | frames -> failwithf "Shutdown ordering changed: %A" frames
 
     [<Fact>]
-    member _.``output failure is fatal``() =
+    member _.``should treat output failure as fatal``() =
         use input = new MemoryStream(Test.request 1u "initialize" Test.empty)
         use output = new FailingWriteStream()
         use errors = new StringWriter()
@@ -632,7 +633,7 @@ type TransportTests() =
         Assert.Contains("failed while reading or writing", errors.ToString())
 
     [<Fact>]
-    member _.``background faults are fatal while reading and during shutdown``() =
+    member _.``should treat background faults as fatal while reading and during shutdown``() =
         let cases = [ "while reading", false; "during shutdown", true ]
 
         for name, failOnCancellation in cases do
@@ -689,7 +690,7 @@ type TransportTests() =
             Assert.Contains("background RPC operation failed", stderr)
 
     [<Fact>]
-    member _.``outbound limits bound responses and background notifications``() =
+    member _.``should bound responses and background notifications with outbound limits``() =
         let limit = 1024
         let oversized = Test.map [ "payload", RpcValue.String(String('x', 5000)) ]
 

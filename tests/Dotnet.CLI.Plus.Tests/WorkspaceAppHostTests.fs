@@ -204,7 +204,7 @@ type WorkspaceAppHostTests() =
     [<Theory>]
     [<InlineData("solution")>]
     [<InlineData("sln")>]
-    member _.``built apphost serves framed workspace session for both aliases``(alias: string) =
+    member _.``should serve a framed workspace session from the built apphost for both aliases``(alias: string) =
         let directory = PipeTest.temporaryDirectory "pipe-apphost"
 
         try
@@ -385,7 +385,7 @@ type WorkspaceAppHostTests() =
                 Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``headless neovim consumes the public pipe lifecycle``() =
+    member _.``should consume the public pipe lifecycle from headless neovim``() =
         let nvimAvailable =
             try
                 let start = ProcessStartInfo("nvim")
@@ -454,7 +454,7 @@ type WorkspaceAppHostTests() =
                 Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``built apphost pages hydrated children and watches a real project edit``() =
+    member _.``should page hydrated children and watch a real project edit in the built apphost``() =
         let directory = PipeTest.temporaryDirectory "pipe-children-watch"
 
         try
@@ -617,7 +617,7 @@ type WorkspaceAppHostTests() =
                 Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``built apphost resets when a child hydration delta exceeds its frame limit``() =
+    member _.``should reset the built apphost when a child hydration delta exceeds its frame limit``() =
         let directory = PipeTest.temporaryDirectory "pipe-children-delta-pressure"
 
         try
@@ -785,7 +785,7 @@ type WorkspaceAppHostTests() =
                 Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``global negotiated frame limit covers responses errors and export notifications``() =
+    member _.``should apply the global negotiated frame limit to responses errors and export notifications``() =
         let directory = PipeTest.temporaryDirectory "pipe-global-limit"
 
         try
@@ -852,7 +852,7 @@ type WorkspaceAppHostTests() =
                 Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``built apphost isolates startup fatal and direct cli output``() =
+    member _.``should isolate startup fatal and direct cli output in the built apphost``() =
         let missing = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.slnx")
         use startup = PipeTest.startPipe "solution" missing
         startup.StandardInput.Close()

@@ -25,7 +25,7 @@ module private CoreContract =
 
 type CoreContractTests() =
     [<Fact>]
-    member _.``workspace and node identities normalize only contract-equivalent paths``() =
+    member _.``should normalize only contract-equivalent workspace and node identity paths``() =
         let upper = WorkspaceTargetPath.Create "/tmp/dotnet-cli-plus/Demo.slnx"
         let lower = WorkspaceTargetPath.Create "/tmp/dotnet-cli-plus/demo.slnx"
 
@@ -54,7 +54,7 @@ type CoreContractTests() =
         Assert.NotEqual((node "src/Demo/Demo.csproj").NodeId, (node "src/Demo/Renamed.csproj").NodeId)
 
     [<Fact>]
-    member _.``read-only and unknown-system policy cannot advertise mutation capabilities``() =
+    member _.``should not advertise mutation capabilities for read-only or unknown systems``() =
         let filtered = CoreContract.workspace WorkspaceFormat.Slnf
 
         let filteredProject =
@@ -81,7 +81,7 @@ type CoreContractTests() =
         Assert.False(unknownProject.Supports WorkspaceCapabilityId.Write)
 
     [<Fact>]
-    member _.``revision conflicts preserve both revisions and the stable failure code``() =
+    member _.``should preserve both revisions and the stable failure code for conflicts``() =
         let expected = WorkspaceRevision.Create 5L
         let actual = WorkspaceRevision.Create 6L
 
