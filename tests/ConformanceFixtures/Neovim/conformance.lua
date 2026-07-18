@@ -115,7 +115,18 @@ local function notification(method)
 end
 
 local function send(id, method, parameters)
-  stdin:write(vim.mpack.encode({ 0, id, method, parameters }))
+  local written, write_error = false, nil
+  stdin:write(vim.mpack.encode({ 0, id, method, parameters }), function(error)
+    write_error = error
+    written = true
+  end)
+  while not written do
+    uv.run("once")
+  end
+
+  if write_error ~= nil then
+    fail("apphost stdin failed: " .. write_error)
+  end
 end
 
 send(1, "initialize", {
@@ -160,9 +171,16 @@ end
 
 local project = directory .. "/Included.csproj"
 local contents = vim.fn.readfile(project)
+local replacements = 0
 
 for index, line in ipairs(contents) do
-  contents[index] = line:gsub("initial", "refreshed")
+  local updated, count = line:gsub("initial", "refreshed")
+  contents[index] = updated
+  replacements = replacements + count
+end
+
+if replacements < 1 then
+  fail("the conformance marker was not refreshed")
 end
 
 vim.fn.writefile(contents, project)
@@ -184,11 +202,18 @@ if reset.workspaceId ~= workspace_id or reset.revision <= refreshed.revision the
   fail("the reset was not part of the expected workspace lifecycle")
 end
 
-send(5, "workspace/export", vim.empty_dict())
-local export = response(5)
+send(5, "workspace/root", vim.empty_dict())
+local rebased = response(5)
+
+if rebased.revision ~= reset.revision then
+  fail("the reset did not require a matching root rebase")
+end
+
+send(6, "workspace/export", vim.empty_dict())
+local export = response(6)
 operation_id = export.operationId
-send(6, "operation/cancel", { operationId = operation_id })
-local cancellation = response(6)
+send(7, "operation/cancel", { operationId = operation_id })
+local cancellation = response(7)
 
 if cancellation.accepted ~= true then
   fail("the apphost did not accept the export cancellation")
@@ -200,8 +225,8 @@ if completed.operationId ~= operation_id or completed.outcome ~= "cancelled" or 
   fail("the export cancellation did not complete exactly once")
 end
 
-send(7, "shutdown", vim.empty_dict())
-local shutdown = response(7)
+send(8, "shutdown", vim.empty_dict())
+local shutdown = response(8)
 
 if shutdown.accepted ~= true then
   fail("the apphost did not accept shutdown")
@@ -213,7 +238,11 @@ while not exited do
   uv.run("once")
 end
 
-if exit_code ~= 0 or exit_signal ~= 0 then
+while #frames > 0 do
+  record_notification(table.remove(frames, 1))
+end
+
+if completion_count ~= 1 or exit_code ~= 0 or exit_signal ~= 0 then
   fail("apphost shutdown failed")
 end
 

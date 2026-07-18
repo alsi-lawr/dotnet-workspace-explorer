@@ -4,9 +4,9 @@
     </Configurations>
     <Folder Name="/src/">
         <File Path="Directory.Build.props" />
+        <Project Path="src/Included.csproj" Type="C#">
+            <BuildDependency Project="../external/External.csproj" />
+        </Project>
     </Folder>
     <Project Path="../external/External.csproj" Type="C#" />
-    <Project Path="src/Included.csproj" Type="C#">
-        <BuildDependency Project="../external/External.csproj" />
-    </Project>
 </Solution>

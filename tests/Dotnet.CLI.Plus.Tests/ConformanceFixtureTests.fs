@@ -114,7 +114,7 @@ module private ConformanceFixture =
         let model = SolutionModel()
         let folder = model.AddFolder "/src/"
         folder.AddFile "Directory.Build.props"
-        let included = model.AddProject("src/Included.csproj", "Included", null)
+        let included = model.AddProject("src/Included.csproj", "Included", folder)
         let external = model.AddProject("../external/External.csproj", "External", null)
         included.AddDependency external
         model.AddBuildType "Debug"

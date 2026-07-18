@@ -47,6 +47,10 @@ type SolutionContractTests() =
         let workspace = SolutionContract.openWorkspace path
         let root = workspace.RootProjection
         let externalProject = root.Projects |> Seq.find _.Path.IsExternal
+        let folder = Assert.Single(root.Folders)
+
+        let included =
+            root.Projects |> Seq.find (fun project -> project.Node.Name = "Included")
 
         Assert.Equal(
             (if extension = ".sln" then
@@ -62,7 +66,8 @@ type SolutionContractTests() =
         )
 
         Assert.Equal(Path.Combine("..", "external", "External.csproj"), externalProject.Path.SolutionRelativePath)
-        Assert.Single(root.Folders) |> ignore
+        Assert.Equal("/src/", folder.Path)
+        Assert.Equal(Some folder.Path, included.ParentFolderPath)
         Assert.Single(root.Items) |> ignore
         Assert.Equal(2, root.Projects.Length)
         Assert.Single(root.Dependencies) |> ignore

@@ -407,7 +407,7 @@ type WorkspaceAppHostTests() =
             let solution = Path.Combine(directory, "Neovim.slnx")
             let model = SolutionModel()
             model.AddProject("Included.csproj", "Included", null) |> ignore
-            PipeTest.writeProject (Path.Combine(directory, "Included.csproj"))
+            File.Copy(PipeTest.fixturePath "Solutions/src/Included.csproj", Path.Combine(directory, "Included.csproj"))
 
             for index in 1..20 do
                 let name = $"Project{index}"
