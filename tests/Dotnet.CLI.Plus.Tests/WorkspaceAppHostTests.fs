@@ -408,9 +408,18 @@ type WorkspaceAppHostTests() =
                         PipeTest.field "revision" parameters |> RpcValue.requireInteger "revision"
 
                     Assert.True(resetRevision > watchedRevision)
+
+                    PipeTest.send child false (PipeTest.request 5u "workspace/root" RpcValue.emptyMap)
+                    let freshError, freshRoot = PipeTest.readFrame child |> PipeTest.response 5u
+                    Assert.True(freshError.IsNone)
+
+                    Assert.Equal(
+                        resetRevision,
+                        PipeTest.field "revision" freshRoot |> RpcValue.requireInteger "revision"
+                    )
                 | frame -> failwithf "Expected a toolset reset, got %A" frame
 
-                PipeTest.shutdown child 5u
+                PipeTest.shutdown child 6u
             finally
                 PipeTest.disposeProcess child
         finally

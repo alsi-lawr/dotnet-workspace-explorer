@@ -15,6 +15,13 @@ type internal HintDrain =
     | Hints of ImmutableArray<WorkspaceArtifactPath>
     | Lost
 
+[<RequireQualifiedAccess>]
+type internal WatcherHandoff =
+    | Complete
+    | Revalidate of ImmutableArray<WorkspaceArtifactPath>
+    | RevalidateWorkspace
+    | Uncertain
+
 type internal BoundedHintBuffer(capacity: int, comparer: StringComparer) =
     let sync = obj ()
     let paths = HashSet<string>(comparer)
@@ -80,7 +87,7 @@ type internal WorkspaceWatcher
     let hints = BoundedHintBuffer(hintCapacity, state.PathComparer)
     let rebuildGate = new SemaphoreSlim(1, 1)
     let wake = new SemaphoreSlim(0, 1)
-    let mutable watchers: FileSystemWatcher array = Array.empty
+    let mutable watchers: (WatchSpec * FileSystemWatcher) array = Array.empty
     let mutable stopRequested = 0
     let mutable callbacksEnabled = 0
     let mutable started = 0
@@ -95,14 +102,80 @@ type internal WorkspaceWatcher
         if Volatile.Read(&callbacksEnabled) <> 0 && hints.Add path then
             signal ()
 
-    let disposeWatchers () =
+    let dispose (value: (WatchSpec * FileSystemWatcher) array) =
+        for _, watcher in value do
+            try
+                watcher.EnableRaisingEvents <- false
+            with _ ->
+                ()
+
+            try
+                watcher.Dispose()
+            with _ ->
+                ()
+
+    let stopWatchers () =
         Volatile.Write(&callbacksEnabled, 0)
-
-        for watcher in watchers do
-            watcher.EnableRaisingEvents <- false
-            watcher.Dispose()
-
+        dispose watchers
         watchers <- Array.empty
+
+    let pathIsBelow directory path =
+        let relative = Path.GetRelativePath(directory, path)
+
+        relative = "."
+        || (not (Path.IsPathRooted relative)
+            && relative <> ".."
+            && not (relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            && not (relative.StartsWith($"..{Path.AltDirectorySeparatorChar}", StringComparison.Ordinal)))
+
+    let samePath left right = state.PathComparer.Equals(left, right)
+
+    let covers (oldSpec: WatchSpec) (newSpec: WatchSpec) =
+        if oldSpec.IncludeSubdirectories && oldSpec.Filters |> Seq.exists ((=) "*") then
+            pathIsBelow oldSpec.Directory newSpec.Directory
+        elif
+            oldSpec.IncludeSubdirectories <> newSpec.IncludeSubdirectories
+            || not (samePath oldSpec.Directory newSpec.Directory)
+        then
+            false
+        else
+            newSpec.Filters
+            |> Seq.forall (fun filter -> oldSpec.Filters |> Seq.exists ((=) filter))
+
+    let uncoveredPaths (oldWatchers: (WatchSpec * FileSystemWatcher) array) (plan: seq<WatchSpec>) =
+        let uncovered =
+            plan
+            |> Seq.filter (fun candidate ->
+                oldWatchers
+                |> Array.exists (fun (existing, _) -> covers existing candidate)
+                |> not)
+            |> Seq.toArray
+
+        if uncovered |> Array.exists (fun spec -> spec.IncludeSubdirectories) then
+            WatcherHandoff.RevalidateWorkspace
+        else
+            let paths =
+                uncovered
+                |> Seq.collect (fun spec ->
+                    spec.Filters
+                    |> Seq.map (fun filter ->
+                        if filter.IndexOfAny([| '*'; '?' |]) >= 0 then
+                            None
+                        else
+                            Some(Path.Combine(spec.Directory, filter))))
+
+                |> Seq.toArray
+
+            if paths |> Array.exists Option.isNone then
+                WatcherHandoff.Uncertain
+            elif paths.Length = 0 then
+                WatcherHandoff.Complete
+            else
+                paths
+                |> Seq.choose id
+                |> Seq.map WorkspaceArtifactPath.Create
+                |> ImmutableArray.CreateRange
+                |> WatcherHandoff.Revalidate
 
     let createWatcher (spec: WatchSpec) =
         let watcher = new FileSystemWatcher(spec.Directory)
@@ -135,13 +208,30 @@ type internal WorkspaceWatcher
 
     let rebuild cancellationToken =
         task {
-            disposeWatchers ()
-            let! plan = state.WatchPlanAsync cancellationToken
-            watchers <- plan |> Seq.map createWatcher |> Seq.toArray
-            Volatile.Write(&callbacksEnabled, 1)
+            let replacements = ResizeArray<WatchSpec * FileSystemWatcher>()
 
-            for watcher in watchers do
-                watcher.EnableRaisingEvents <- true
+            try
+                let! plan = state.WatchPlanAsync cancellationToken
+                let oldWatchers = watchers
+
+                for spec in plan do
+                    replacements.Add(spec, createWatcher spec)
+
+                Volatile.Write(&callbacksEnabled, 1)
+
+                for _, watcher in replacements do
+                    watcher.EnableRaisingEvents <- true
+
+                watchers <- replacements.ToArray()
+                dispose oldWatchers
+                return uncoveredPaths oldWatchers plan
+            with
+            | :? OperationCanceledException -> return raise (OperationCanceledException())
+            | _ ->
+                dispose (replacements.ToArray())
+                hints.Lose()
+                signal ()
+                return WatcherHandoff.Uncertain
         }
 
     let rebuildSerialized (cancellationToken: CancellationToken) =
@@ -149,16 +239,76 @@ type internal WorkspaceWatcher
             do! rebuildGate.WaitAsync cancellationToken
 
             try
-                do! rebuild cancellationToken
+                return! rebuild cancellationToken
             finally
                 rebuildGate.Release() |> ignore
         }
 
     let stopForReset () =
-        disposeWatchers ()
+        stopWatchers ()
         hints.Stop()
 
-    member _.RebuildAsync(cancellationToken: CancellationToken) = rebuildSerialized cancellationToken
+    let resetForUncertainty publish cancellationToken =
+        task {
+            stopForReset ()
+
+            let diagnostic =
+                WorkspaceDiagnostic.CreateSimple(
+                    WorkspaceDiagnosticSeverity.Warning,
+                    WorkspaceDiagnosticCode.Create "workspace.watch_uncertain",
+                    "File watcher activation could not be verified; request a fresh workspace graph.",
+                    true,
+                    CorrelationId.New()
+                )
+
+            let! reset = state.ResetAsync(diagnostic, cancellationToken)
+            do! publish (WorkspaceInvalidationResult.Reset reset)
+        }
+
+    member _.RebuildAndRevalidateAsync
+        (publish: WorkspaceInvalidationResult -> Task<unit>, cancellationToken: CancellationToken)
+        =
+        task {
+            let mutable continueHandoff = true
+
+            while continueHandoff do
+                let! handoff = rebuildSerialized cancellationToken
+
+                match handoff with
+                | WatcherHandoff.Complete -> continueHandoff <- false
+                | WatcherHandoff.Revalidate paths ->
+                    let! outcome = state.InvalidateAsync(paths, cancellationToken)
+
+                    match outcome with
+                    | WorkspaceInvalidationResult.None -> continueHandoff <- false
+                    | WorkspaceInvalidationResult.Delta delta -> do! publish (WorkspaceInvalidationResult.Delta delta)
+                    | WorkspaceInvalidationResult.Reset reset ->
+                        stopForReset ()
+                        do! publish (WorkspaceInvalidationResult.Reset reset)
+                        continueHandoff <- false
+                | WatcherHandoff.RevalidateWorkspace ->
+                    let! refreshed = state.RefreshAsync(None, cancellationToken)
+
+                    match refreshed with
+                    | Error _ ->
+                        do! resetForUncertainty publish cancellationToken
+                        continueHandoff <- false
+                    | Ok result when result.Reset ->
+                        stopForReset ()
+
+                        match result.ResetEvent with
+                        | Some reset -> do! publish (WorkspaceInvalidationResult.Reset reset)
+                        | None -> do! resetForUncertainty publish cancellationToken
+
+                        continueHandoff <- false
+                    | Ok result ->
+                        match result.Delta with
+                        | Some delta -> do! publish (WorkspaceInvalidationResult.Delta delta)
+                        | None -> continueHandoff <- false
+                | WatcherHandoff.Uncertain ->
+                    do! resetForUncertainty publish cancellationToken
+                    continueHandoff <- false
+        }
 
     member _.Pause() =
         Volatile.Write(&callbacksEnabled, 0)
@@ -168,18 +318,16 @@ type internal WorkspaceWatcher
 
     member _.Resume() = hints.Resume()
 
-    member _.StartAsync(sink: RpcNotificationSink, sessionToken: CancellationToken) =
+    member this.StartAsync(sink: RpcNotificationSink, sessionToken: CancellationToken) =
         task {
             if Interlocked.CompareExchange(&started, 1, 0) = 0 then
                 try
                     try
-                        do! rebuildSerialized sessionToken
-
                         while not sessionToken.IsCancellationRequested do
                             do! wake.WaitAsync sessionToken
 
                             if Interlocked.Exchange(&stopRequested, 0) <> 0 then
-                                disposeWatchers ()
+                                stopWatchers ()
 
                             match hints.Drain() with
                             | HintDrain.Empty -> ()
@@ -229,8 +377,19 @@ type internal WorkspaceWatcher
                                             let! reset = state.ResetAsync(diagnostic, sessionToken)
                                             do! sink.WriteAsync(PublicProtocol.workspaceReset reset)
                                         else
-                                            do! rebuildSerialized sessionToken
                                             do! sink.WriteAsync notification
+
+                                            do!
+                                                this.RebuildAndRevalidateAsync(
+                                                    (fun handoff ->
+                                                        match handoff with
+                                                        | WorkspaceInvalidationResult.Delta delta ->
+                                                            sink.WriteAsync(PublicProtocol.workspaceDelta delta)
+                                                        | WorkspaceInvalidationResult.Reset reset ->
+                                                            sink.WriteAsync(PublicProtocol.workspaceReset reset)
+                                                        | WorkspaceInvalidationResult.None -> Task.FromResult(())),
+                                                    sessionToken
+                                                )
                                     | WorkspaceInvalidationResult.Reset reset ->
                                         stopForReset ()
                                         do! sink.WriteAsync(PublicProtocol.workspaceReset reset)
@@ -239,7 +398,7 @@ type internal WorkspaceWatcher
                     with :? OperationCanceledException ->
                         ()
                 finally
-                    disposeWatchers ()
+                    stopWatchers ()
                     hints.Stop()
                     rebuildGate.Dispose()
                     wake.Dispose()

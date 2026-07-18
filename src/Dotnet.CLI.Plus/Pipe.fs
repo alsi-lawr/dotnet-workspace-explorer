@@ -135,6 +135,31 @@ module internal Pipe =
                 let watcher =
                     WorkspaceWatcher(state, 128, (fun () -> maximumFrameBytes), publicationGate)
 
+                let prepareWatcher requestCancellationToken =
+                    task {
+                        watcher.Resume()
+
+                        do! watcher.RebuildAndRevalidateAsync((fun _ -> Task.FromResult(())), requestCancellationToken)
+                    }
+
+                let rebuildWatcher requestCancellationToken =
+                    task {
+                        let notifications = ResizeArray<RpcFrame>()
+
+                        let publish handoff =
+                            match handoff with
+                            | WorkspaceInvalidationResult.Delta delta ->
+                                notifications.Add(PublicProtocol.workspaceDelta delta)
+                            | WorkspaceInvalidationResult.Reset reset ->
+                                notifications.Add(PublicProtocol.workspaceReset reset)
+                            | WorkspaceInvalidationResult.None -> ()
+
+                            Task.FromResult(())
+
+                        do! watcher.RebuildAndRevalidateAsync(publish, requestCancellationToken)
+                        return notifications |> Seq.toList
+                    }
+
                 let activeExports =
                     ConcurrentDictionary<string, ExportOperationState>(StringComparer.Ordinal)
 
@@ -167,15 +192,12 @@ module internal Pipe =
                         | Ok request ->
                             match request with
                             | PublicRequest.Root ->
+                                do! prepareWatcher requestCancellationToken
                                 let! rooted = state.RootAsync requestCancellationToken
 
                                 match rooted with
                                 | Error rpcError -> return Error rpcError
                                 | Ok(revision, nodes) ->
-                                    if watcherStarted then
-                                        watcher.Resume()
-                                        do! watcher.RebuildAsync requestCancellationToken
-
                                     return
                                         Ok
                                             { Result = PublicProtocol.rootResult state.Descriptor revision nodes
@@ -184,6 +206,8 @@ module internal Pipe =
                                               AfterResponse = None
                                               StopAfterResponse = false }
                             | PublicRequest.Children(parentId, pageSize, continuation) ->
+                                do! prepareWatcher requestCancellationToken
+
                                 let! page =
                                     state.ChildrenAsync(
                                         parentId,
@@ -196,13 +220,12 @@ module internal Pipe =
                                 match page with
                                 | Error rpcError -> return Error rpcError
                                 | Ok result ->
-                                    let notifications =
+                                    let stateNotifications =
                                         result.Delta
                                         |> Option.map (PublicProtocol.workspaceDelta >> List.singleton)
                                         |> Option.defaultValue []
 
-                                    if watcherStarted then
-                                        do! watcher.RebuildAsync requestCancellationToken
+                                    let! handoffNotifications = rebuildWatcher requestCancellationToken
 
                                     return
                                         Ok
@@ -213,11 +236,12 @@ module internal Pipe =
                                                     result.ParentId
                                                     result.Nodes
                                                     result.NextToken
-                                              Notifications = notifications
+                                              Notifications = stateNotifications @ handoffNotifications
                                               BackgroundWork = startWatcher true
                                               AfterResponse = None
                                               StopAfterResponse = false }
                             | PublicRequest.Refresh expectedRevision ->
+                                do! prepareWatcher requestCancellationToken
                                 let! refreshed = state.RefreshAsync(expectedRevision, requestCancellationToken)
 
                                 match refreshed with
@@ -249,21 +273,24 @@ module internal Pipe =
                                             }
                                         | _ -> Task.FromResult result
 
-                                    let notifications =
+                                    let stateNotifications =
                                         [ effective.Delta |> Option.map PublicProtocol.workspaceDelta
                                           effective.ResetEvent |> Option.map PublicProtocol.workspaceReset ]
                                         |> List.choose id
 
                                     if effective.Reset then
                                         watcher.Pause()
-                                    elif watcherStarted then
-                                        watcher.Resume()
-                                        do! watcher.RebuildAsync requestCancellationToken
+
+                                    let! handoffNotifications =
+                                        if effective.Reset then
+                                            Task.FromResult []
+                                        else
+                                            rebuildWatcher requestCancellationToken
 
                                     return
                                         Ok
                                             { Result = PublicProtocol.refreshResult effective.Revision effective.Reset
-                                              Notifications = notifications
+                                              Notifications = stateNotifications @ handoffNotifications
                                               BackgroundWork = None
                                               AfterResponse = None
                                               StopAfterResponse = false }
