@@ -1,0 +1,27 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{827E0CD3-B72D-47B6-A68D-7590B98EB39B}"
+	ProjectSection(SolutionItems) = preProject
+		Directory.Build.props = Directory.Build.props
+	EndProjectSection
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Included", "src\Included.csproj", "{65FBADBA-3B79-DCB9-FB20-B5EE02C4FDBE}"
+	ProjectSection(ProjectDependencies) = postProject
+		{DEE4B2CF-7800-A5E9-5616-ED2E2B3C05BB} = {DEE4B2CF-7800-A5E9-5616-ED2E2B3C05BB}
+	EndProjectSection
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "External", "..\external\External.csproj", "{DEE4B2CF-7800-A5E9-5616-ED2E2B3C05BB}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{65FBADBA-3B79-DCB9-FB20-B5EE02C4FDBE}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{65FBADBA-3B79-DCB9-FB20-B5EE02C4FDBE}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DEE4B2CF-7800-A5E9-5616-ED2E2B3C05BB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DEE4B2CF-7800-A5E9-5616-ED2E2B3C05BB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal

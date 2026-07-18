@@ -14,6 +14,10 @@ module private Test =
     let map values = RpcValue.map values
     let empty = RpcValue.emptyMap
 
+    let golden name =
+        Path.Combine(AppContext.BaseDirectory, "ConformanceFixtures", "Protocol", name)
+        |> File.ReadAllBytes
+
     let request id name parameters =
         RpcCodec.encodeFrame (Request(id, name, parameters))
 
@@ -32,6 +36,17 @@ module private Test =
         consume 0 []
 
     let frames bytes = decode bytes |> List.map fst
+
+    let decodeGolden name =
+        let bytes = golden name
+
+        match RpcCodec.tryReadValueLength RpcCodec.secureLimits bytes with
+        | Ok length when length = bytes.Length ->
+            match RpcCodec.decodeFrame RpcCodec.secureLimits bytes with
+            | Ok(RpcFrameDecodeResult.Frame frame) -> bytes, frame
+            | result -> failwithf "%s did not decode as a frame: %A" name result
+        | Ok length -> failwithf "%s had %d trailing bytes." name (bytes.Length - length)
+        | Error error -> failwithf "%s did not have a complete frame: %A" name error
 
     let profile name methods =
         methods
@@ -152,62 +167,83 @@ type private FailingWriteStream() =
 
 type TransportTests() =
     [<Fact>]
-    member _.``standard request response error and notification frames retain their golden wire shapes``() =
+    member _.``shared standard and public protocol frames retain their golden wire shapes``() =
         let error =
             { Code = "e"
               Message = "m"
               Data = Some(Test.map [ "d", RpcValue.Integer 1L ]) }
 
         let cases =
-            [ Request(7u, "x", Test.empty), [| 0x94uy; 0x00uy; 0x07uy; 0xa1uy; 0x78uy; 0x80uy |]
-              Response(7u, Some error, Test.empty),
-              [| 0x94uy
-                 0x01uy
-                 0x07uy
-                 0x83uy
-                 0xa4uy
-                 0x63uy
-                 0x6fuy
-                 0x64uy
-                 0x65uy
-                 0xa1uy
-                 0x65uy
-                 0xa4uy
-                 0x64uy
-                 0x61uy
-                 0x74uy
-                 0x61uy
-                 0x81uy
-                 0xa1uy
-                 0x64uy
-                 0x01uy
-                 0xa7uy
-                 0x6duy
-                 0x65uy
-                 0x73uy
-                 0x73uy
-                 0x61uy
-                 0x67uy
-                 0x65uy
-                 0xa1uy
-                 0x6duy
-                 0x80uy |]
-              Notification("n", Test.map [ "v", RpcValue.Boolean true ]),
-              [| 0x93uy; 0x02uy; 0xa1uy; 0x6euy; 0x81uy; 0xa1uy; 0x76uy; 0xc3uy |] ]
+            [ "standard-request.mpack", Request(7u, "x", Test.empty)
+              "standard-response.mpack", Response(7u, Some error, Test.empty)
+              "standard-notification.mpack", Notification("n", Test.map [ "v", RpcValue.Boolean true ])
+              "initialize-request.mpack",
+              Request(
+                  10u,
+                  "initialize",
+                  Test.map
+                      [ "protocolVersion", Test.map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 0L ]
+                        "clientInfo", Test.map [ "name", RpcValue.String "fixture" ]
+                        "capabilities", RpcValue.array [ RpcValue.String "workspace.root" ]
+                        "limits",
+                        Test.map [ "maxFrameBytes", RpcValue.Integer 4096L; "maxPageSize", RpcValue.Integer 1L ] ]
+              )
+              "root-request.mpack", Request(11u, "workspace/root", Test.empty)
+              "page-request.mpack",
+              Request(
+                  12u,
+                  "workspace/children",
+                  Test.map
+                      [ "parentId", RpcValue.String "project:included"
+                        "pageSize", RpcValue.Integer 1L ]
+              )
+              "refresh-request.mpack",
+              Request(13u, "workspace/refresh", Test.map [ "expectedRevision", RpcValue.Integer 1L ])
+              "delta-notification.mpack",
+              Notification(
+                  "workspace/delta",
+                  Test.map
+                      [ "workspaceId", RpcValue.String "fixture"
+                        "baseRevision", RpcValue.Integer 1L
+                        "newRevision", RpcValue.Integer 2L
+                        "changes", RpcValue.array []
+                        "diagnostics", RpcValue.array [] ]
+              )
+              "reset-notification.mpack",
+              Notification(
+                  "workspace/reset",
+                  Test.map
+                      [ "workspaceId", RpcValue.String "fixture"
+                        "revision", RpcValue.Integer 3L
+                        "diagnostics", RpcValue.array [] ]
+              )
+              "cancel-request.mpack",
+              Request(14u, "operation/cancel", Test.map [ "operationId", RpcValue.String "fixture-export" ])
+              "shutdown-request.mpack", Request(15u, "shutdown", Test.empty) ]
 
-        for frame, golden in cases do
+        for name, frame in cases do
+            let golden, decoded = Test.decodeGolden name
             Assert.Equal<byte>(golden, RpcCodec.encodeFrame frame)
+            Assert.Equal<byte>(golden, RpcCodec.encodeFrame decoded)
 
-            match RpcCodec.decodeFrame RpcCodec.secureLimits golden with
-            | Ok(RpcFrameDecodeResult.Frame(Request(7u, "x", RpcValue.Map fields))) -> Assert.Empty(fields)
-            | Ok(RpcFrameDecodeResult.Frame(Response(7u, Some decoded, RpcValue.Map result))) ->
+            match decoded with
+            | Request(7u, "x", RpcValue.Map fields) -> Assert.Empty(fields)
+            | Response(7u, Some decoded, RpcValue.Map result) ->
                 Assert.Equal("e", decoded.Code)
                 Assert.Equal("m", decoded.Message)
                 Assert.Equal(Some(RpcValue.Unsigned 1UL), decoded.Data |> Option.bind (RpcValue.tryField "d"))
                 Assert.Empty(result)
-            | Ok(RpcFrameDecodeResult.Frame(Notification("n", parameters))) ->
+            | Notification("n", parameters) ->
                 Assert.Equal(Some(RpcValue.Boolean true), RpcValue.tryField "v" parameters)
-            | result -> failwithf "Golden frame no longer decodes: %A" result
+            | Request(_, "initialize", _)
+            | Request(_, "workspace/root", _)
+            | Request(_, "workspace/children", _)
+            | Request(_, "workspace/refresh", _)
+            | Request(_, "operation/cancel", _)
+            | Request(_, "shutdown", _)
+            | Notification("workspace/delta", _)
+            | Notification("workspace/reset", _) -> ()
+            | result -> failwithf "%s decoded unexpectedly: %A" name result
 
     [<Fact>]
     member _.``malformed values preserve recoverable IDs and session continuation``() =
@@ -320,13 +356,11 @@ type TransportTests() =
                 MaximumValueBytes = 4096 }
 
         let profile = Test.profile "streams" [ "large", Read; "shutdown", Control ]
-        let initialize = Test.request 1u "initialize" Test.empty
-
-        let large =
-            Test.request 2u "large" (Test.map [ "payload", RpcValue.Binary(Array.zeroCreate 3900) ])
-
-        let shutdown = Test.request 3u "shutdown" Test.empty
-        Assert.InRange(large.Length, 3072, limits.MaximumValueBytes)
+        let fragmented = Test.golden "fragmented-stream.mpack"
+        let coalesced = Test.golden "coalesced-stream.mpack"
+        Assert.InRange(coalesced.Length, 3072, limits.MaximumValueBytes)
+        Assert.Equal(2, (Test.frames fragmented).Length)
+        Assert.Equal(3, (Test.frames coalesced).Length)
 
         let configuration =
             { Test.defaultConfiguration profile with
@@ -334,10 +368,8 @@ type TransportTests() =
                 GetOutboundFrameLimit = fun () -> limits.MaximumValueBytes }
 
         let cases: (string * (unit -> Stream) * int) list =
-            [ "one-byte fragments", (fun () -> new ChunkedReadStream(Array.concat [ initialize; shutdown ], 1)), 2
-              "coalesced near-limit frames",
-              (fun () -> new MemoryStream(Array.concat [ initialize; large; shutdown ])),
-              3 ]
+            [ "one-byte fragments", (fun () -> new ChunkedReadStream(fragmented, 1)), 2
+              "coalesced near-limit frames", (fun () -> new MemoryStream(coalesced)), 3 ]
 
         for name, createStream, expectedFrames in cases do
             use stream = createStream ()

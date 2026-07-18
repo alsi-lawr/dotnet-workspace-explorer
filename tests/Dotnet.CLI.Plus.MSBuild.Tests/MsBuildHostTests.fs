@@ -19,6 +19,20 @@ module private Test =
         Directory.CreateDirectory path |> ignore
         path
 
+    let fixturePath name =
+        Path.Combine(AppContext.BaseDirectory, "ConformanceFixtures", "MSBuild", name)
+
+    let copyFixture directory name =
+        let source = fixturePath name
+        let destination = Path.Combine(directory, name)
+
+        for path in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories) do
+            let target = Path.Combine(destination, Path.GetRelativePath(source, path))
+            Directory.CreateDirectory(Path.GetDirectoryName target) |> ignore
+            File.Copy(path, target)
+
+        destination
+
     let rec private tryRepositoryRoot (directory: string) =
         if File.Exists(Path.Combine(directory, "Directory.Packages.props")) then
             Some directory
@@ -392,28 +406,10 @@ type MsBuildHostTests() =
         let directory = Test.temporaryDirectory "projection"
 
         try
-            let generatedDirectory = Path.Combine(directory, "Generated")
-            Directory.CreateDirectory generatedDirectory |> ignore
-            Test.write (Path.Combine(directory, "Eight.cs")) "class Eight {}"
-            let props = Path.Combine(directory, "Directory.Build.props")
-
-            Test.write
-                props
-                "<Project><PropertyGroup><ImportedProperty>before</ImportedProperty></PropertyGroup></Project>"
-
-            let project = Path.Combine(directory, "Demo.csproj")
-
-            Test.write
-                project
-                """
-<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><TargetFrameworks>net8.0;net9.0</TargetFrameworks><EnableDefaultCompileItems>false</EnableDefaultCompileItems></PropertyGroup>
-  <ItemGroup>
-    <Compile Include="Eight.cs" Condition="'$(TargetFramework)' == 'net8.0'" />
-    <Compile Include="Generated/**/*.cs" />
-  </ItemGroup>
-</Project>
-"""
+            let projection = Test.copyFixture directory "Projection"
+            let generatedDirectory = Path.Combine(projection, "Generated")
+            let props = Path.Combine(projection, "Directory.Build.props")
+            let project = Path.Combine(projection, "Project.csproj")
 
             Test.withWorker directory (fun worker ->
                 let error, snapshot = Test.evaluate worker 2u project
@@ -483,7 +479,7 @@ type MsBuildHostTests() =
 
         try
             let unknown = Path.Combine(directory, "Unknown.proj")
-            Test.write unknown "<Project><PropertyGroup><Value>readable</Value></PropertyGroup></Project>"
+            File.Copy(Test.fixturePath "Unknown.proj", unknown)
 
             let projects =
                 [ Test.simpleProject directory "CSharp" ".csproj", "Full", true

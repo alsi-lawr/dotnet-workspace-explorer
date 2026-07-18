@@ -12,6 +12,9 @@ open Microsoft.VisualStudio.SolutionPersistence.Serializer
 open Xunit
 
 module private SolutionContract =
+    let fixturePath name =
+        Path.Combine(AppContext.BaseDirectory, "ConformanceFixtures", "Solutions", name)
+
     let temporaryDirectory () =
         let path =
             Path.Combine(Path.GetTempPath(), $"dotnet-cli-plus-solution-{Guid.NewGuid():N}")
@@ -40,87 +43,49 @@ type SolutionContractTests() =
     [<InlineData(".sln")>]
     [<InlineData(".slnx")>]
     member _.``sln formats project hierarchy dependencies and external paths``(extension: string) =
-        let directory = SolutionContract.temporaryDirectory ()
+        let path = SolutionContract.fixturePath $"Canonical{extension}"
+        let workspace = SolutionContract.openWorkspace path
+        let root = workspace.RootProjection
+        let externalProject = root.Projects |> Seq.find _.Path.IsExternal
 
-        try
-            let path = Path.Combine(directory, $"Demo{extension}")
-            let model = SolutionModel()
-            let folder = model.AddFolder "/src/"
-            folder.AddFile "Directory.Build.props"
-            let included = model.AddProject("src/Included.csproj", "Included", folder)
-            let external = model.AddProject("../external/External.csproj", "External", null)
-            included.AddDependency external
-            model.AddBuildType "Debug"
-            model.AddPlatform "Any CPU"
-            SolutionContract.save path model
+        Assert.Equal(
+            (if extension = ".sln" then
+                 WorkspaceFormat.Sln
+             else
+                 WorkspaceFormat.Slnx),
+            workspace.WorkspaceDescriptor.WorkspaceFormat
+        )
 
-            let workspace = SolutionContract.openWorkspace path
-            let root = workspace.RootProjection
-            let externalProject = root.Projects |> Seq.find _.Path.IsExternal
+        Assert.Equal(
+            Path.GetFullPath(Path.Combine(Path.GetDirectoryName(path), "../external/External.csproj")),
+            externalProject.Path.AbsolutePath.Value
+        )
 
-            Assert.Equal(
-                (if extension = ".sln" then
-                     WorkspaceFormat.Sln
-                 else
-                     WorkspaceFormat.Slnx),
-                workspace.WorkspaceDescriptor.WorkspaceFormat
-            )
-
-            Assert.Equal(
-                Path.GetFullPath(Path.Combine(directory, "../external/External.csproj")),
-                externalProject.Path.AbsolutePath.Value
-            )
-
-            Assert.Equal(Path.Combine("..", "external", "External.csproj"), externalProject.Path.SolutionRelativePath)
-            Assert.Single(root.Folders) |> ignore
-            Assert.Single(root.Items) |> ignore
-            Assert.Equal(2, root.Projects.Length)
-            Assert.Single(root.Dependencies) |> ignore
-            Assert.Contains(root.BuildTypes, fun node -> node.Name = "Debug")
-            Assert.Contains(root.Platforms, fun node -> node.Name = "Any CPU")
-        finally
-            SolutionContract.delete directory
+        Assert.Equal(Path.Combine("..", "external", "External.csproj"), externalProject.Path.SolutionRelativePath)
+        Assert.Single(root.Folders) |> ignore
+        Assert.Single(root.Items) |> ignore
+        Assert.Equal(2, root.Projects.Length)
+        Assert.Single(root.Dependencies) |> ignore
+        Assert.Contains(root.BuildTypes, fun node -> node.Name = "Debug")
+        Assert.Contains(root.Platforms, fun node -> node.Name = "Any CPU")
 
     [<Fact>]
     member _.``slnf resolves against its backing solution and projects excluded entries as read-only placeholders``() =
-        let directory = SolutionContract.temporaryDirectory ()
+        let workspace =
+            SolutionContract.openWorkspace (SolutionContract.fixturePath "Filters/Canonical.slnf")
 
-        try
-            let solutionDirectory =
-                Directory.CreateDirectory(Path.Combine(directory, "solution"))
+        let included =
+            workspace.RootProjection.Projects
+            |> Seq.find (fun project -> not project.IsFilteredOut)
 
-            let filterDirectory = Directory.CreateDirectory(Path.Combine(directory, "filters"))
-            let solution = Path.Combine(solutionDirectory.FullName, "Demo.slnx")
-            let filter = Path.Combine(filterDirectory.FullName, "Demo.slnf")
-            let model = SolutionModel()
-            model.AddProject("src/Included.csproj", "Included", null) |> ignore
-            model.AddProject("src/Excluded.csproj", "Excluded", null) |> ignore
-            SolutionContract.save solution model
+        let excluded = workspace.RootProjection.Projects |> Seq.find _.IsFilteredOut
+        Assert.Equal(WorkspaceFormat.Slnf, workspace.WorkspaceDescriptor.WorkspaceFormat)
+        Assert.True(workspace.WorkspaceDescriptor.IsReadOnly)
+        Assert.Equal(WorkspaceNodeLoadState.Unhydrated, included.Node.NodeLoadState)
+        Assert.Equal(WorkspaceNodeKind.Placeholder, excluded.Node.NodeKind)
+        Assert.Equal(WorkspaceNodeLoadState.FilteredOut, excluded.Node.NodeLoadState)
 
-            File.WriteAllText(
-                filter,
-                """{ "solution": { "path": "../solution/Demo.slnx", "projects": [ "src/Included.csproj" ] } }"""
-            )
-
-            let workspace = SolutionContract.openWorkspace filter
-
-            let included =
-                workspace.RootProjection.Projects
-                |> Seq.find (fun project -> not project.IsFilteredOut)
-
-            let excluded = workspace.RootProjection.Projects |> Seq.find _.IsFilteredOut
-            Assert.Equal(WorkspaceFormat.Slnf, workspace.WorkspaceDescriptor.WorkspaceFormat)
-            Assert.True(workspace.WorkspaceDescriptor.IsReadOnly)
-            Assert.Equal(WorkspaceNodeLoadState.Unhydrated, included.Node.NodeLoadState)
-            Assert.Equal(WorkspaceNodeKind.Placeholder, excluded.Node.NodeKind)
-            Assert.Equal(WorkspaceNodeLoadState.FilteredOut, excluded.Node.NodeLoadState)
-
-            Assert.All(
-                workspace.RootProjection.Nodes,
-                fun node -> Assert.False(node.Supports WorkspaceCapabilityId.Write)
-            )
-        finally
-            SolutionContract.delete directory
+        Assert.All(workspace.RootProjection.Nodes, fun node -> Assert.False(node.Supports WorkspaceCapabilityId.Write))
 
     [<Fact>]
     member _.``ambiguous targets and invalid filter shapes retain distinct classifications``() =

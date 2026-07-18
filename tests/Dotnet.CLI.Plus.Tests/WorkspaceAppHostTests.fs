@@ -82,6 +82,9 @@ module private PipeTest =
     let globalJson =
         Path.Combine(repositoryRoot AppContext.BaseDirectory, "global.json")
 
+    let fixturePath name =
+        Path.Combine(AppContext.BaseDirectory, "ConformanceFixtures", name)
+
     let startPipe alias solution =
         let start = ProcessStartInfo(apphost)
         start.ArgumentList.Add alias
@@ -377,6 +380,64 @@ type WorkspaceAppHostTests() =
                 PipeTest.shutdown child 8u
             finally
                 PipeTest.disposeProcess child
+        finally
+            if Directory.Exists directory then
+                Directory.Delete(directory, true)
+
+    [<Fact>]
+    member _.``headless neovim consumes the public pipe lifecycle``() =
+        let nvimAvailable =
+            try
+                let start = ProcessStartInfo("nvim")
+                start.ArgumentList.Add("--version")
+                start.RedirectStandardOutput <- true
+                start.RedirectStandardError <- true
+                start.UseShellExecute <- false
+                use nvim = Process.Start start
+                not (isNull nvim) && nvim.WaitForExit(5000) && nvim.ExitCode = 0
+            with :? ComponentModel.Win32Exception ->
+                false
+
+        if not nvimAvailable then
+            raise (Xunit.Sdk.SkipException.ForSkip("Neovim is not available; T-014 will provision it for CI."))
+
+        let directory = PipeTest.temporaryDirectory "nvim-conformance"
+
+        try
+            let source = PipeTest.fixturePath "Solutions"
+
+            for path in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories) do
+                let destination = Path.Combine(directory, Path.GetRelativePath(source, path))
+                Directory.CreateDirectory(Path.GetDirectoryName destination) |> ignore
+                File.Copy(path, destination)
+
+            let start = ProcessStartInfo("nvim")
+            start.WorkingDirectory <- directory
+            start.RedirectStandardOutput <- true
+            start.RedirectStandardError <- true
+            start.UseShellExecute <- false
+
+            for argument in
+                [ "--clean"
+                  "--headless"
+                  "-u"
+                  "NONE"
+                  "-i"
+                  "NONE"
+                  "-l"
+                  PipeTest.fixturePath "Neovim/conformance.lua"
+                  PipeTest.apphost
+                  Path.Combine(directory, "Filters", "Canonical.slnf")
+                  directory
+                  PipeTest.globalJson ] do
+                start.ArgumentList.Add argument
+
+            use nvim = Process.Start start
+            Assert.NotNull nvim
+            Assert.True(nvim.WaitForExit(30000), "The headless Neovim client did not complete its lifecycle.")
+            let stdout = nvim.StandardOutput.ReadToEnd()
+            let stderr = nvim.StandardError.ReadToEnd()
+            Assert.True((nvim.ExitCode = 0), $"Neovim exited {nvim.ExitCode}: {stdout}{stderr}")
         finally
             if Directory.Exists directory then
                 Directory.Delete(directory, true)

@@ -6,9 +6,15 @@
 
     <ItemGroup>
         <Compile Include="CoreContractTests.fs" />
+        <Compile Include="ConformanceFixtureTests.fs" />
         <Compile Include="SolutionContractTests.fs" />
         <Compile Include="BrokerProcessTests.fs" />
         <Compile Include="WorkspaceAppHostTests.fs" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Include="../ConformanceFixtures/Solutions/**/*" Link="ConformanceFixtures/Solutions/%(RecursiveDir)%(Filename)%(Extension)" Pack="false" CopyToOutputDirectory="PreserveNewest" />
+        <None Include="../ConformanceFixtures/Neovim/**/*" Link="ConformanceFixtures/Neovim/%(RecursiveDir)%(Filename)%(Extension)" Pack="false" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 
     <ItemGroup>

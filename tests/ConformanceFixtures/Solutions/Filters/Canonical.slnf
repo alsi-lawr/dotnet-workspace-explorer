@@ -1,0 +1,6 @@
+{
+  "solution": {
+    "path": "../Canonical.slnx",
+    "projects": [ "src/Included.csproj" ]
+  }
+}

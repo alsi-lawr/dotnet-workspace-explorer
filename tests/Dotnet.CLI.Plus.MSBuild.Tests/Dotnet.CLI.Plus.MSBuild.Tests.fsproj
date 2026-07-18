@@ -7,6 +7,9 @@
         <Compile Include="MsBuildHostTests.fs" />
     </ItemGroup>
     <ItemGroup>
+        <None Include="../ConformanceFixtures/MSBuild/**/*" Link="ConformanceFixtures/MSBuild/%(RecursiveDir)%(Filename)%(Extension)" Pack="false" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+    <ItemGroup>
         <PackageReference Include="FSharp.Core" />
         <PackageReference Include="Microsoft.NET.Test.Sdk" />
         <PackageReference Include="xunit" />
