@@ -13,6 +13,6 @@
         <Compile Include="AssemblyInfo.fs" />
         <Compile Include="Projections.fs" />
         <Compile Include="SolutionStore.fs" />
-        <Compile Include="LegacyCompatibilityEditor.fs" />
+        <Compile Include="SolutionMutations.fs" />
     </ItemGroup>
 </Project>

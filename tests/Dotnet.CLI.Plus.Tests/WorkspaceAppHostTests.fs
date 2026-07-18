@@ -454,7 +454,7 @@ type WorkspaceAppHostTests() =
                 Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``should page hydrated children and watch a real project edit in the built apphost``() =
+    member _.``should page hydrated children watch an edit and rebase commands after reset``() =
         let directory = PipeTest.temporaryDirectory "pipe-children-watch"
 
         try
@@ -475,14 +475,25 @@ type WorkspaceAppHostTests() =
                           RpcValue.array
                               [ RpcValue.String "workspace.root"
                                 RpcValue.String "workspace.children"
-                                RpcValue.String "workspace.delta" ]
+                                RpcValue.String "workspace.delta"
+                                RpcValue.String "command.list" ]
                           "limits",
                           PipeTest.map
                               [ "maxFrameBytes", RpcValue.Integer 65536L
                                 "maxPageSize", RpcValue.Integer 100L ] ]
 
                 PipeTest.send child false (PipeTest.request 1u "initialize" initialize)
-                PipeTest.readFrame child |> PipeTest.response 1u |> ignore
+
+                let initializeError, initializeResult =
+                    PipeTest.readFrame child |> PipeTest.response 1u
+
+                Assert.True(initializeError.IsNone)
+
+                let workspaceId =
+                    PipeTest.field "workspace" initializeResult
+                    |> PipeTest.field "id"
+                    |> RpcValue.requireString "id"
+
                 PipeTest.send child false (PipeTest.request 2u "workspace/root" RpcValue.emptyMap)
                 let _, root = PipeTest.readFrame child |> PipeTest.response 2u
 
@@ -607,9 +618,19 @@ type WorkspaceAppHostTests() =
                         resetRevision,
                         PipeTest.field "revision" freshRoot |> RpcValue.requireInteger "revision"
                     )
+
+                    let workspaceTarget = PipeTest.map [ "targetId", RpcValue.String workspaceId ]
+                    PipeTest.send child false (PipeTest.request 101u "command/list" workspaceTarget)
+                    let commandError, commands = PipeTest.readFrame child |> PipeTest.response 101u
+                    Assert.True(commandError.IsNone)
+
+                    PipeTest.field "commands" commands
+                    |> RpcValue.requireArray "commands"
+                    |> Seq.exists (fun command -> PipeTest.field "id" command = RpcValue.String "solution.project.add")
+                    |> Assert.True
                 | frame -> failwithf "Expected a toolset reset, got %A" frame
 
-                PipeTest.shutdown child 101u
+                PipeTest.shutdown child 102u
             finally
                 PipeTest.disposeProcess child
         finally
@@ -917,3 +938,241 @@ type WorkspaceAppHostTests() =
         Assert.True(direct.WaitForExit(5000))
         Assert.NotEqual(0, direct.ExitCode)
         Assert.StartsWith("{", direct.StandardOutput.ReadToEnd().TrimStart())
+
+    [<Fact>]
+    member _.``should hydrate preview and execute a project rename before publishing its delta``() =
+        let directory = PipeTest.temporaryDirectory "pipe-command"
+
+        try
+            let solution = Path.Combine(directory, "Demo.slnx")
+            let source = Path.Combine(directory, "One.fsproj")
+            let destination = Path.Combine(directory, "Renamed.fsproj")
+            let model = SolutionModel()
+            model.AddProject("One.fsproj", null, null) |> ignore
+            PipeTest.writeProject source
+            PipeTest.save solution model
+            use child = PipeTest.startPipe "solution" solution
+
+            try
+                let initialize =
+                    PipeTest.map
+                        [ "protocolVersion", PipeTest.map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 4L ]
+                          "clientInfo", PipeTest.map [ "name", RpcValue.String "command-test" ]
+                          "capabilities",
+                          RpcValue.array
+                              [ RpcValue.String "workspace.root"
+                                RpcValue.String "workspace.children"
+                                RpcValue.String "workspace.delta"
+                                RpcValue.String "command.list"
+                                RpcValue.String "command.preview"
+                                RpcValue.String "command.execute" ]
+                          "limits",
+                          PipeTest.map
+                              [ "maxFrameBytes", RpcValue.Integer 4194304L
+                                "maxPageSize", RpcValue.Integer 50L ] ]
+
+                PipeTest.send child false (PipeTest.request 1u "initialize" initialize)
+
+                let initializeError, initializeResult =
+                    PipeTest.readFrame child |> PipeTest.response 1u
+
+                Assert.True(initializeError.IsNone)
+
+                let workspaceId =
+                    PipeTest.field "workspace" initializeResult
+                    |> PipeTest.field "id"
+                    |> RpcValue.requireString "id"
+
+                let workspaceTarget = PipeTest.map [ "targetId", RpcValue.String workspaceId ]
+                PipeTest.send child false (PipeTest.request 30u "command/list" workspaceTarget)
+
+                let workspaceListError, workspaceList =
+                    PipeTest.readFrame child |> PipeTest.response 30u
+
+                Assert.True(workspaceListError.IsNone)
+
+                PipeTest.field "commands" workspaceList
+                |> RpcValue.requireArray "commands"
+                |> Seq.exists (fun command -> PipeTest.field "id" command = RpcValue.String "solution.project.add")
+                |> Assert.True
+
+                PipeTest.send child false (PipeTest.request 2u "workspace/root" RpcValue.emptyMap)
+                let rootError, rootResult = PipeTest.readFrame child |> PipeTest.response 2u
+                Assert.True(rootError.IsNone)
+
+                let projectId =
+                    PipeTest.field "nodes" rootResult
+                    |> RpcValue.requireArray "nodes"
+                    |> Seq.filter (fun node -> PipeTest.field "kind" node = RpcValue.String "project")
+                    |> Seq.map (PipeTest.field "id" >> RpcValue.requireString "id")
+                    |> Seq.exactlyOne
+
+                let children =
+                    PipeTest.map [ "parentId", RpcValue.String projectId; "pageSize", RpcValue.Integer 50L ]
+
+                PipeTest.send child false (PipeTest.request 3u "workspace/children" children)
+                let hydrationError, _ = PipeTest.readFrame child |> PipeTest.response 3u
+                Assert.True(hydrationError.IsNone)
+
+                match PipeTest.readFrame child with
+                | Notification("workspace/delta", parameters) ->
+                    Assert.Equal(0L, PipeTest.field "baseRevision" parameters |> RpcValue.requireInteger "revision")
+                    Assert.Equal(1L, PipeTest.field "newRevision" parameters |> RpcValue.requireInteger "revision")
+                | frame -> failwithf "Expected the hydration delta, got %A" frame
+
+                let target = PipeTest.map [ "targetId", RpcValue.String projectId ]
+                PipeTest.send child false (PipeTest.request 4u "command/list" target)
+                let listError, listResult = PipeTest.readFrame child |> PipeTest.response 4u
+                Assert.True(listError.IsNone)
+
+                PipeTest.field "commands" listResult
+                |> RpcValue.requireArray "commands"
+                |> Seq.exists (fun command -> PipeTest.field "id" command = RpcValue.String "solution.project.rename")
+                |> Assert.True
+
+                let arguments = PipeTest.map [ "name", RpcValue.String "Renamed" ]
+
+                let invalidRevision =
+                    PipeTest.map
+                        [ "commandId", RpcValue.String "solution.project.rename"
+                          "targetId", RpcValue.String projectId
+                          "arguments", arguments
+                          "expectedRevision", RpcValue.Integer -1L ]
+
+                PipeTest.send child false (PipeTest.request 20u "command/preview" invalidRevision)
+                let revisionError, _ = PipeTest.readFrame child |> PipeTest.response 20u
+                Assert.Equal("invalid_params", revisionError.Value.Code)
+
+                let malformedPreview =
+                    PipeTest.map
+                        [ "commandId", RpcValue.String "solution.project.rename"
+                          "targetId", RpcValue.String projectId
+                          "arguments", arguments
+                          "expectedRevision", RpcValue.Integer 1L
+                          "previewId", RpcValue.String "bad" ]
+
+                PipeTest.send child false (PipeTest.request 21u "command/execute" malformedPreview)
+                let previewIdError, _ = PipeTest.readFrame child |> PipeTest.response 21u
+                Assert.Equal("invalid_params", previewIdError.Value.Code)
+
+                let preview =
+                    PipeTest.map
+                        [ "commandId", RpcValue.String "solution.project.rename"
+                          "targetId", RpcValue.String projectId
+                          "arguments", arguments
+                          "expectedRevision", RpcValue.Integer 1L ]
+
+                PipeTest.send child false (PipeTest.request 5u "command/preview" preview)
+                let previewError, previewResult = PipeTest.readFrame child |> PipeTest.response 5u
+                Assert.True(previewError.IsNone)
+
+                let previewId =
+                    PipeTest.field "previewId" previewResult |> RpcValue.requireString "previewId"
+
+                let execute =
+                    PipeTest.map
+                        [ "commandId", RpcValue.String "solution.project.rename"
+                          "targetId", RpcValue.String projectId
+                          "arguments", arguments
+                          "expectedRevision", RpcValue.Integer 1L
+                          "previewId", RpcValue.String previewId ]
+
+                PipeTest.send child false (PipeTest.request 6u "command/execute" execute)
+                let executeError, executeResult = PipeTest.readFrame child |> PipeTest.response 6u
+                Assert.True(executeError.IsNone)
+                Assert.Equal(2L, PipeTest.field "revision" executeResult |> RpcValue.requireInteger "revision")
+
+                match PipeTest.readFrame child with
+                | Notification("workspace/delta", parameters) ->
+                    Assert.Equal(
+                        1L,
+                        PipeTest.field "baseRevision" parameters
+                        |> RpcValue.requireInteger "baseRevision"
+                    )
+
+                    Assert.Equal(2L, PipeTest.field "newRevision" parameters |> RpcValue.requireInteger "newRevision")
+                | frame -> failwithf "Expected the transaction delta after the execute response, got %A" frame
+
+                Assert.False(File.Exists source)
+                Assert.True(File.Exists destination)
+
+                let reopened =
+                    SolutionSerializers
+                        .GetSerializerByMoniker(solution)
+                        .OpenAsync(solution, CancellationToken.None)
+                        .GetAwaiter()
+                        .GetResult()
+
+                reopened.SolutionProjects
+                |> Seq.exists (fun project -> project.FilePath = "Renamed.fsproj")
+                |> Assert.True
+
+                reopened.SolutionProjects
+                |> Seq.exists (fun project -> project.FilePath = "One.fsproj")
+                |> Assert.False
+
+                PipeTest.send child false (PipeTest.request 7u "command/execute" execute)
+                let duplicateError, _ = PipeTest.readFrame child |> PipeTest.response 7u
+                Assert.Equal("not_found", duplicateError.Value.Code)
+                PipeTest.shutdown child 8u
+            finally
+                PipeTest.disposeProcess child
+        finally
+            if Directory.Exists directory then
+                Directory.Delete(directory, true)
+
+    [<Fact>]
+    member _.``should expose no write commands and refuse mutation requests for a solution filter``() =
+        let directory = PipeTest.temporaryDirectory "pipe-command-slnf"
+
+        try
+            let solution = Path.Combine(directory, "Demo.slnx")
+            let filter = Path.Combine(directory, "Demo.slnf")
+            PipeTest.save solution (SolutionModel())
+            File.WriteAllText(filter, """{ "solution": { "path": "Demo.slnx" } }""")
+            let before = File.ReadAllBytes solution
+            use child = PipeTest.startPipe "solution" filter
+
+            try
+                PipeTest.send child false (PipeTest.request 1u "initialize" PipeTest.initialize)
+                PipeTest.readFrame child |> PipeTest.response 1u |> ignore
+                PipeTest.send child false (PipeTest.request 2u "command/list" RpcValue.emptyMap)
+                let listError, listResult = PipeTest.readFrame child |> PipeTest.response 2u
+                Assert.True(listError.IsNone)
+                Assert.Empty(PipeTest.field "commands" listResult |> RpcValue.requireArray "commands")
+
+                let describe = PipeTest.map [ "commandId", RpcValue.String "solution.folder.add" ]
+
+                PipeTest.send child false (PipeTest.request 3u "command/describe" describe)
+                let describeError, _ = PipeTest.readFrame child |> PipeTest.response 3u
+                Assert.Equal("unsupported_capability", describeError.Value.Code)
+
+                let arguments = PipeTest.map [ "name", RpcValue.String "src" ]
+
+                let preview =
+                    PipeTest.map
+                        [ "commandId", RpcValue.String "solution.folder.add"
+                          "arguments", arguments
+                          "expectedRevision", RpcValue.Integer 0L ]
+
+                PipeTest.send child false (PipeTest.request 4u "command/preview" preview)
+                let previewError, _ = PipeTest.readFrame child |> PipeTest.response 4u
+                Assert.Equal("unsupported_capability", previewError.Value.Code)
+
+                let execute =
+                    PipeTest.map
+                        [ "commandId", RpcValue.String "solution.folder.add"
+                          "arguments", arguments
+                          "expectedRevision", RpcValue.Integer 0L
+                          "previewId", RpcValue.String(String('A', 64)) ]
+
+                PipeTest.send child false (PipeTest.request 5u "command/execute" execute)
+                let executeError, _ = PipeTest.readFrame child |> PipeTest.response 5u
+                Assert.Equal("unsupported_capability", executeError.Value.Code)
+                Assert.Equal<byte>(before, File.ReadAllBytes solution)
+                PipeTest.shutdown child 6u
+            finally
+                PipeTest.disposeProcess child
+        finally
+            if Directory.Exists directory then
+                Directory.Delete(directory, true)

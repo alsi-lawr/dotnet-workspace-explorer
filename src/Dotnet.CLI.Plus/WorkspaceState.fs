@@ -894,6 +894,31 @@ type internal WorkspaceState
     member _.Descriptor = current.Workspace.WorkspaceDescriptor
     member _.Revision = current.Revision
 
+    member _.WorkspaceAsync(cancellationToken: CancellationToken) =
+        task {
+            do! gate.WaitAsync cancellationToken
+
+            try
+                let! ready = ensureReadyUnsafe cancellationToken
+
+                return
+                    ready
+                    |> Result.map (fun () ->
+                        let enrichments =
+                            current.Workspace.RootProjection.Projects
+                            |> Seq.choose (fun project ->
+                                let key = pathKey project.Path.AbsolutePath.Value
+
+                                current.Hydrated.TryFind key
+                                |> Option.map (fun snapshot ->
+                                    { ProjectId = project.Node.NodeId
+                                      CapabilityProfile = snapshot.CapabilityProfile }))
+
+                        SolutionProjection.EnrichProjectCapabilities(current.Workspace, enrichments))
+            finally
+                gate.Release() |> ignore
+        }
+
     member _.PathComparer =
         if insensitive then
             StringComparer.OrdinalIgnoreCase
@@ -1246,7 +1271,33 @@ type internal WorkspaceState
     member this.InvalidateFromTransactionAsync
         (paths: seq<WorkspaceArtifactPath>, cancellationToken: CancellationToken)
         =
-        this.InvalidateAsync(ImmutableArray.CreateRange paths, cancellationToken)
+        task {
+            let! invalidated = this.InvalidateAsync(ImmutableArray.CreateRange paths, cancellationToken)
+
+            match invalidated with
+            | WorkspaceInvalidationResult.Delta _
+            | WorkspaceInvalidationResult.Reset _ -> return invalidated
+            | WorkspaceInvalidationResult.None ->
+                do! gate.WaitAsync cancellationToken
+
+                try
+                    if current.NeedsRebase then
+                        return WorkspaceInvalidationResult.None
+                    else
+                        let nextRevision = current.Revision + 1L
+
+                        current <- { current with Revision = nextRevision }
+
+                        return
+                            WorkspaceInvalidationResult.Delta
+                                { WorkspaceId = current.Workspace.WorkspaceDescriptor.WorkspaceId
+                                  BaseRevision = WorkspaceRevision.Create(current.Revision - 1L)
+                                  NewRevision = WorkspaceRevision.Create nextRevision
+                                  Changes = ImmutableArray<WorkspaceChange>.Empty
+                                  Diagnostics = ImmutableArray<WorkspaceDiagnostic>.Empty }
+                finally
+                    gate.Release() |> ignore
+        }
 
     member _.ResetAsync(diagnostic: WorkspaceDiagnostic, cancellationToken: CancellationToken) =
         task {

@@ -52,6 +52,10 @@ module PublicProtocol =
               "workspace.refresh"
               "workspace.delta"
               "workspace.reset"
+              "command.list"
+              "command.describe"
+              "command.preview"
+              "command.execute"
               "operation.cancel" ]
         )
 
@@ -93,6 +97,55 @@ module PublicProtocol =
         | PublicOperationOutcome.Succeeded -> "succeeded"
         | PublicOperationOutcome.Cancelled -> "cancelled"
         | PublicOperationOutcome.Failed _ -> "failed"
+
+    let private commandAccess =
+        function
+        | CommandAccess.Read -> "read"
+        | _ -> "write"
+
+    let private commandParameterType =
+        function
+        | CommandParameterType.Text -> "text"
+        | CommandParameterType.Path -> "path"
+        | CommandParameterType.Boolean -> "boolean"
+        | CommandParameterType.Integer -> "integer"
+        | CommandParameterType.NodeId -> "nodeId"
+        | CommandParameterType.Choice -> "choice"
+        | _ -> "unknown"
+
+    let commandDescriptor (value: CommandDescriptor) =
+        map
+            [ "id", text value.CommandId.Value
+              "name", text value.Name
+              "access", text (commandAccess value.CommandAccess)
+              "parameters",
+              value.ParameterDescriptors
+              |> Seq.map (fun parameter ->
+                  map
+                      [ "id", text parameter.ParameterId.Value
+                        "name", text parameter.Name
+                        "type", text (commandParameterType parameter.ParameterType)
+                        "required", boolean parameter.Required ])
+              |> RpcValue.array
+              "targetKinds",
+              value.ApplicableTargetKinds
+              |> Seq.map nodeKind
+              |> Seq.map text
+              |> RpcValue.array ]
+
+    let commandListResult (commands: seq<CommandDescriptor>) =
+        map [ "commands", commands |> Seq.map commandDescriptor |> RpcValue.array ]
+
+    let commandDescribeResult (command: CommandDescriptor) =
+        map [ "command", commandDescriptor command ]
+
+    let commandPreviewResult (preview: MutationPreview) =
+        map
+            [ "previewId", text preview.Confirmation.Value
+              "expiresAtUtc", text (preview.ExpiresAtUtc.ToString("O")) ]
+
+    let commandExecuteResult revision =
+        map [ "applied", boolean true; "revision", integer revision ]
 
     let node (workspaceId: WorkspaceId) revision (value: WorkspaceNode) =
         map
@@ -180,6 +233,22 @@ module PublicProtocol =
 
     let private optionalString name fields =
         RpcValue.optionalField name fields |> Option.map (RpcValue.requireString name)
+
+    let private revision name value =
+        let parsed = RpcValue.requireInteger name value
+
+        if parsed < 0L then
+            invalidArg name "Expected a non-negative revision."
+
+        parsed
+
+    let private previewId fields =
+        optionalString "previewId" fields
+        |> Option.map (fun value ->
+            if value.Length <> 64 || value |> Seq.exists (Char.IsAsciiHexDigit >> not) then
+                invalidArg "previewId" "Expected a 64-character hexadecimal preview ID."
+
+            value)
 
     let private requireEmpty parameters =
         let fields = RpcValue.requireMap "params" parameters
@@ -317,7 +386,7 @@ module PublicProtocol =
                     let expectedRevision =
                         fields
                         |> RpcValue.requireField "expectedRevision"
-                        |> RpcValue.requireInteger "expectedRevision"
+                        |> revision "expectedRevision"
 
                     PublicRequest.CommandPreview(
                         requiredString "commandId" fields,
@@ -339,14 +408,14 @@ module PublicProtocol =
                     let expectedRevision =
                         fields
                         |> RpcValue.requireField "expectedRevision"
-                        |> RpcValue.requireInteger "expectedRevision"
+                        |> revision "expectedRevision"
 
                     PublicRequest.CommandExecute(
                         requiredString "commandId" fields,
                         optionalString "targetId" fields,
                         arguments,
                         expectedRevision,
-                        optionalString "previewId" fields
+                        previewId fields
                     )
                 | "operation/cancel" ->
                     let fields = RpcValue.requireMap "params" parameters

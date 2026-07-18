@@ -652,6 +652,15 @@ type MutationCoordinator
                         let irreversible = ResizeArray<string>()
                         let mutable failure = None
 
+                        let fingerprint path =
+                            match MutationFiles.fingerprint path with
+                            | Ok value -> value
+                            | Error error -> invalidOp error
+
+                        let verifyFingerprint expected path message =
+                            if fingerprint path <> expected then
+                                invalidOp message
+
                         let commitStaged stage destination =
                             if MutationFiles.exists destination then
                                 let backup = MutationFiles.temporaryBeside destination "rollback"
@@ -714,8 +723,12 @@ type MutationCoordinator
                                     let stage = MutationFiles.temporaryBeside destination "stage"
                                     cleanup.Add stage
                                     File.WriteAllBytes(stage, contents)
+                                    let expected = fingerprint stage
                                     reversals.Insert(0, commitStaged stage destination)
+                                    verifyFingerprint expected destination "The replaced artifact did not verify."
                                 | MutationAction.Rename(source, destination) ->
+                                    let expected = fingerprint source
+                                    let caseOnly = MutationFiles.isCaseOnlyRename source destination
                                     let temporary = MutationFiles.temporaryBeside source "rename"
                                     cleanup.Add temporary
                                     MutationFiles.move source temporary
@@ -732,8 +745,15 @@ type MutationCoordinator
                                         ($"restore rename from {destination} to {source}",
                                          fun () ->
                                              MutationFiles.move destination source
-                                             restoreDestination ())
+
+                                             if not caseOnly then
+                                                 restoreDestination ())
                                     )
+
+                                    verifyFingerprint expected destination "The renamed artifact did not verify."
+
+                                    if MutationFiles.exists source && not caseOnly then
+                                        invalidOp "The renamed source artifact still exists."
                                 | MutationAction.Move(source, destination) ->
                                     let stage = MutationFiles.temporaryBeside destination "stage"
                                     cleanup.Add stage

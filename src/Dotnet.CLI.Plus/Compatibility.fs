@@ -1185,22 +1185,81 @@ module internal Broker =
                     Error(Failure.verification "The imported solution folder was not present after the command.")
         }
 
+    let private importLegacyDirectory
+        (solutionPath: string)
+        (directoryPath: string)
+        (cancellationToken: CancellationToken)
+        =
+        task {
+            let! opened = SolutionStore.OpenAsync(solutionPath, cancellationToken)
+
+            match opened with
+            | Failure failure -> return Error failure
+            | Success workspace when workspace.WorkspaceDescriptor.IsReadOnly ->
+                return Error(Failure.unsupported ".slnf workspaces are read-only and cannot be mutated.")
+            | Success workspace ->
+                let solutionDirectory =
+                    Path.GetDirectoryName workspace.BackingPath.Value
+                    |> Option.ofObj
+                    |> Option.defaultValue (Directory.GetCurrentDirectory())
+
+                let command =
+                    { CommandId = CommandId.Create "solution.folder.import-directory"
+                      TargetId = None
+                      Arguments =
+                        CommandArguments.Create(
+                            [ { ParameterId = CommandParameterId.Create "path"
+                                Value =
+                                  CommandParameterValue.Path(
+                                      WorkspaceArtifactPath.Create(Path.GetFullPath(directoryPath, solutionDirectory))
+                                  ) } ]
+                        )
+                      ExpectedRevision = workspace.WorkspaceDescriptor.WorkspaceRevision }
+
+                let! planned = SolutionPersistenceMutator.PlanAsync(workspace, command, cancellationToken)
+
+                match planned with
+                | Failure failure -> return Error failure
+                | Success plan ->
+                    let actions =
+                        seq {
+                            match plan.FileRename with
+                            | Some rename -> yield MutationAction.Rename(rename.Source.Value, rename.Destination.Value)
+                            | None -> ()
+
+                            yield MutationAction.ReplaceFile(plan.BackingPath.Value, plan.Contents)
+                        }
+
+                    let coordinator =
+                        MutationCoordinator.CreateProduction(
+                            WorkspaceArtifactPath.Create solutionDirectory,
+                            fun () -> workspace.WorkspaceDescriptor.WorkspaceRevision
+                        )
+
+                    match coordinator.Prepare(plan.Request, actions) with
+                    | Failure failure -> return Error failure
+                    | Success preview ->
+                        match coordinator.Execute(plan.Request, actions, preview.Confirmation, cancellationToken) with
+                        | Failure failure -> return Error failure
+                        | Success MutationApplyResult.Applied -> return Ok()
+                        | Success(MutationApplyResult.RolledBack failure) -> return Error failure
+        }
+
     let private legacyDirectoryAdd raw cancellationToken =
         task {
             match raw with
             | ("solution" | "sln") :: solutionPath :: "add" :: ("directory" | "dir") :: directoryPath :: [] ->
-                let! legacy =
-                    LegacySolutionCompatibilityEditor.AddDirectoryAsync(solutionPath, directoryPath, cancellationToken)
+                let! imported = importLegacyDirectory solutionPath directoryPath cancellationToken
 
-                if legacy.ExitCode <> 0 then
-                    return Some(failed "solution" (Failure.external legacy.ExitCode) (Some legacy.ExitCode) [] "" "")
-                else
+                match imported with
+                | Error failure -> return Some(failed "solution" failure None [] "" "")
+                | Ok() ->
                     let! refreshed = verifyLegacyDirectory solutionPath directoryPath cancellationToken
 
                     return
                         match refreshed with
                         | Ok revision -> Some(result "solution" true revision [] (Some 0) [] "" "")
-                        | Error failure -> Some(failed "solution" failure (Some 0) [] "" "")
+                        | Error failure -> Some(failed "solution" failure None [] "" "")
             | _ -> return None
         }
 

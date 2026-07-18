@@ -125,7 +125,9 @@ module private BrokerProcess =
 
             watcher.EnableRaisingEvents <- true
 
-            Assert.False(watcher.WaitForChanged(WatcherChangeTypes.Created, 10000).TimedOut)
+            if not (File.Exists path) then
+                let changes = WatcherChangeTypes.Created ||| WatcherChangeTypes.Renamed
+                Assert.False(watcher.WaitForChanged(changes, 10000).TimedOut)
 
     let delete path =
         if Directory.Exists path then
@@ -267,6 +269,23 @@ type BrokerProcessTests() =
             | Dotnet.CLI.Plus.Core.Success workspace ->
                 Assert.Contains(workspace.RootProjection.Folders, fun item -> item.Path = "/src/nested/")
             | outcome -> failwithf "Expected the persisted folder, got %A" outcome
+
+            let refused =
+                BrokerProcess.run
+                    directory
+                    "marker"
+                    [ "--json"
+                      "solution"
+                      solution
+                      "add"
+                      "directory"
+                      Path.Combine(directory, "missing") ]
+                    [ "DOTNET_PLUS_FAKE_HOST_MARKER", marker ]
+
+            Assert.False(BrokerProcess.success refused)
+            use document = BrokerProcess.json refused
+            Assert.Equal(JsonValueKind.Null, document.RootElement.GetProperty("externalExitCode").ValueKind)
+            Assert.False(File.Exists marker)
         finally
             BrokerProcess.delete directory
 

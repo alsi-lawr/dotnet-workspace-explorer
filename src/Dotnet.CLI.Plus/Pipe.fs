@@ -105,6 +105,107 @@ module internal Pipe =
 
         chunks.ToArray()
 
+    let private commandTarget (workspace: SolutionWorkspace) targetId =
+        match targetId with
+        | None -> Ok None
+        | Some value when value = workspace.WorkspaceDescriptor.WorkspaceId.Value -> Ok None
+        | Some value ->
+            workspace.RootProjection.Nodes
+            |> Seq.tryFind (fun node -> node.NodeId.Value = value)
+            |> Option.map (fun node -> Ok(Some node.NodeId))
+            |> Option.defaultValue (Error(RpcErrors.create "not_found" "The command target was not found." None))
+
+    let private commandArguments (workspace: SolutionWorkspace) (descriptor: CommandDescriptor) (value: RpcValue) =
+        try
+            let fields = RpcValue.requireMap "arguments" value
+
+            RpcValue.ensureOnly "arguments" (descriptor.ParameterDescriptors |> Seq.map _.ParameterId.Value) fields
+
+            let solutionDirectory =
+                Path.GetDirectoryName workspace.BackingPath.Value
+                |> Option.ofObj
+                |> Option.defaultValue (Directory.GetCurrentDirectory())
+
+            let arguments =
+                descriptor.ParameterDescriptors
+                |> Seq.choose (fun parameter ->
+                    match RpcValue.optionalField parameter.ParameterId.Value fields with
+                    | None when parameter.Required ->
+                        invalidArg "arguments" $"Missing required argument '{parameter.ParameterId.Value}'."
+                    | None -> None
+                    | Some raw ->
+                        let parsed =
+                            match parameter.ParameterType with
+                            | CommandParameterType.Text ->
+                                CommandParameterValue.Text(RpcValue.requireString parameter.ParameterId.Value raw)
+                            | CommandParameterType.Path ->
+                                let path = RpcValue.requireString parameter.ParameterId.Value raw
+
+                                CommandParameterValue.Path(
+                                    WorkspaceArtifactPath.Create(Path.GetFullPath(path, solutionDirectory))
+                                )
+                            | CommandParameterType.Boolean ->
+                                match raw with
+                                | RpcValue.Boolean value -> CommandParameterValue.Boolean value
+                                | _ -> invalidArg parameter.ParameterId.Value "Expected a boolean."
+                            | CommandParameterType.NodeId ->
+                                let nodeId = RpcValue.requireString parameter.ParameterId.Value raw
+
+                                match
+                                    workspace.RootProjection.Nodes
+                                    |> Seq.tryFind (fun node -> node.NodeId.Value = nodeId)
+                                with
+                                | Some node -> CommandParameterValue.Node node.NodeId
+                                | None -> invalidArg parameter.ParameterId.Value "The node argument was not found."
+                            | CommandParameterType.Integer ->
+                                CommandParameterValue.Integer(RpcValue.requireInteger parameter.ParameterId.Value raw)
+                            | CommandParameterType.Choice ->
+                                CommandParameterValue.Choice(
+                                    RpcValue.requireString parameter.ParameterId.Value raw |> CommandChoiceId.Create
+                                )
+                            | _ -> invalidArg parameter.ParameterId.Value "Unsupported command parameter type."
+
+                        Some
+                            { ParameterId = parameter.ParameterId
+                              Value = parsed })
+                |> CommandArguments.Create
+
+            Ok arguments
+        with :? ArgumentException as error ->
+            Error(RpcErrors.invalidParams error.Message)
+
+    let private commandDescriptor commandId =
+        try
+            SolutionPersistenceMutator.TryDescribe(CommandId.Create commandId)
+        with :? ArgumentException as error ->
+            raise (ArgumentException(error.Message, "commandId"))
+
+    let private mutationNotifications =
+        function
+        | WorkspaceInvalidationResult.Delta delta -> [ PublicProtocol.workspaceDelta delta ]
+        | WorkspaceInvalidationResult.Reset reset -> [ PublicProtocol.workspaceReset reset ]
+        | WorkspaceInvalidationResult.None -> []
+
+    let private mutationActions (plan: SolutionMutationPlan) =
+        seq {
+            match plan.FileRename with
+            | Some rename -> yield MutationAction.Rename(rename.Source.Value, rename.Destination.Value)
+            | None -> ()
+
+            yield MutationAction.ReplaceFile(plan.BackingPath.Value, plan.Contents)
+        }
+
+    let private mutationPaths (plan: SolutionMutationPlan) =
+        seq {
+            yield plan.BackingPath
+
+            match plan.FileRename with
+            | Some rename ->
+                yield rename.Source
+                yield rename.Destination
+            | None -> ()
+        }
+
     let isPipeInvocation (arguments: string array) =
         match arguments with
         | [| ("solution" | "sln"); target; "--pipe" |] -> Some target
@@ -134,6 +235,17 @@ module internal Pipe =
 
                 let watcher =
                     WorkspaceWatcher(state, 128, (fun () -> maximumFrameBytes), publicationGate)
+
+                let coordinator =
+                    let root =
+                        Path.GetDirectoryName workspace.BackingPath.Value
+                        |> Option.ofObj
+                        |> Option.defaultValue (Directory.GetCurrentDirectory())
+
+                    MutationCoordinator.CreateProduction(
+                        WorkspaceArtifactPath.Create root,
+                        fun () -> WorkspaceRevision.Create state.Revision
+                    )
 
                 let prepareWatcher requestCancellationToken =
                     task {
@@ -194,6 +306,25 @@ module internal Pipe =
                         match PublicProtocol.parseRequest methodName parameters with
                         | Error rpcError -> return Error rpcError
                         | Ok request ->
+                            let! commandWorkspace =
+                                match request with
+                                | PublicRequest.CommandList _
+                                | PublicRequest.CommandDescribe _
+                                | PublicRequest.CommandPreview _
+                                | PublicRequest.CommandExecute _ ->
+                                    task {
+                                        let! workspace = state.WorkspaceAsync requestCancellationToken
+                                        return workspace |> Result.map Some
+                                    }
+                                | _ -> Task.FromResult(Ok None)
+
+                            let commandWorkspaceError =
+                                match commandWorkspace with
+                                | Error rpcError -> Some rpcError
+                                | Ok _ -> None
+
+                            let commandWorkspace = Result.defaultValue None commandWorkspace
+
                             match request with
                             | PublicRequest.Root ->
                                 let! active = prepareWatcher requestCancellationToken
@@ -247,6 +378,7 @@ module internal Pipe =
                                                         )
 
                                                     let! reset = state.ResetAsync(diagnostic, requestCancellationToken)
+
                                                     return [ PublicProtocol.workspaceReset reset ], true
                                                 }
                                             | Some notification -> Task.FromResult([ notification ], false)
@@ -490,17 +622,173 @@ module internal Pipe =
                                           AfterResponse = None
                                           StopAfterResponse = true }
                             | PublicRequest.CommandList _
-                            | PublicRequest.CommandDescribe _ ->
-                                return Error(RpcErrors.unsupported "Command discovery is not implemented until T-007.")
+                            | PublicRequest.CommandDescribe _
                             | PublicRequest.CommandPreview _
-                            | PublicRequest.CommandExecute _ ->
+                            | PublicRequest.CommandExecute _ when commandWorkspaceError.IsSome ->
+                                return Error commandWorkspaceError.Value
+                            | PublicRequest.CommandList targetId ->
+                                match commandTarget commandWorkspace.Value targetId with
+                                | Error rpcError -> return Error rpcError
+                                | Ok target ->
+                                    return
+                                        Ok
+                                            { Result =
+                                                SolutionPersistenceMutator.Discover(commandWorkspace.Value, target)
+                                                |> PublicProtocol.commandListResult
+                                              Notifications = []
+                                              BackgroundWork = None
+                                              AfterResponse = None
+                                              StopAfterResponse = false }
+                            | PublicRequest.CommandDescribe(commandId, targetId) ->
                                 if state.Descriptor.IsReadOnly then
                                     return Error(RpcErrors.unsupported "The selected .slnf workspace is read-only.")
                                 else
-                                    return
-                                        Error(
-                                            RpcErrors.unsupported "Workspace mutations are not implemented until T-007."
-                                        )
+                                    match
+                                        commandTarget commandWorkspace.Value targetId, commandDescriptor commandId
+                                    with
+                                    | Error rpcError, _ -> return Error rpcError
+                                    | _, None ->
+                                        return Error(RpcErrors.create "not_found" "The command was not found." None)
+                                    | Ok target, Some descriptor when
+                                        SolutionPersistenceMutator.Discover(commandWorkspace.Value, target)
+                                        |> Seq.exists (fun candidate -> candidate.CommandId = descriptor.CommandId)
+                                        ->
+                                        return
+                                            Ok
+                                                { Result = PublicProtocol.commandDescribeResult descriptor
+                                                  Notifications = []
+                                                  BackgroundWork = None
+                                                  AfterResponse = None
+                                                  StopAfterResponse = false }
+                                    | _ ->
+                                        return
+                                            Error(
+                                                RpcErrors.create
+                                                    "not_found"
+                                                    "The command is not applicable to the target."
+                                                    None
+                                            )
+                            | PublicRequest.CommandPreview(commandId, targetId, arguments, expectedRevision) ->
+                                if state.Descriptor.IsReadOnly then
+                                    return Error(RpcErrors.unsupported "The selected .slnf workspace is read-only.")
+                                else
+                                    match
+                                        commandTarget commandWorkspace.Value targetId, commandDescriptor commandId
+                                    with
+                                    | Error rpcError, _ -> return Error rpcError
+                                    | _, None ->
+                                        return Error(RpcErrors.create "not_found" "The command was not found." None)
+                                    | Ok target, Some descriptor ->
+                                        match commandArguments commandWorkspace.Value descriptor arguments with
+                                        | Error rpcError -> return Error rpcError
+                                        | Ok parsed ->
+                                            let request =
+                                                { CommandId = descriptor.CommandId
+                                                  TargetId = target
+                                                  Arguments = parsed
+                                                  ExpectedRevision = WorkspaceRevision.Create expectedRevision }
+
+                                            let! planned =
+                                                SolutionPersistenceMutator.PlanAsync(
+                                                    commandWorkspace.Value,
+                                                    request,
+                                                    requestCancellationToken
+                                                )
+
+                                            match planned with
+                                            | WorkspaceOutcome.Failure failure ->
+                                                return Error(PublicProtocol.failureError failure)
+                                            | WorkspaceOutcome.Success plan ->
+                                                match coordinator.Prepare(plan.Request, mutationActions plan) with
+                                                | WorkspaceOutcome.Failure failure ->
+                                                    return Error(PublicProtocol.failureError failure)
+                                                | WorkspaceOutcome.Success preview ->
+                                                    return
+                                                        Ok
+                                                            { Result = PublicProtocol.commandPreviewResult preview
+                                                              Notifications = []
+                                                              BackgroundWork = None
+                                                              AfterResponse = None
+                                                              StopAfterResponse = false }
+                            | PublicRequest.CommandExecute(commandId, targetId, arguments, expectedRevision, previewId) ->
+                                if state.Descriptor.IsReadOnly then
+                                    return Error(RpcErrors.unsupported "The selected .slnf workspace is read-only.")
+                                else
+                                    match
+                                        commandTarget commandWorkspace.Value targetId,
+                                        commandDescriptor commandId,
+                                        previewId
+                                    with
+                                    | Error rpcError, _, _ -> return Error rpcError
+                                    | _, None, _ ->
+                                        return Error(RpcErrors.create "not_found" "The command was not found." None)
+                                    | _, _, None ->
+                                        return Error(RpcErrors.invalidParams "command/execute requires previewId.")
+                                    | Ok target, Some descriptor, Some previewId ->
+                                        match commandArguments commandWorkspace.Value descriptor arguments with
+                                        | Error rpcError -> return Error rpcError
+                                        | Ok parsed ->
+                                            let request =
+                                                { CommandId = descriptor.CommandId
+                                                  TargetId = target
+                                                  Arguments = parsed
+                                                  ExpectedRevision = WorkspaceRevision.Create expectedRevision }
+
+                                            let! planned =
+                                                SolutionPersistenceMutator.PlanAsync(
+                                                    commandWorkspace.Value,
+                                                    request,
+                                                    requestCancellationToken
+                                                )
+
+                                            match planned with
+                                            | WorkspaceOutcome.Failure failure ->
+                                                return Error(PublicProtocol.failureError failure)
+                                            | WorkspaceOutcome.Success plan ->
+                                                let token = MutationConfirmationToken.Create previewId
+
+                                                match
+                                                    coordinator.Execute(
+                                                        plan.Request,
+                                                        mutationActions plan,
+                                                        token,
+                                                        requestCancellationToken
+                                                    )
+                                                with
+                                                | WorkspaceOutcome.Failure failure ->
+                                                    return Error(PublicProtocol.failureError failure)
+                                                | WorkspaceOutcome.Success(MutationApplyResult.RolledBack failure) ->
+                                                    return Error(PublicProtocol.failureError failure)
+                                                | WorkspaceOutcome.Success MutationApplyResult.Applied ->
+                                                    let! invalidated =
+                                                        state.InvalidateFromTransactionAsync(
+                                                            mutationPaths plan,
+                                                            CancellationToken.None
+                                                        )
+
+                                                    let reset =
+                                                        match invalidated with
+                                                        | WorkspaceInvalidationResult.Reset _ -> true
+                                                        | _ -> false
+
+                                                    if reset then
+                                                        watcher.Pause()
+
+                                                    let! watcherNotifications =
+                                                        if reset then
+                                                            Task.FromResult []
+                                                        else
+                                                            rebuildWatcher CancellationToken.None
+
+                                                    return
+                                                        Ok
+                                                            { Result =
+                                                                PublicProtocol.commandExecuteResult state.Revision
+                                                              Notifications =
+                                                                mutationNotifications invalidated @ watcherNotifications
+                                                              BackgroundWork = None
+                                                              AfterResponse = None
+                                                              StopAfterResponse = false }
                     }
 
                 let dispatch
@@ -514,7 +802,11 @@ module internal Pipe =
                             match PublicProtocol.parseRequest methodName parameters with
                             | Ok PublicRequest.Root
                             | Ok(PublicRequest.Children _)
-                            | Ok(PublicRequest.Refresh _) -> true
+                            | Ok(PublicRequest.Refresh _)
+                            | Ok(PublicRequest.CommandList _)
+                            | Ok(PublicRequest.CommandDescribe _)
+                            | Ok(PublicRequest.CommandPreview _)
+                            | Ok(PublicRequest.CommandExecute _) -> true
                             | _ -> false
 
                         if serialized then

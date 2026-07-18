@@ -81,7 +81,12 @@ module Program =
                 invalidOp "The fake child host could not be started."
 
             match setting "DOTNET_PLUS_FAKE_HOST_CHILD_PID" with
-            | Some path -> File.WriteAllText(path, string child.Id)
+            | Some path ->
+                let temporary =
+                    Path.Combine(Path.GetDirectoryName path, $".{Path.GetFileName path}.{Guid.NewGuid():N}")
+
+                File.WriteAllText(temporary, string child.Id)
+                File.Move(temporary, path)
             | None -> ()
 
             child.WaitForExit()
