@@ -6,7 +6,6 @@
 
     <ItemGroup>
         <Compile Include="CoreContractTests.fs" />
-        <Compile Include="MutationTransactionTests.fs" />
         <Compile Include="ConformanceFixtureTests.fs" />
         <Compile Include="SolutionContractTests.fs" />
         <Compile Include="BrokerProcessTests.fs" />

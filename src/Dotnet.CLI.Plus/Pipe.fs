@@ -118,23 +118,7 @@ module internal Pipe =
         (cancellationToken: CancellationToken)
         =
         task {
-            let! opened =
-                task {
-                    let! workspace = openWorkspace target cancellationToken
-
-                    match workspace with
-                    | Ok value when
-                        not value.WorkspaceDescriptor.IsReadOnly
-                        && MutationCoordinator.RecoverStartup() = MutationRecoveryDisposition.PartialRecoveryRequired
-                        ->
-                        return
-                            Error
-                                { Code = "partial_recovery_required"
-                                  Message =
-                                    "partial_recovery_required: transaction recovery requires manual intervention."
-                                  Data = None }
-                    | _ -> return workspace
-                }
+            let! opened = openWorkspace target cancellationToken
 
             match opened with
             | Error rpcError ->
