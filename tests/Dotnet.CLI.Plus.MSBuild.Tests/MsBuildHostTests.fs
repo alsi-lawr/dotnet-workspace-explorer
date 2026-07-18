@@ -243,29 +243,12 @@ module private Test =
 
         result.Value, revision
 
-    let readWorkspaceReset expectedRevision child =
-        let mutable revision = expectedRevision
-        let mutable reset = None
-
-        while reset.IsNone do
-            match readFrame child with
-            | Notification("workspace/delta", parameters) ->
-                let baseRevision =
-                    field "baseRevision" parameters |> RpcValue.requireInteger "baseRevision"
-
-                let nextRevision =
-                    field "newRevision" parameters |> RpcValue.requireInteger "newRevision"
-
-                Assert.Equal(revision, baseRevision)
-                Assert.True(nextRevision > baseRevision)
-                revision <- nextRevision
-            | Notification("workspace/reset", parameters) ->
-                let nextRevision = field "revision" parameters |> RpcValue.requireInteger "revision"
-                Assert.True(nextRevision >= revision)
-                reset <- Some parameters
-            | frame -> failwithf "Expected workspace notification or reset, got %A" frame
-
-        reset.Value
+    let readMatchingWorkspaceReset expectedRevision child =
+        match readFrame child with
+        | Notification("workspace/reset", parameters) ->
+            Assert.Equal(expectedRevision, field "revision" parameters |> RpcValue.requireInteger "revision")
+            parameters
+        | frame -> failwithf "Expected matching workspace reset, got %A" frame
 
     let workerInitialize frameLimit =
         RpcValue.map
@@ -350,22 +333,58 @@ module private Test =
             |> Seq.map (stringField "id")
             |> Seq.exactlyOne
 
-        let parameters =
-            RpcValue.map [ "parentId", RpcValue.String projectId; "pageSize", RpcValue.Integer 100L ]
+        let mutable continuation = None
+        let mutable requestId = firstId + 1u
+        let mutable hasMore = true
+        let mutable targetFrameworkFound = false
+        let mutable hydratedRevision = None
 
-        send child (firstId + 1u) "workspace/children" parameters
-        requireSuccess (firstId + 1u) child |> ignore
+        while hasMore && not targetFrameworkFound do
+            let parameters =
+                [ "parentId", RpcValue.String projectId; "pageSize", RpcValue.Integer 100L ]
+                |> fun fields ->
+                    continuation
+                    |> Option.map (fun token -> ("continuationToken", RpcValue.String token) :: fields)
+                    |> Option.defaultValue fields
+                |> RpcValue.map
 
-        match readFrame child with
-        | Notification("workspace/delta", parameters) ->
-            Assert.Equal(rootRevision, field "baseRevision" parameters |> RpcValue.requireInteger "baseRevision")
+            send child requestId "workspace/children" parameters
+            let page = requireSuccess requestId child
 
-            let hydratedRevision =
-                field "newRevision" parameters |> RpcValue.requireInteger "newRevision"
+            if hydratedRevision.IsNone then
+                match readFrame child with
+                | Notification("workspace/delta", parameters) ->
+                    Assert.Equal(
+                        rootRevision,
+                        field "baseRevision" parameters |> RpcValue.requireInteger "baseRevision"
+                    )
 
-            Assert.True(hydratedRevision > rootRevision)
-            hydratedRevision
-        | frame -> failwithf "Expected hydration delta, got %A" frame
+                    let revision =
+                        field "newRevision" parameters |> RpcValue.requireInteger "newRevision"
+
+                    Assert.True(revision > rootRevision)
+                    hydratedRevision <- Some revision
+                | frame -> failwithf "Expected hydration delta, got %A" frame
+
+            targetFrameworkFound <-
+                values "nodes" page
+                |> Seq.exists (fun node ->
+                    stringField "kind" node = "projectItem"
+                    && stringField "name" node = "TargetFramework = net8.0")
+
+            continuation <-
+                match field "nextToken" page with
+                | RpcValue.String token -> Some token
+                | RpcValue.Nil -> None
+                | value -> failwithf "Unexpected continuation token: %A" value
+
+            hasMore <- continuation.IsSome
+            requestId <- requestId + 1u
+
+        Assert.True(targetFrameworkFound, "Fresh project paging did not expose TargetFramework = net8.0.")
+
+        hydratedRevision
+        |> Option.defaultWith (fun () -> failwith "The hydration delta was not observed.")
 
 type MsBuildHostTests() =
     [<Fact>]
@@ -534,10 +553,10 @@ type MsBuildHostTests() =
             Test.withPipe solution (fun app ->
                 let hydratedRevision = Test.hydrateProject app 2u
                 Test.writeGlobalJson directory "99.0.100"
-                Test.send app 4u "workspace/refresh" RpcValue.emptyMap
+                Test.send app 100u "workspace/refresh" RpcValue.emptyMap
 
                 let unavailable, observedRevision =
-                    Test.requireSuccessAfterWorkspaceNotifications 4u hydratedRevision app
+                    Test.requireSuccessAfterWorkspaceNotifications 100u hydratedRevision app
 
                 Assert.Equal(RpcValue.Boolean true, Test.field "reset" unavailable)
 
@@ -546,7 +565,7 @@ type MsBuildHostTests() =
 
                 Assert.True(unavailableRevision > observedRevision)
 
-                let reset = Test.readWorkspaceReset unavailableRevision app
+                let reset = Test.readMatchingWorkspaceReset unavailableRevision app
 
                 Assert.Contains(
                     Test.values "diagnostics" reset,
@@ -554,10 +573,10 @@ type MsBuildHostTests() =
                 )
 
                 Test.writeGlobalJson directory version
-                Test.send app 5u "workspace/refresh" RpcValue.emptyMap
+                Test.send app 101u "workspace/refresh" RpcValue.emptyMap
 
                 let recovered, recoveredObservedRevision =
-                    Test.requireSuccessAfterWorkspaceNotifications 5u unavailableRevision app
+                    Test.requireSuccessAfterWorkspaceNotifications 101u unavailableRevision app
 
                 Assert.Equal(RpcValue.Boolean false, Test.field "reset" recovered)
 
@@ -566,10 +585,10 @@ type MsBuildHostTests() =
 
                 Assert.True(recoveredRevision >= recoveredObservedRevision)
 
-                let freshRevision = Test.hydrateProject app 6u
+                let freshRevision = Test.hydrateProject app 200u
                 Assert.True(freshRevision > recoveredRevision)
                 Assert.True(File.Exists globalJson)
-                8u)
+                300u)
         finally
             Directory.Delete(directory, true)
 

@@ -405,7 +405,9 @@ type WorkspaceAppHostTests() =
                                 RpcValue.String "workspace.children"
                                 RpcValue.String "workspace.delta" ]
                           "limits",
-                          PipeTest.map [ "maxFrameBytes", RpcValue.Integer 65536L; "maxPageSize", RpcValue.Integer 1L ] ]
+                          PipeTest.map
+                              [ "maxFrameBytes", RpcValue.Integer 65536L
+                                "maxPageSize", RpcValue.Integer 100L ] ]
 
                 PipeTest.send child false (PipeTest.request 1u "initialize" initialize)
                 PipeTest.readFrame child |> PipeTest.response 1u |> ignore
@@ -470,21 +472,49 @@ type WorkspaceAppHostTests() =
                     Assert.True(watchedRevision > 1L)
                 | frame -> failwithf "Expected watcher delta, got %A" frame
 
-                PipeTest.send child false (PipeTest.request 5u "workspace/root" RpcValue.emptyMap)
-                let projectError, projectRoot = PipeTest.readFrame child |> PipeTest.response 5u
-                Assert.True(projectError.IsNone)
+                let mutable continuation = None
+                let mutable requestId = 5u
+                let mutable hasMore = true
+                let mutable watchedValueFound = false
 
-                Assert.Equal(
-                    watchedRevision,
-                    PipeTest.field "revision" projectRoot |> RpcValue.requireInteger "revision"
-                )
+                while hasMore && not watchedValueFound do
+                    let freshChildren =
+                        [ "parentId", RpcValue.String projectId; "pageSize", RpcValue.Integer 100L ]
+                        |> fun fields ->
+                            continuation
+                            |> Option.map (fun token -> ("continuationToken", RpcValue.String token) :: fields)
+                            |> Option.defaultValue fields
+                        |> PipeTest.map
 
-                Assert.Contains(
-                    PipeTest.field "nodes" projectRoot |> RpcValue.requireArray "nodes",
-                    fun node ->
-                        PipeTest.field "kind" node = RpcValue.String "project"
-                        && PipeTest.field "name" node = RpcValue.String "Demo"
-                )
+                    PipeTest.send child false (PipeTest.request requestId "workspace/children" freshChildren)
+
+                    let projectError, projectPage =
+                        PipeTest.readFrame child |> PipeTest.response requestId
+
+                    Assert.True(projectError.IsNone)
+
+                    Assert.Equal(
+                        watchedRevision,
+                        PipeTest.field "revision" projectPage |> RpcValue.requireInteger "revision"
+                    )
+
+                    watchedValueFound <-
+                        PipeTest.field "nodes" projectPage
+                        |> RpcValue.requireArray "nodes"
+                        |> Seq.exists (fun node ->
+                            PipeTest.field "kind" node = RpcValue.String "projectItem"
+                            && PipeTest.field "name" node = RpcValue.String "WatchedValue = changed")
+
+                    continuation <-
+                        match PipeTest.field "nextToken" projectPage with
+                        | RpcValue.String token -> Some token
+                        | RpcValue.Nil -> None
+                        | value -> failwithf "Unexpected continuation token: %A" value
+
+                    hasMore <- continuation.IsSome
+                    requestId <- requestId + 1u
+
+                Assert.True(watchedValueFound, "Fresh project paging did not expose WatchedValue = changed.")
 
                 File.Copy(PipeTest.globalJson, Path.Combine(directory, "global.json"))
                 let selection = Task.Run(fun () -> PipeTest.readFrame child)
@@ -497,8 +527,8 @@ type WorkspaceAppHostTests() =
 
                     Assert.True(resetRevision > watchedRevision)
 
-                    PipeTest.send child false (PipeTest.request 6u "workspace/root" RpcValue.emptyMap)
-                    let freshError, freshRoot = PipeTest.readFrame child |> PipeTest.response 6u
+                    PipeTest.send child false (PipeTest.request 100u "workspace/root" RpcValue.emptyMap)
+                    let freshError, freshRoot = PipeTest.readFrame child |> PipeTest.response 100u
                     Assert.True(freshError.IsNone)
 
                     Assert.Equal(
@@ -507,7 +537,7 @@ type WorkspaceAppHostTests() =
                     )
                 | frame -> failwithf "Expected a toolset reset, got %A" frame
 
-                PipeTest.shutdown child 7u
+                PipeTest.shutdown child 101u
             finally
                 PipeTest.disposeProcess child
         finally

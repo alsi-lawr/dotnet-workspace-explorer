@@ -92,13 +92,16 @@ type internal WorkspaceWatcher
     let mutable lifecycleGeneration = 0L
     let mutable stopRequested = 0L
     let mutable callbacksEnabled = 0
+    let mutable closed = 0
     let mutable started = 0
 
     let signal () =
-        try
-            wake.Release() |> ignore
-        with :? SemaphoreFullException ->
-            ()
+        if Volatile.Read(&closed) = 0 then
+            try
+                wake.Release() |> ignore
+            with
+            | :? SemaphoreFullException
+            | :? ObjectDisposedException -> ()
 
     let enqueue path =
         if Volatile.Read(&callbacksEnabled) <> 0 && hints.Add path then
@@ -251,7 +254,10 @@ type internal WorkspaceWatcher
         }
 
     let stopForReset () =
-        stopWatchers ()
+        lock lifecycleGate (fun () ->
+            Interlocked.Increment(&lifecycleGeneration) |> ignore
+            stopWatchersUnsafe ())
+
         hints.Stop()
 
     let resetForUncertainty publish cancellationToken =
@@ -300,6 +306,7 @@ type internal WorkspaceWatcher
         =
         task {
             let mutable continueHandoff = true
+            let mutable active = true
 
             while continueHandoff do
                 let! handoff = rebuildSerialized cancellationToken
@@ -314,10 +321,12 @@ type internal WorkspaceWatcher
                     | WorkspaceInvalidationResult.Delta delta ->
                         let! delivered = publishDeltaOrReset publish delta cancellationToken
                         continueHandoff <- delivered
+                        active <- delivered
                     | WorkspaceInvalidationResult.Reset reset ->
                         stopForReset ()
                         do! publish (WorkspaceInvalidationResult.Reset reset)
                         continueHandoff <- false
+                        active <- false
                 | WatcherHandoff.RevalidateWorkspace ->
                     let! refreshed = state.RefreshAsync(None, cancellationToken)
 
@@ -325,6 +334,7 @@ type internal WorkspaceWatcher
                     | Error _ ->
                         do! resetForUncertainty publish cancellationToken
                         continueHandoff <- false
+                        active <- false
                     | Ok result when result.Reset ->
                         stopForReset ()
 
@@ -333,21 +343,26 @@ type internal WorkspaceWatcher
                         | None -> do! resetForUncertainty publish cancellationToken
 
                         continueHandoff <- false
+                        active <- false
                     | Ok result ->
                         match result.Delta with
                         | Some delta ->
                             let! delivered = publishDeltaOrReset publish delta cancellationToken
                             continueHandoff <- delivered
+                            active <- delivered
                         | None -> continueHandoff <- false
                 | WatcherHandoff.Uncertain ->
                     do! resetForUncertainty publish cancellationToken
                     continueHandoff <- false
+                    active <- false
+
+            return active
         }
 
     member _.Pause() =
         lock lifecycleGate (fun () ->
             Volatile.Write(&callbacksEnabled, 0)
-            hints.Pause()
+            hints.Stop()
             let generation = Interlocked.Increment(&lifecycleGeneration)
             Interlocked.Exchange(&stopRequested, generation) |> ignore)
 
@@ -373,69 +388,77 @@ type internal WorkspaceWatcher
                                     if pendingStop = Volatile.Read(&lifecycleGeneration) then
                                         stopWatchersUnsafe ())
 
-                            match hints.Drain() with
+                            let drainedEpoch, drained =
+                                lock lifecycleGate (fun () -> Volatile.Read(&lifecycleGeneration), hints.Drain())
+
+                            match drained with
                             | HintDrain.Empty -> ()
                             | HintDrain.Lost ->
                                 do! publicationGate.WaitAsync sessionToken
 
                                 try
-                                    stopForReset ()
+                                    if drainedEpoch = Volatile.Read(&lifecycleGeneration) then
+                                        stopForReset ()
 
-                                    let diagnostic =
-                                        WorkspaceDiagnostic.CreateSimple(
-                                            WorkspaceDiagnosticSeverity.Warning,
-                                            WorkspaceDiagnosticCode.Create "workspace.watch_overflow",
-                                            "File watching lost changes; request a fresh workspace graph.",
-                                            true,
-                                            CorrelationId.New()
-                                        )
+                                        let diagnostic =
+                                            WorkspaceDiagnostic.CreateSimple(
+                                                WorkspaceDiagnosticSeverity.Warning,
+                                                WorkspaceDiagnosticCode.Create "workspace.watch_overflow",
+                                                "File watching lost changes; request a fresh workspace graph.",
+                                                true,
+                                                CorrelationId.New()
+                                            )
 
-                                    let! reset = state.ResetAsync(diagnostic, sessionToken)
-                                    do! sink.WriteAsync(PublicProtocol.workspaceReset reset)
+                                        let! reset = state.ResetAsync(diagnostic, sessionToken)
+                                        do! sink.WriteAsync(PublicProtocol.workspaceReset reset)
                                 finally
                                     publicationGate.Release() |> ignore
                             | HintDrain.Hints paths ->
                                 do! publicationGate.WaitAsync sessionToken
 
                                 try
-                                    let! outcome = state.InvalidateAsync(paths, sessionToken)
-                                    sessionToken.ThrowIfCancellationRequested()
+                                    if drainedEpoch = Volatile.Read(&lifecycleGeneration) then
+                                        let! outcome = state.InvalidateAsync(paths, sessionToken)
+                                        sessionToken.ThrowIfCancellationRequested()
 
-                                    match outcome with
-                                    | WorkspaceInvalidationResult.None -> ()
-                                    | WorkspaceInvalidationResult.Delta delta ->
-                                        let! delivered =
-                                            publishDeltaOrReset
-                                                (fun handoff ->
-                                                    match handoff with
-                                                    | WorkspaceInvalidationResult.Delta delta ->
-                                                        sink.WriteAsync(PublicProtocol.workspaceDelta delta)
-                                                    | WorkspaceInvalidationResult.Reset reset ->
-                                                        sink.WriteAsync(PublicProtocol.workspaceReset reset)
-                                                    | WorkspaceInvalidationResult.None -> Task.FromResult(()))
-                                                delta
-                                                sessionToken
-
-                                        if delivered then
-                                            do!
-                                                this.RebuildAndRevalidateAsync(
+                                        match outcome with
+                                        | WorkspaceInvalidationResult.None -> ()
+                                        | WorkspaceInvalidationResult.Delta delta ->
+                                            let! delivered =
+                                                publishDeltaOrReset
                                                     (fun handoff ->
                                                         match handoff with
                                                         | WorkspaceInvalidationResult.Delta delta ->
                                                             sink.WriteAsync(PublicProtocol.workspaceDelta delta)
                                                         | WorkspaceInvalidationResult.Reset reset ->
                                                             sink.WriteAsync(PublicProtocol.workspaceReset reset)
-                                                        | WorkspaceInvalidationResult.None -> Task.FromResult(())),
+                                                        | WorkspaceInvalidationResult.None -> Task.FromResult(()))
+                                                    delta
                                                     sessionToken
-                                                )
-                                    | WorkspaceInvalidationResult.Reset reset ->
-                                        stopForReset ()
-                                        do! sink.WriteAsync(PublicProtocol.workspaceReset reset)
+
+                                            if delivered then
+                                                let! _ =
+                                                    this.RebuildAndRevalidateAsync(
+                                                        (fun handoff ->
+                                                            match handoff with
+                                                            | WorkspaceInvalidationResult.Delta delta ->
+                                                                sink.WriteAsync(PublicProtocol.workspaceDelta delta)
+                                                            | WorkspaceInvalidationResult.Reset reset ->
+                                                                sink.WriteAsync(PublicProtocol.workspaceReset reset)
+                                                            | WorkspaceInvalidationResult.None -> Task.FromResult(())),
+                                                        sessionToken
+                                                    )
+
+                                                ()
+                                        | WorkspaceInvalidationResult.Reset reset ->
+                                            stopForReset ()
+                                            do! sink.WriteAsync(PublicProtocol.workspaceReset reset)
                                 finally
                                     publicationGate.Release() |> ignore
                     with :? OperationCanceledException ->
                         ()
                 finally
+                    Interlocked.Exchange(&closed, 1) |> ignore
                     stopWatchers ()
                     hints.Stop()
                     rebuildGate.Dispose()
