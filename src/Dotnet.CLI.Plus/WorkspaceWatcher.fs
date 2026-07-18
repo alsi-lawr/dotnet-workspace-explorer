@@ -105,6 +105,10 @@ type internal WorkspaceWatcher
             | :? SemaphoreFullException
             | :? ObjectDisposedException -> ()
 
+    let retainUncertainty () =
+        hints.Lose()
+        signal ()
+
     let enqueue path =
         if Volatile.Read(&callbacksEnabled) <> 0 && hints.Add path then
             signal ()
@@ -240,8 +244,7 @@ type internal WorkspaceWatcher
             | :? OperationCanceledException -> return raise (OperationCanceledException())
             | _ ->
                 dispose (replacements.ToArray())
-                hints.Lose()
-                signal ()
+                retainUncertainty ()
                 return WatcherHandoff.Uncertain
         }
 
@@ -255,6 +258,9 @@ type internal WorkspaceWatcher
                 rebuildGate.Release() |> ignore
         }
 
+    let clearQueuedHandoff () =
+        lock handoffGate (fun () -> queuedHandoff <- None)
+
     let dequeueHandoff () =
         lock handoffGate (fun () ->
             let handoff = queuedHandoff
@@ -262,6 +268,8 @@ type internal WorkspaceWatcher
             handoff)
 
     let stopForReset () =
+        clearQueuedHandoff ()
+
         lock lifecycleGate (fun () ->
             Interlocked.Increment(&lifecycleGeneration) |> ignore
             stopWatchersUnsafe ())
@@ -364,6 +372,7 @@ type internal WorkspaceWatcher
                             active <- delivered
                         | None -> continueHandoff <- false
                 | WatcherHandoff.Uncertain ->
+                    retainUncertainty ()
                     do! resetForUncertainty publish cancellationToken
                     continueHandoff <- false
                     active <- false
@@ -371,7 +380,15 @@ type internal WorkspaceWatcher
             return active
         }
 
-    member _.ActivateAsync(cancellationToken: CancellationToken) = rebuildSerialized cancellationToken
+    member _.ActivateAsync(cancellationToken: CancellationToken) =
+        task {
+            let! handoff = rebuildSerialized cancellationToken
+
+            if handoff = WatcherHandoff.Uncertain then
+                retainUncertainty ()
+
+            return handoff
+        }
 
     member _.QueueActivationHandoff(handoff: WatcherHandoff) =
         match handoff with
@@ -396,6 +413,8 @@ type internal WorkspaceWatcher
         rebuildAndRevalidate (Some handoff) publish cancellationToken
 
     member _.Pause() =
+        clearQueuedHandoff ()
+
         lock lifecycleGate (fun () ->
             Volatile.Write(&callbacksEnabled, 0)
             hints.Stop()
@@ -422,6 +441,20 @@ type internal WorkspaceWatcher
                                 sink.WriteAsync(PublicProtocol.workspaceReset reset)
                             | WorkspaceInvalidationResult.None -> Task.FromResult(())
 
+                        let resolveQueued () =
+                            task {
+                                match dequeueHandoff () with
+                                | Some handoff ->
+                                    do! publicationGate.WaitAsync sessionToken
+
+                                    try
+                                        let! _ = this.ResolveActivationHandoffAsync(handoff, publish, sessionToken)
+                                        ()
+                                    finally
+                                        publicationGate.Release() |> ignore
+                                | None -> ()
+                            }
+
                         while not sessionToken.IsCancellationRequested do
                             do! wake.WaitAsync sessionToken
 
@@ -435,19 +468,8 @@ type internal WorkspaceWatcher
                             let drainedEpoch, drained =
                                 lock lifecycleGate (fun () -> Volatile.Read(&lifecycleGeneration), hints.Drain())
 
-                            match dequeueHandoff () with
-                            | Some handoff ->
-                                do! publicationGate.WaitAsync sessionToken
-
-                                try
-                                    let! _ = this.ResolveActivationHandoffAsync(handoff, publish, sessionToken)
-                                    ()
-                                finally
-                                    publicationGate.Release() |> ignore
-                            | None -> ()
-
                             match drained with
-                            | HintDrain.Empty -> ()
+                            | HintDrain.Empty -> do! resolveQueued ()
                             | HintDrain.Lost ->
                                 do! publicationGate.WaitAsync sessionToken
 
@@ -469,6 +491,7 @@ type internal WorkspaceWatcher
                                 finally
                                     publicationGate.Release() |> ignore
                             | HintDrain.Hints paths ->
+                                do! resolveQueued ()
                                 do! publicationGate.WaitAsync sessionToken
 
                                 try
