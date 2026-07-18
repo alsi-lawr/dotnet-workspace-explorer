@@ -5,13 +5,11 @@ local stdin = uv.new_pipe(false)
 local stdout = uv.new_pipe(false)
 local stderr = uv.new_pipe(false)
 local pending, frames, notifications, errors = "", {}, {}, ""
-local exited, exit_code, exit_signal = false, nil, nil
+local exited, stdout_eof, exit_code, exit_signal = false, false, nil, nil
 local operation_id, completion_count = nil, 0
-
 local function fail(message)
   error(message .. (errors == "" and "" or ": " .. errors))
 end
-
 local function decode()
   while #pending > 0 do
     local frame, next_offset = vim.mpack.Unpacker()(pending, 1)
@@ -42,7 +40,9 @@ uv.read_start(stdout, function(error, data)
     fail("apphost stdout failed: " .. error)
   end
 
-  if data ~= nil then
+  if data == nil then
+    stdout_eof = true
+  else
     pending = pending .. data
     decode()
   end
@@ -234,7 +234,7 @@ end
 
 stdin:close()
 
-while not exited do
+while not (exited and stdout_eof) do
   uv.run("once")
 end
 
@@ -242,7 +242,7 @@ while #frames > 0 do
   record_notification(table.remove(frames, 1))
 end
 
-if completion_count ~= 1 or exit_code ~= 0 or exit_signal ~= 0 then
+if #pending ~= 0 or completion_count ~= 1 or exit_code ~= 0 or exit_signal ~= 0 then
   fail("apphost shutdown failed")
 end
 
