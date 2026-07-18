@@ -215,6 +215,58 @@ module private Test =
         | None -> result
         | Some failure -> failwithf "%s: %s" failure.Code failure.Message
 
+    let requireSuccessAfterWorkspaceNotifications id expectedRevision child =
+        let mutable revision = expectedRevision
+        let mutable result = None
+
+        while result.IsNone do
+            match readFrame child with
+            | Notification("workspace/delta", parameters) ->
+                let baseRevision =
+                    field "baseRevision" parameters |> RpcValue.requireInteger "baseRevision"
+
+                let nextRevision =
+                    field "newRevision" parameters |> RpcValue.requireInteger "newRevision"
+
+                Assert.Equal(revision, baseRevision)
+                Assert.True(nextRevision > baseRevision)
+                revision <- nextRevision
+            | Notification("workspace/reset", parameters) ->
+                let nextRevision = field "revision" parameters |> RpcValue.requireInteger "revision"
+                Assert.True(nextRevision > revision)
+                revision <- nextRevision
+            | Response(actual, error, value) when actual = id ->
+                match error with
+                | None -> result <- Some value
+                | Some failure -> failwithf "%s: %s" failure.Code failure.Message
+            | frame -> failwithf "Expected workspace notification or response %d, got %A" id frame
+
+        result.Value, revision
+
+    let readWorkspaceReset expectedRevision child =
+        let mutable revision = expectedRevision
+        let mutable reset = None
+
+        while reset.IsNone do
+            match readFrame child with
+            | Notification("workspace/delta", parameters) ->
+                let baseRevision =
+                    field "baseRevision" parameters |> RpcValue.requireInteger "baseRevision"
+
+                let nextRevision =
+                    field "newRevision" parameters |> RpcValue.requireInteger "newRevision"
+
+                Assert.Equal(revision, baseRevision)
+                Assert.True(nextRevision > baseRevision)
+                revision <- nextRevision
+            | Notification("workspace/reset", parameters) ->
+                let nextRevision = field "revision" parameters |> RpcValue.requireInteger "revision"
+                Assert.True(nextRevision >= revision)
+                reset <- Some parameters
+            | frame -> failwithf "Expected workspace notification or reset, got %A" frame
+
+        reset.Value
+
     let workerInitialize frameLimit =
         RpcValue.map
             [ "profile", RpcValue.String "dotnet-cli-plus/msbuild"
@@ -289,9 +341,12 @@ module private Test =
         send child firstId "workspace/root" RpcValue.emptyMap
         let root = requireSuccess firstId child
 
+        let rootRevision = field "revision" root |> RpcValue.requireInteger "revision"
+
         let projectId =
             values "nodes" root
             |> Seq.filter (fun node -> stringField "kind" node = "project")
+            |> Seq.filter (fun node -> stringField "name" node = "Selected")
             |> Seq.map (stringField "id")
             |> Seq.exactlyOne
 
@@ -302,7 +357,14 @@ module private Test =
         requireSuccess (firstId + 1u) child |> ignore
 
         match readFrame child with
-        | Notification("workspace/delta", _) -> ()
+        | Notification("workspace/delta", parameters) ->
+            Assert.Equal(rootRevision, field "baseRevision" parameters |> RpcValue.requireInteger "baseRevision")
+
+            let hydratedRevision =
+                field "newRevision" parameters |> RpcValue.requireInteger "newRevision"
+
+            Assert.True(hydratedRevision > rootRevision)
+            hydratedRevision
         | frame -> failwithf "Expected hydration delta, got %A" frame
 
 type MsBuildHostTests() =
@@ -470,25 +532,42 @@ type MsBuildHostTests() =
             let solution = Test.writeSolution directory [ project ]
 
             Test.withPipe solution (fun app ->
-                Test.hydrateProject app 2u
+                let hydratedRevision = Test.hydrateProject app 2u
                 Test.writeGlobalJson directory "99.0.100"
                 Test.send app 4u "workspace/refresh" RpcValue.emptyMap
-                let unavailable = Test.requireSuccess 4u app
+
+                let unavailable, observedRevision =
+                    Test.requireSuccessAfterWorkspaceNotifications 4u hydratedRevision app
+
                 Assert.Equal(RpcValue.Boolean true, Test.field "reset" unavailable)
 
-                match Test.readFrame app with
-                | Notification("workspace/reset", parameters) ->
-                    Assert.Contains(
-                        Test.values "diagnostics" parameters,
-                        fun diagnostic -> Test.stringField "code" diagnostic = "workspace.refresh_unverified"
-                    )
-                | frame -> failwithf "Expected selection failure reset, got %A" frame
+                let unavailableRevision =
+                    Test.field "revision" unavailable |> RpcValue.requireInteger "revision"
+
+                Assert.True(unavailableRevision > observedRevision)
+
+                let reset = Test.readWorkspaceReset unavailableRevision app
+
+                Assert.Contains(
+                    Test.values "diagnostics" reset,
+                    fun diagnostic -> Test.stringField "code" diagnostic = "workspace.refresh_unverified"
+                )
 
                 Test.writeGlobalJson directory version
                 Test.send app 5u "workspace/refresh" RpcValue.emptyMap
-                let recovered = Test.requireSuccess 5u app
+
+                let recovered, recoveredObservedRevision =
+                    Test.requireSuccessAfterWorkspaceNotifications 5u unavailableRevision app
+
                 Assert.Equal(RpcValue.Boolean false, Test.field "reset" recovered)
-                Test.hydrateProject app 6u
+
+                let recoveredRevision =
+                    Test.field "revision" recovered |> RpcValue.requireInteger "revision"
+
+                Assert.True(recoveredRevision >= recoveredObservedRevision)
+
+                let freshRevision = Test.hydrateProject app 6u
+                Assert.True(freshRevision > recoveredRevision)
                 Assert.True(File.Exists globalJson)
                 8u)
         finally

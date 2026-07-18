@@ -86,9 +86,11 @@ type internal WorkspaceWatcher
     (state: WorkspaceState, hintCapacity: int, getFrameLimit: unit -> int, publicationGate: SemaphoreSlim) =
     let hints = BoundedHintBuffer(hintCapacity, state.PathComparer)
     let rebuildGate = new SemaphoreSlim(1, 1)
+    let lifecycleGate = obj ()
     let wake = new SemaphoreSlim(0, 1)
     let mutable watchers: (WatchSpec * FileSystemWatcher) array = Array.empty
-    let mutable stopRequested = 0
+    let mutable lifecycleGeneration = 0L
+    let mutable stopRequested = 0L
     let mutable callbacksEnabled = 0
     let mutable started = 0
 
@@ -114,10 +116,12 @@ type internal WorkspaceWatcher
             with _ ->
                 ()
 
-    let stopWatchers () =
+    let stopWatchersUnsafe () =
         Volatile.Write(&callbacksEnabled, 0)
         dispose watchers
         watchers <- Array.empty
+
+    let stopWatchers () = lock lifecycleGate stopWatchersUnsafe
 
     let pathIsBelow directory path =
         let relative = Path.GetRelativePath(directory, path)
@@ -217,13 +221,15 @@ type internal WorkspaceWatcher
                 for spec in plan do
                     replacements.Add(spec, createWatcher spec)
 
-                Volatile.Write(&callbacksEnabled, 1)
+                lock lifecycleGate (fun () ->
+                    Volatile.Write(&callbacksEnabled, 1)
 
-                for _, watcher in replacements do
-                    watcher.EnableRaisingEvents <- true
+                    for _, watcher in replacements do
+                        watcher.EnableRaisingEvents <- true
 
-                watchers <- replacements.ToArray()
-                dispose oldWatchers
+                    watchers <- replacements.ToArray()
+                    dispose oldWatchers)
+
                 return uncoveredPaths oldWatchers plan
             with
             | :? OperationCanceledException -> return raise (OperationCanceledException())
@@ -265,6 +271,30 @@ type internal WorkspaceWatcher
             do! publish (WorkspaceInvalidationResult.Reset reset)
         }
 
+    let publishDeltaOrReset publish delta cancellationToken =
+        task {
+            let notification = PublicProtocol.workspaceDelta delta
+
+            if (RpcCodec.encodeFrame notification).Length > getFrameLimit () then
+                stopForReset ()
+
+                let diagnostic =
+                    WorkspaceDiagnostic.CreateSimple(
+                        WorkspaceDiagnosticSeverity.Warning,
+                        WorkspaceDiagnosticCode.Create "workspace.delta_pressure",
+                        "The verified delta exceeded delivery capacity; request a fresh workspace graph.",
+                        true,
+                        CorrelationId.New()
+                    )
+
+                let! reset = state.ResetAsync(diagnostic, cancellationToken)
+                do! publish (WorkspaceInvalidationResult.Reset reset)
+                return false
+            else
+                do! publish (WorkspaceInvalidationResult.Delta delta)
+                return true
+        }
+
     member _.RebuildAndRevalidateAsync
         (publish: WorkspaceInvalidationResult -> Task<unit>, cancellationToken: CancellationToken)
         =
@@ -281,7 +311,9 @@ type internal WorkspaceWatcher
 
                     match outcome with
                     | WorkspaceInvalidationResult.None -> continueHandoff <- false
-                    | WorkspaceInvalidationResult.Delta delta -> do! publish (WorkspaceInvalidationResult.Delta delta)
+                    | WorkspaceInvalidationResult.Delta delta ->
+                        let! delivered = publishDeltaOrReset publish delta cancellationToken
+                        continueHandoff <- delivered
                     | WorkspaceInvalidationResult.Reset reset ->
                         stopForReset ()
                         do! publish (WorkspaceInvalidationResult.Reset reset)
@@ -303,7 +335,9 @@ type internal WorkspaceWatcher
                         continueHandoff <- false
                     | Ok result ->
                         match result.Delta with
-                        | Some delta -> do! publish (WorkspaceInvalidationResult.Delta delta)
+                        | Some delta ->
+                            let! delivered = publishDeltaOrReset publish delta cancellationToken
+                            continueHandoff <- delivered
                         | None -> continueHandoff <- false
                 | WatcherHandoff.Uncertain ->
                     do! resetForUncertainty publish cancellationToken
@@ -311,12 +345,18 @@ type internal WorkspaceWatcher
         }
 
     member _.Pause() =
-        Volatile.Write(&callbacksEnabled, 0)
-        hints.Pause()
-        Interlocked.Exchange(&stopRequested, 1) |> ignore
+        lock lifecycleGate (fun () ->
+            Volatile.Write(&callbacksEnabled, 0)
+            hints.Pause()
+            let generation = Interlocked.Increment(&lifecycleGeneration)
+            Interlocked.Exchange(&stopRequested, generation) |> ignore)
+
         signal ()
 
-    member _.Resume() = hints.Resume()
+    member _.Resume() =
+        lock lifecycleGate (fun () ->
+            Interlocked.Increment(&lifecycleGeneration) |> ignore
+            hints.Resume())
 
     member this.StartAsync(sink: RpcNotificationSink, sessionToken: CancellationToken) =
         task {
@@ -326,8 +366,12 @@ type internal WorkspaceWatcher
                         while not sessionToken.IsCancellationRequested do
                             do! wake.WaitAsync sessionToken
 
-                            if Interlocked.Exchange(&stopRequested, 0) <> 0 then
-                                stopWatchers ()
+                            let pendingStop = Interlocked.Exchange(&stopRequested, 0L)
+
+                            if pendingStop <> 0L then
+                                lock lifecycleGate (fun () ->
+                                    if pendingStop = Volatile.Read(&lifecycleGeneration) then
+                                        stopWatchersUnsafe ())
 
                             match hints.Drain() with
                             | HintDrain.Empty -> ()
@@ -360,25 +404,19 @@ type internal WorkspaceWatcher
                                     match outcome with
                                     | WorkspaceInvalidationResult.None -> ()
                                     | WorkspaceInvalidationResult.Delta delta ->
-                                        let notification = PublicProtocol.workspaceDelta delta
+                                        let! delivered =
+                                            publishDeltaOrReset
+                                                (fun handoff ->
+                                                    match handoff with
+                                                    | WorkspaceInvalidationResult.Delta delta ->
+                                                        sink.WriteAsync(PublicProtocol.workspaceDelta delta)
+                                                    | WorkspaceInvalidationResult.Reset reset ->
+                                                        sink.WriteAsync(PublicProtocol.workspaceReset reset)
+                                                    | WorkspaceInvalidationResult.None -> Task.FromResult(()))
+                                                delta
+                                                sessionToken
 
-                                        if (RpcCodec.encodeFrame notification).Length > getFrameLimit () then
-                                            stopForReset ()
-
-                                            let diagnostic =
-                                                WorkspaceDiagnostic.CreateSimple(
-                                                    WorkspaceDiagnosticSeverity.Warning,
-                                                    WorkspaceDiagnosticCode.Create "workspace.delta_pressure",
-                                                    "The verified delta exceeded delivery capacity; request a fresh workspace graph.",
-                                                    true,
-                                                    CorrelationId.New()
-                                                )
-
-                                            let! reset = state.ResetAsync(diagnostic, sessionToken)
-                                            do! sink.WriteAsync(PublicProtocol.workspaceReset reset)
-                                        else
-                                            do! sink.WriteAsync notification
-
+                                        if delivered then
                                             do!
                                                 this.RebuildAndRevalidateAsync(
                                                     (fun handoff ->

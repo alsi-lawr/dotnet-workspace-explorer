@@ -149,6 +149,34 @@ module private PipeTest =
     let field name value =
         value |> fields |> RpcValue.requireField name
 
+    let responseAfterWorkspaceNotifications (child: Process) id expectedRevision =
+        let mutable revision = expectedRevision
+        let mutable result = None
+        let notifications = ResizeArray<RpcFrame>()
+
+        while result.IsNone do
+            match readFrame child with
+            | Notification("workspace/delta", parameters) ->
+                let baseRevision =
+                    field "baseRevision" parameters |> RpcValue.requireInteger "baseRevision"
+
+                let nextRevision =
+                    field "newRevision" parameters |> RpcValue.requireInteger "newRevision"
+
+                Assert.Equal(revision, baseRevision)
+                Assert.True(nextRevision > baseRevision)
+                revision <- nextRevision
+                notifications.Add(Notification("workspace/delta", parameters))
+            | Notification("workspace/reset", parameters) ->
+                let nextRevision = field "revision" parameters |> RpcValue.requireInteger "revision"
+                Assert.True(nextRevision > revision)
+                revision <- nextRevision
+                notifications.Add(Notification("workspace/reset", parameters))
+            | Response(actual, error, value) when actual = id -> result <- Some(error, value)
+            | frame -> failwithf "Expected workspace notification or response %d, got %A" id frame
+
+        result.Value, revision, notifications |> Seq.toList
+
     let shutdown (child: Process) id =
         send child false (request id "shutdown" RpcValue.emptyMap)
         let frame, size = readFrameWithSize child
@@ -258,42 +286,86 @@ type WorkspaceAppHostTests() =
 
                 let expected = PipeTest.map [ "expectedRevision", RpcValue.Integer 0L ]
                 PipeTest.send child false (PipeTest.request 5u "workspace/refresh" expected)
-                let changedError, changedResult = PipeTest.readFrame child |> PipeTest.response 5u
-                Assert.True(changedError.IsNone)
 
-                let changedRevision =
-                    PipeTest.field "revision" changedResult |> RpcValue.requireInteger "revision"
+                let (changedError, changedResult), observedRevision, observedNotifications =
+                    PipeTest.responseAfterWorkspaceNotifications child 5u 0L
 
-                Assert.True(changedRevision > 0L)
+                let finalRevision =
+                    match changedError with
+                    | None ->
+                        let changedRevision =
+                            PipeTest.field "revision" changedResult |> RpcValue.requireInteger "revision"
 
-                match PipeTest.readFrame child with
-                | Notification("workspace/delta", parameters) ->
-                    Assert.Equal(
-                        changedRevision - 1L,
-                        PipeTest.field "baseRevision" parameters
-                        |> RpcValue.requireInteger "baseRevision"
-                    )
+                        Assert.True(changedRevision > observedRevision)
 
-                    Assert.Equal(
-                        changedRevision,
-                        PipeTest.field "newRevision" parameters |> RpcValue.requireInteger "newRevision"
-                    )
+                        match PipeTest.readFrame child with
+                        | Notification("workspace/delta", parameters) ->
+                            Assert.Equal(
+                                changedRevision - 1L,
+                                PipeTest.field "baseRevision" parameters
+                                |> RpcValue.requireInteger "baseRevision"
+                            )
 
-                    let added = HashSet<string>(StringComparer.Ordinal)
+                            Assert.Equal(
+                                changedRevision,
+                                PipeTest.field "newRevision" parameters |> RpcValue.requireInteger "newRevision"
+                            )
 
-                    for change in PipeTest.field "changes" parameters |> RpcValue.requireArray "changes" do
-                        if PipeTest.field "kind" change = RpcValue.String "add" then
-                            match PipeTest.field "parentId" change with
-                            | RpcValue.String parentId -> Assert.Contains(parentId, added)
-                            | RpcValue.Nil -> ()
-                            | value -> failwithf "Unexpected parent ID: %A" value
+                            let added = HashSet<string>(StringComparer.Ordinal)
+                            let mutable secondAdded = false
 
-                            PipeTest.field "node" change
-                            |> PipeTest.field "id"
-                            |> RpcValue.requireString "id"
-                            |> added.Add
-                            |> ignore
-                | frame -> failwithf "Expected refresh delta, got %A" frame
+                            for change in PipeTest.field "changes" parameters |> RpcValue.requireArray "changes" do
+                                if PipeTest.field "kind" change = RpcValue.String "add" then
+                                    match PipeTest.field "parentId" change with
+                                    | RpcValue.String parentId -> Assert.Contains(parentId, added)
+                                    | RpcValue.Nil -> ()
+                                    | value -> failwithf "Unexpected parent ID: %A" value
+
+                                    PipeTest.field "node" change
+                                    |> PipeTest.field "id"
+                                    |> RpcValue.requireString "id"
+                                    |> added.Add
+                                    |> ignore
+
+                                    if
+                                        PipeTest.field "name" (PipeTest.field "node" change) = RpcValue.String "Second"
+                                    then
+                                        secondAdded <- true
+
+                            Assert.True(secondAdded, "The refreshed delta did not add the Second project.")
+
+                            changedRevision
+                        | frame -> failwithf "Expected refresh delta, got %A" frame
+                    | Some error ->
+                        Assert.Equal("workspace_conflict", error.Code)
+                        Assert.True(observedRevision > 0L)
+
+                        Assert.Contains(
+                            observedNotifications,
+                            fun frame ->
+                                match frame with
+                                | Notification("workspace/delta", parameters) ->
+                                    PipeTest.field "changes" parameters
+                                    |> RpcValue.requireArray "changes"
+                                    |> Seq.exists (fun change ->
+                                        PipeTest.field "kind" change = RpcValue.String "add"
+                                        && PipeTest.field "name" (PipeTest.field "node" change) = RpcValue.String
+                                            "Second")
+                                | _ -> false
+                        )
+
+                        PipeTest.send child false (PipeTest.request 9u "workspace/refresh" RpcValue.emptyMap)
+
+                        let (recoveredError, recoveredResult), recoveredRevision, recoveredNotifications =
+                            PipeTest.responseAfterWorkspaceNotifications child 9u observedRevision
+
+                        Assert.True(recoveredError.IsNone)
+                        Assert.Equal(RpcValue.Boolean false, PipeTest.field "reset" recoveredResult)
+                        Assert.True(recoveredRevision >= observedRevision)
+                        Assert.Empty(recoveredNotifications)
+                        recoveredRevision
+
+                Assert.True(finalRevision > 0L)
 
                 PipeTest.send child false (PipeTest.request 6u "workspace/refresh" expected)
                 let staleError, _ = PipeTest.readFrame child |> PipeTest.response 6u
@@ -398,6 +470,22 @@ type WorkspaceAppHostTests() =
                     Assert.True(watchedRevision > 1L)
                 | frame -> failwithf "Expected watcher delta, got %A" frame
 
+                PipeTest.send child false (PipeTest.request 5u "workspace/root" RpcValue.emptyMap)
+                let projectError, projectRoot = PipeTest.readFrame child |> PipeTest.response 5u
+                Assert.True(projectError.IsNone)
+
+                Assert.Equal(
+                    watchedRevision,
+                    PipeTest.field "revision" projectRoot |> RpcValue.requireInteger "revision"
+                )
+
+                Assert.Contains(
+                    PipeTest.field "nodes" projectRoot |> RpcValue.requireArray "nodes",
+                    fun node ->
+                        PipeTest.field "kind" node = RpcValue.String "project"
+                        && PipeTest.field "name" node = RpcValue.String "Demo"
+                )
+
                 File.Copy(PipeTest.globalJson, Path.Combine(directory, "global.json"))
                 let selection = Task.Run(fun () -> PipeTest.readFrame child)
                 Assert.True(selection.Wait(TimeSpan.FromSeconds 10.0), "global.json creation was not observed.")
@@ -409,8 +497,8 @@ type WorkspaceAppHostTests() =
 
                     Assert.True(resetRevision > watchedRevision)
 
-                    PipeTest.send child false (PipeTest.request 5u "workspace/root" RpcValue.emptyMap)
-                    let freshError, freshRoot = PipeTest.readFrame child |> PipeTest.response 5u
+                    PipeTest.send child false (PipeTest.request 6u "workspace/root" RpcValue.emptyMap)
+                    let freshError, freshRoot = PipeTest.readFrame child |> PipeTest.response 6u
                     Assert.True(freshError.IsNone)
 
                     Assert.Equal(
@@ -419,7 +507,7 @@ type WorkspaceAppHostTests() =
                     )
                 | frame -> failwithf "Expected a toolset reset, got %A" frame
 
-                PipeTest.shutdown child 6u
+                PipeTest.shutdown child 7u
             finally
                 PipeTest.disposeProcess child
         finally
