@@ -549,72 +549,180 @@ type WorkspaceAppHostTests() =
         let directory = PipeTest.temporaryDirectory "pipe-children-delta-pressure"
 
         try
-            let solution = Path.Combine(directory, "Demo.slnx")
-
-            let projectDirectory =
-                [ 1..4 ]
-                |> List.fold (fun path index -> Path.Combine(path, $"segment{index}-{String('d', 150)}")) directory
-
-            let project = Path.Combine(projectDirectory, "Demo.fsproj")
+            let solution = Path.Combine(directory, "Demo.sln")
             let model = SolutionModel()
+            let folder = model.AddFolder "/projects/"
 
-            model.AddProject(Path.GetRelativePath(directory, project), "Demo", null)
-            |> ignore
+            for index in 1..2 do
+                let projectDirectory = Path.Combine(directory, $"p{index}")
+                Directory.CreateDirectory projectDirectory |> ignore
+                PipeTest.writeProject (Path.Combine(projectDirectory, $"Demo{index}.fsproj"))
+                model.AddProject($"p{index}/Demo{index}.fsproj", null, folder) |> ignore
 
-            Directory.CreateDirectory projectDirectory |> ignore
-            PipeTest.writeProject project
             PipeTest.save solution model
-            use child = PipeTest.startPipe "solution" solution
+
+            let initialize maximumFrameBytes =
+                PipeTest.map
+                    [ "protocolVersion", PipeTest.map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 0L ]
+                      "clientInfo", PipeTest.map [ "name", RpcValue.String "child-pressure-test" ]
+                      "capabilities",
+                      RpcValue.array
+                          [ RpcValue.String "workspace.root"
+                            RpcValue.String "workspace.children"
+                            RpcValue.String "workspace.delta" ]
+                      "limits",
+                      PipeTest.map
+                          [ "maxFrameBytes", RpcValue.Integer maximumFrameBytes
+                            "maxPageSize", RpcValue.Integer 2L ] ]
+
+            use probe = PipeTest.startPipe "solution" solution
 
             try
-                let initialize =
-                    PipeTest.map
-                        [ "protocolVersion", PipeTest.map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 0L ]
-                          "clientInfo", PipeTest.map [ "name", RpcValue.String "child-pressure-test" ]
-                          "capabilities",
-                          RpcValue.array
-                              [ RpcValue.String "workspace.root"
-                                RpcValue.String "workspace.children"
-                                RpcValue.String "workspace.delta" ]
-                          "limits",
-                          PipeTest.map [ "maxFrameBytes", RpcValue.Integer 1024L; "maxPageSize", RpcValue.Integer 1L ] ]
+                PipeTest.send probe false (PipeTest.request 1u "initialize" (initialize 65536L))
+                PipeTest.readFrame probe |> PipeTest.response 1u |> ignore
+                PipeTest.send probe false (PipeTest.request 2u "workspace/root" RpcValue.emptyMap)
+                let probeRootError, probeRoot = PipeTest.readFrame probe |> PipeTest.response 2u
+                Assert.True(probeRootError.IsNone)
 
-                PipeTest.send child false (PipeTest.request 1u "initialize" initialize)
-                let initializeFrame, initializeSize = PipeTest.readFrameWithSize child
-                Assert.True(initializeSize <= 1024)
-                PipeTest.response 1u initializeFrame |> ignore
-
-                PipeTest.send child false (PipeTest.request 2u "workspace/root" RpcValue.emptyMap)
-                let rootFrame, rootSize = PipeTest.readFrameWithSize child
-                Assert.True(rootSize <= 1024)
-                let rootError, root = PipeTest.response 2u rootFrame
-                Assert.True(rootError.IsNone)
-                Assert.Equal(0L, PipeTest.field "revision" root |> RpcValue.requireInteger "revision")
-
-                let projectId =
-                    PipeTest.field "nodes" root
+                let probeFolderId =
+                    PipeTest.field "nodes" probeRoot
                     |> RpcValue.requireArray "nodes"
-                    |> Seq.filter (fun node -> PipeTest.field "kind" node = RpcValue.String "project")
+                    |> Seq.filter (fun node -> PipeTest.field "kind" node = RpcValue.String "solutionFolder")
                     |> Seq.exactlyOne
                     |> PipeTest.field "id"
                     |> RpcValue.requireString "id"
 
-                let children =
-                    PipeTest.map [ "parentId", RpcValue.String projectId; "pageSize", RpcValue.Integer 1L ]
+                PipeTest.send
+                    probe
+                    false
+                    (PipeTest.request
+                        3u
+                        "workspace/children"
+                        (PipeTest.map [ "parentId", RpcValue.String probeFolderId; "pageSize", RpcValue.Integer 2L ]))
 
-                PipeTest.send child false (PipeTest.request 3u "workspace/children" children)
+                let probeChildrenError, probeProjects =
+                    PipeTest.readFrame probe |> PipeTest.response 3u
+
+                Assert.True(probeChildrenError.IsNone)
+
+                let probeProjectIds =
+                    PipeTest.field "nodes" probeProjects
+                    |> RpcValue.requireArray "nodes"
+                    |> Seq.map (PipeTest.field "id" >> RpcValue.requireString "id")
+                    |> Seq.toArray
+
+                Assert.Equal(2, probeProjectIds.Length)
+
+                for index in 0..1 do
+                    PipeTest.send
+                        probe
+                        false
+                        (PipeTest.request
+                            (uint32 (4 + index))
+                            "workspace/children"
+                            (PipeTest.map
+                                [ "parentId", RpcValue.String probeProjectIds[index]
+                                  "pageSize", RpcValue.Integer 1L ]))
+
+                    let probeChildrenError, _ =
+                        PipeTest.readFrame probe |> PipeTest.response (uint32 (4 + index))
+
+                    Assert.True(probeChildrenError.IsNone)
+
+                    match PipeTest.readFrame probe with
+                    | Notification("workspace/delta", _) as delta when index = 1 ->
+                        let deltaSize = (RpcCodec.encodeFrame delta).Length
+                        Assert.True(deltaSize > 1024, $"Expected a delta above 1024 bytes, got {deltaSize}.")
+                    | Notification("workspace/delta", _) -> ()
+                    | frame -> failwithf "Expected child-hydration delta, got %A" frame
+
+                PipeTest.shutdown probe 6u
+            finally
+                PipeTest.disposeProcess probe
+
+            use child = PipeTest.startPipe "solution" solution
+
+            try
+                PipeTest.send child false (PipeTest.request 10u "initialize" (initialize 1024L))
+                let initializeFrame, initializeSize = PipeTest.readFrameWithSize child
+                Assert.True(initializeSize <= 1024)
+                PipeTest.response 10u initializeFrame |> ignore
+
+                PipeTest.send child false (PipeTest.request 11u "workspace/root" RpcValue.emptyMap)
+                let rootFrame, rootSize = PipeTest.readFrameWithSize child
+                Assert.True(rootSize <= 1024)
+                let rootError, root = PipeTest.response 11u rootFrame
+                Assert.True(rootError.IsNone, $"Expected bounded root, got {rootError}.")
+                Assert.Equal(0L, PipeTest.field "revision" root |> RpcValue.requireInteger "revision")
+
+                let folderId =
+                    PipeTest.field "nodes" root
+                    |> RpcValue.requireArray "nodes"
+                    |> Seq.filter (fun node -> PipeTest.field "kind" node = RpcValue.String "solutionFolder")
+                    |> Seq.exactlyOne
+                    |> PipeTest.field "id"
+                    |> RpcValue.requireString "id"
+
+                PipeTest.send
+                    child
+                    false
+                    (PipeTest.request
+                        12u
+                        "workspace/children"
+                        (PipeTest.map [ "parentId", RpcValue.String folderId; "pageSize", RpcValue.Integer 2L ]))
+
+                let folderFrame, folderSize = PipeTest.readFrameWithSize child
+                Assert.True(folderSize <= 1024)
+                let folderError, folderPage = PipeTest.response 12u folderFrame
+                Assert.True(folderError.IsNone)
+
+                let projectIds =
+                    PipeTest.field "nodes" folderPage
+                    |> RpcValue.requireArray "nodes"
+                    |> Seq.map (PipeTest.field "id" >> RpcValue.requireString "id")
+                    |> Seq.toArray
+
+                Assert.Equal(2, projectIds.Length)
+
+                PipeTest.send
+                    child
+                    false
+                    (PipeTest.request
+                        13u
+                        "workspace/children"
+                        (PipeTest.map [ "parentId", RpcValue.String projectIds[0]; "pageSize", RpcValue.Integer 1L ]))
+
+                let firstFrame, firstSize = PipeTest.readFrameWithSize child
+                Assert.True(firstSize <= 1024)
+                let firstError, firstPage = PipeTest.response 13u firstFrame
+                Assert.True(firstError.IsNone)
+                Assert.Equal(1L, PipeTest.field "revision" firstPage |> RpcValue.requireInteger "revision")
+
+                match PipeTest.readFrame child with
+                | Notification("workspace/delta", parameters) ->
+                    Assert.Equal(1L, PipeTest.field "newRevision" parameters |> RpcValue.requireInteger "newRevision")
+                | frame -> failwithf "Expected in-limit child-hydration delta, got %A" frame
+
+                PipeTest.send
+                    child
+                    false
+                    (PipeTest.request
+                        14u
+                        "workspace/children"
+                        (PipeTest.map [ "parentId", RpcValue.String projectIds[1]; "pageSize", RpcValue.Integer 1L ]))
+
                 let childrenFrame, childrenSize = PipeTest.readFrameWithSize child
                 Assert.True(childrenSize <= 1024)
-                let childrenError, page = PipeTest.response 3u childrenFrame
+                let childrenError, page = PipeTest.response 14u childrenFrame
                 Assert.True(childrenError.IsNone)
-                Assert.Equal(1L, PipeTest.field "revision" page |> RpcValue.requireInteger "revision")
+                Assert.Equal(2L, PipeTest.field "revision" page |> RpcValue.requireInteger "revision")
 
                 let resetFrame, resetSize = PipeTest.readFrameWithSize child
                 Assert.True(resetSize <= 1024)
 
                 match resetFrame with
                 | Notification("workspace/reset", parameters) ->
-                    Assert.Equal(2L, PipeTest.field "revision" parameters |> RpcValue.requireInteger "revision")
+                    Assert.Equal(3L, PipeTest.field "revision" parameters |> RpcValue.requireInteger "revision")
 
                     let diagnostic =
                         PipeTest.field "diagnostics" parameters
@@ -624,13 +732,13 @@ type WorkspaceAppHostTests() =
                     Assert.Equal(RpcValue.String "workspace.delta_pressure", PipeTest.field "code" diagnostic)
                 | frame -> failwithf "Expected bounded child-hydration reset, got %A" frame
 
-                PipeTest.send child false (PipeTest.request 4u "workspace/root" RpcValue.emptyMap)
+                PipeTest.send child false (PipeTest.request 15u "workspace/root" RpcValue.emptyMap)
                 let freshFrame, freshSize = PipeTest.readFrameWithSize child
                 Assert.True(freshSize <= 1024)
-                let freshError, freshRoot = PipeTest.response 4u freshFrame
+                let freshError, freshRoot = PipeTest.response 15u freshFrame
                 Assert.True(freshError.IsNone)
-                Assert.Equal(2L, PipeTest.field "revision" freshRoot |> RpcValue.requireInteger "revision")
-                PipeTest.shutdown child 5u
+                Assert.Equal(3L, PipeTest.field "revision" freshRoot |> RpcValue.requireInteger "revision")
+                PipeTest.shutdown child 16u
             finally
                 PipeTest.disposeProcess child
         finally
