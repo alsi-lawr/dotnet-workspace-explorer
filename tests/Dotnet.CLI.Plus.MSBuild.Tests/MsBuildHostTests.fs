@@ -385,7 +385,7 @@ module private Test =
                 values "nodes" page
                 |> Seq.exists (fun node ->
                     stringField "kind" node = "projectItem"
-                    && stringField "name" node = "TargetFramework = net8.0")
+                    && stringField "name" node = "Evaluated TargetFramework = net8.0")
 
             continuation <-
                 match field "nextToken" page with
@@ -396,7 +396,7 @@ module private Test =
             hasMore <- continuation.IsSome
             requestId <- requestId + 1u
 
-        Assert.True(targetFrameworkFound, "Fresh project paging did not expose TargetFramework = net8.0.")
+        Assert.True(targetFrameworkFound, "Fresh project paging did not expose Evaluated TargetFramework = net8.0.")
 
         hydratedRevision
         |> Option.defaultWith (fun () -> failwith "The hydration delta was not observed.")

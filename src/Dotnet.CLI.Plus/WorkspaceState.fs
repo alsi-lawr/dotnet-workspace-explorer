@@ -12,6 +12,151 @@ open Dotnet.CLI.Plus.Core
 open Dotnet.CLI.Plus.MSBuild
 open Dotnet.CLI.Plus.Solution
 open Dotnet.CLI.Plus.Transport
+open System.Xml.Linq
+
+type internal DeclaredProjectProperty =
+    { Name: string
+      Scope: WorkspaceArtifactPath
+      Condition: string option
+      Value: string }
+
+type internal HydratedProject =
+    { Snapshot: EvaluationSnapshot
+      DeclaredProperties: ImmutableArray<DeclaredProjectProperty> }
+
+module internal ProjectPropertyRegistry =
+    let Names =
+        Set.ofList
+            [ "AssemblyName"
+              "RootNamespace"
+              "OutputType"
+              "TargetFramework"
+              "TargetFrameworks"
+              "RuntimeIdentifier"
+              "RuntimeIdentifiers"
+              "LangVersion"
+              "TreatWarningsAsErrors"
+              "IsPackable"
+              "PackageId"
+              "Version"
+              "SignAssembly"
+              "AssemblyOriginatorKeyFile"
+              "SelfContained"
+              "PublishSingleFile"
+              "PublishTrimmed"
+              "PublishAot" ]
+
+    let private repositoryImportNames =
+        Set.ofList
+            [ "Directory.Build.props"
+              "Directory.Build.targets"
+              "Directory.Packages.props" ]
+
+    let private external directory path =
+        let relative = Path.GetRelativePath(directory, path)
+
+        Path.IsPathRooted relative
+        || relative = ".."
+        || relative.StartsWith($"..{Path.DirectorySeparatorChar}")
+        || relative.StartsWith($"..{Path.AltDirectorySeparatorChar}")
+
+    let private generated directory path =
+        let relative = Path.GetRelativePath(directory, path).Replace('\\', '/')
+
+        relative.Equals("obj", StringComparison.OrdinalIgnoreCase)
+        || relative.StartsWith("obj/", StringComparison.OrdinalIgnoreCase)
+        || relative.Equals(".generated", StringComparison.OrdinalIgnoreCase)
+        || relative.StartsWith(".generated/", StringComparison.OrdinalIgnoreCase)
+        || relative.EndsWith("/.generated", StringComparison.OrdinalIgnoreCase)
+        || relative.Contains("/.generated/", StringComparison.OrdinalIgnoreCase)
+
+    let private attribute local (element: XElement) =
+        element.Attribute(XName.Get local) |> Option.ofObj |> Option.map _.Value
+
+    let eligibleScopes (workspacePath: WorkspaceArtifactPath) (snapshot: EvaluationSnapshot) =
+        let workspaceDirectory =
+            Path.GetDirectoryName workspacePath.Value
+            |> Option.ofObj
+            |> Option.defaultValue (Directory.GetCurrentDirectory())
+
+        let projectDirectory =
+            Path.GetDirectoryName snapshot.ProjectPath.Value
+            |> Option.ofObj
+            |> Option.defaultValue workspaceDirectory
+
+        snapshot.Imports
+        |> Seq.filter (fun path ->
+            let fileName =
+                Path.GetFileName(path.Value) |> Option.ofObj |> Option.defaultValue String.Empty
+
+            File.Exists path.Value
+            && not (generated projectDirectory path.Value)
+            && (path.Value = snapshot.ProjectPath.Value
+                || not (external workspaceDirectory path.Value)
+                || repositoryImportNames.Contains fileName))
+        |> Seq.distinct
+        |> ImmutableArray.CreateRange
+
+    let isEligibleScope
+        (workspacePath: WorkspaceArtifactPath)
+        (snapshot: EvaluationSnapshot)
+        (path: WorkspaceArtifactPath)
+        =
+        eligibleScopes workspacePath snapshot
+        |> Seq.exists (fun candidate -> candidate.Value = path.Value)
+
+    let declarations workspacePath snapshot =
+        try
+            eligibleScopes workspacePath snapshot
+            |> Seq.collect (fun path ->
+                let document = XDocument.Load(path.Value, LoadOptions.PreserveWhitespace)
+
+                document.Descendants()
+                |> Seq.choose (fun property ->
+                    if
+                        Names.Contains property.Name.LocalName
+                        && (attribute "Condition" property).IsNone
+                    then
+                        property.Parent
+                        |> Option.ofObj
+                        |> Option.bind (fun group ->
+                            if group.Name = XName.Get "PropertyGroup" then
+                                Some(
+                                    { Name = property.Name.LocalName
+                                      Scope = path
+                                      Condition = attribute "Condition" group
+                                      Value = property.Value }
+                                    : DeclaredProjectProperty
+                                )
+                            else
+                                None)
+                    else
+                        None))
+            |> Seq.distinct
+            |> ImmutableArray.CreateRange
+            |> Ok
+        with
+        | :? IOException
+        | :? UnauthorizedAccessException
+        | :? System.Xml.XmlException -> Error "Project declarations could not be read."
+
+    let hasImportedProperty workspacePath snapshot propertyName =
+        try
+            eligibleScopes workspacePath snapshot
+            |> Seq.filter (fun path -> path.Value <> snapshot.ProjectPath.Value)
+            |> Seq.exists (fun path ->
+                let document = XDocument.Load(path.Value, LoadOptions.PreserveWhitespace)
+
+                document.Descendants(XName.Get propertyName)
+                |> Seq.exists (fun property ->
+                    property.Parent
+                    |> Option.ofObj
+                    |> Option.exists (fun group -> group.Name = XName.Get "PropertyGroup")))
+            |> Ok
+        with
+        | :? IOException
+        | :? UnauthorizedAccessException
+        | :? System.Xml.XmlException -> Error "Project declarations could not be read."
 
 type internal WorkspaceStateServices =
     { OpenAsync: string -> CancellationToken -> Task<WorkspaceOutcome<SolutionWorkspace>>
@@ -75,7 +220,7 @@ type internal Placement =
 
 type internal WorkspaceData =
     { Workspace: SolutionWorkspace
-      Hydrated: Map<string, EvaluationSnapshot>
+      Hydrated: Map<string, HydratedProject>
       Recency: string list
       Revision: int64
       NeedsRebase: bool }
@@ -184,16 +329,22 @@ module internal WorkspaceStatePure =
         else
             "outer"
 
-    let contributions (snapshot: EvaluationSnapshot) =
+    let private bounded limit (value: string) =
+        if value.Length <= limit then
+            value
+        else
+            $"{value[.. limit - 2]}…"
+
+    let private evaluatedContributions (snapshot: EvaluationSnapshot) =
         seq {
             for dimension in snapshot.Dimensions do
                 let framework = dimensionName dimension
 
                 for property in dimension.Properties do
                     yield
-                        { Logical = [ "property"; property.Name ]
+                        { Logical = [ "evaluated-property"; property.Name ]
                           Content = [ property.Value ]
-                          Display = $"{property.Name} = {property.Value}"
+                          Display = $"Evaluated {property.Name} = {property.Value}"
                           Dimension = framework }
 
                 for item in dimension.Items do
@@ -267,8 +418,34 @@ module internal WorkspaceStatePure =
         }
         |> Seq.toArray
 
-    let projectBodyEntries descriptor (project: SolutionProjectProjection) snapshot =
-        contributions snapshot
+    let private declaredContributions (descriptor: WorkspaceDescriptor) (hydrated: HydratedProject) =
+        hydrated.DeclaredProperties
+        |> Seq.map (fun property ->
+            let condition = property.Condition |> Option.defaultValue "<none>"
+
+            let scope =
+                Path.GetRelativePath(
+                    Path.GetDirectoryName descriptor.Path.Value
+                    |> Option.ofObj
+                    |> Option.defaultValue (Directory.GetCurrentDirectory()),
+                    property.Scope.Value
+                )
+                |> fun value ->
+                    value.Replace(Path.DirectorySeparatorChar, '/').Replace(Path.AltDirectorySeparatorChar, '/')
+
+            { Logical = [ "declared-property"; property.Name; property.Scope.Value; condition ]
+              Content = [ property.Scope.Value; condition; property.Value ]
+              Display =
+                $"Declared {property.Name} = {bounded 96 property.Value} [scope: {bounded 96 scope}; condition: {bounded 96 condition}]"
+              Dimension = "declared" })
+        |> Seq.toArray
+
+    let contributions (descriptor: WorkspaceDescriptor) (hydrated: HydratedProject) =
+        Seq.append (evaluatedContributions hydrated.Snapshot) (declaredContributions descriptor hydrated)
+        |> Seq.toArray
+
+    let projectBodyEntries (descriptor: WorkspaceDescriptor) (project: SolutionProjectProjection) hydrated =
+        contributions descriptor hydrated
         |> Seq.groupBy _.Logical
         |> Seq.collect (fun (_, logicalValues) ->
             let variants = logicalValues |> Seq.groupBy _.Content |> Seq.toArray
@@ -304,7 +481,7 @@ module internal WorkspaceStatePure =
                         WorkspaceNodeKind.ProjectItem,
                         NodeSemanticIdentity.Create $"project-body:{project.Node.Identity.Value}:{identity}",
                         boundedDisplay,
-                        snapshot.CapabilityProfile
+                        hydrated.Snapshot.CapabilityProfile
                     )
 
                 let placement =
@@ -317,17 +494,18 @@ module internal WorkspaceStatePure =
         |> Seq.sortBy fst
         |> ImmutableArray.CreateRange
 
-    let projectBody descriptor project snapshot =
-        projectBodyEntries descriptor project snapshot
+    let projectBody (descriptor: WorkspaceDescriptor) project hydrated =
+        projectBodyEntries descriptor project hydrated
         |> Seq.map snd
         |> ImmutableArray.CreateRange
 
-    let snapshotSemanticValues (snapshot: EvaluationSnapshot) =
+    let snapshotSemanticValues (descriptor: WorkspaceDescriptor) (hydrated: HydratedProject) =
         seq {
+            let snapshot = hydrated.Snapshot
             yield snapshot.ProjectPath.Value
 
             for value in
-                contributions snapshot
+                contributions descriptor hydrated
                 |> Seq.sortBy (fun value -> value.Logical, value.Content, value.Dimension) do
                 yield! value.Logical
                 yield! value.Content
@@ -362,8 +540,8 @@ module internal WorkspaceStatePure =
                     |> Option.defaultValue "diagnostic-location:"
         }
 
-    let sameSnapshot left right =
-        canonicalHash (snapshotSemanticValues left) = canonicalHash (snapshotSemanticValues right)
+    let sameSnapshot (descriptor: WorkspaceDescriptor) (left: HydratedProject) (right: HydratedProject) =
+        canonicalHash (snapshotSemanticValues descriptor left) = canonicalHash (snapshotSemanticValues descriptor right)
 
     let private nodeEqual (left: WorkspaceNode) (right: WorkspaceNode) =
         left.NodeId = right.NodeId
@@ -418,13 +596,13 @@ module internal WorkspaceStatePure =
 
             let node =
                 match data.Hydrated.TryFind key with
-                | Some snapshot ->
+                | Some hydrated ->
                     WorkspaceNode.CreateWithLoadState(
                         data.Workspace.WorkspaceDescriptor,
                         WorkspaceNodeKind.Project,
                         project.Node.Identity,
                         project.Node.Name,
-                        snapshot.CapabilityProfile,
+                        hydrated.Snapshot.CapabilityProfile,
                         WorkspaceNodeLoadState.Hydrated
                     )
                 | None -> project.Node
@@ -432,8 +610,8 @@ module internal WorkspaceStatePure =
             raw.Add(PlacementKey [ "project"; key ], node, folderParent project.ParentFolderPath)
 
             match data.Hydrated.TryFind key with
-            | Some snapshot ->
-                for placement, child in projectBodyEntries data.Workspace.WorkspaceDescriptor project snapshot do
+            | Some hydrated ->
+                for placement, child in projectBodyEntries data.Workspace.WorkspaceDescriptor project hydrated do
                     raw.Add(PlacementKey("project-body" :: key :: placement), child, Some node.NodeId)
             | None -> ()
 
@@ -638,7 +816,8 @@ module internal WorkspaceStatePure =
         exact data.Workspace.WorkspaceDescriptor.Path.Value
         exact data.Workspace.BackingPath.Value
 
-        for KeyValue(_, snapshot) in data.Hydrated do
+        for KeyValue(_, hydrated) in data.Hydrated do
+            let snapshot = hydrated.Snapshot
             exact snapshot.ProjectPath.Value
 
             for path in Seq.append snapshot.Imports snapshot.WatchInputs do
@@ -760,7 +939,12 @@ type internal WorkspaceState
 
             return
                 match outcome with
-                | WorkspaceOutcome.Success snapshot -> Ok snapshot
+                | WorkspaceOutcome.Success snapshot ->
+                    ProjectPropertyRegistry.declarations workspace.BackingPath snapshot
+                    |> Result.map (fun declared ->
+                        { Snapshot = snapshot
+                          DeclaredProperties = declared })
+                    |> Result.mapError (fun message -> RpcErrors.create "project" message None)
                 | WorkspaceOutcome.Failure failure -> Error(failureError failure)
         }
 
@@ -791,12 +975,13 @@ type internal WorkspaceState
             || (current.Hydrated
                 |> Seq.exists (fun (KeyValue(key, snapshot)) ->
                     match candidate.Hydrated.TryFind key with
-                    | Some next -> not (WorkspaceStatePure.sameSnapshot snapshot next)
+                    | Some next ->
+                        not (WorkspaceStatePure.sameSnapshot current.Workspace.WorkspaceDescriptor snapshot next)
                     | None -> true))
 
         let diagnostics =
             candidate.Hydrated.Values
-            |> Seq.collect _.Diagnostics
+            |> Seq.collect (fun hydrated -> hydrated.Snapshot.Diagnostics)
             |> Seq.sortBy (fun value -> value.DiagnosticCode.Value, value.Message)
             |> ImmutableArray.CreateRange
 
@@ -910,11 +1095,75 @@ type internal WorkspaceState
                                 let key = pathKey project.Path.AbsolutePath.Value
 
                                 current.Hydrated.TryFind key
-                                |> Option.map (fun snapshot ->
+                                |> Option.map (fun hydrated ->
                                     { ProjectId = project.Node.NodeId
-                                      CapabilityProfile = snapshot.CapabilityProfile }))
+                                      CapabilityProfile = hydrated.Snapshot.CapabilityProfile }))
 
                         SolutionProjection.EnrichProjectCapabilities(current.Workspace, enrichments))
+            finally
+                gate.Release() |> ignore
+        }
+
+    member _.ProjectAsync(projectId: NodeId, cancellationToken: CancellationToken) =
+        task {
+            do! gate.WaitAsync cancellationToken
+
+            try
+                let! ready = ensureReadyUnsafe cancellationToken
+
+                match ready with
+                | Error error ->
+                    return
+                        Failure(
+                            Internal(
+                                WorkspaceDiagnostic.CreateSimple(
+                                    WorkspaceDiagnosticSeverity.Error,
+                                    WorkspaceDiagnosticCode.Create error.Code,
+                                    error.Message,
+                                    false,
+                                    CorrelationId.New()
+                                )
+                            )
+                        )
+                | Ok() ->
+                    match
+                        current.Workspace.RootProjection.Projects
+                        |> Seq.tryFind (fun project -> project.Node.NodeId = projectId && not project.IsFilteredOut)
+                    with
+                    | None ->
+                        return
+                            Failure(
+                                NotFound(
+                                    projectId.Value,
+                                    WorkspaceDiagnostic.CreateSimple(
+                                        WorkspaceDiagnosticSeverity.Error,
+                                        WorkspaceDiagnosticCode.Create "not_found",
+                                        "The project target was not found.",
+                                        false,
+                                        CorrelationId.New()
+                                    )
+                                )
+                            )
+                    | Some project ->
+                        let! evaluated = evaluate current.Workspace project cancellationToken
+
+                        return
+                            evaluated
+                            |> Result.map (fun hydrated -> current.Workspace, project, hydrated.Snapshot)
+                            |> function
+                                | Ok value -> Success value
+                                | Error error ->
+                                    Failure(
+                                        Internal(
+                                            WorkspaceDiagnostic.CreateSimple(
+                                                WorkspaceDiagnosticSeverity.Error,
+                                                WorkspaceDiagnosticCode.Create error.Code,
+                                                error.Message,
+                                                false,
+                                                CorrelationId.New()
+                                            )
+                                        )
+                                    )
             finally
                 gate.Release() |> ignore
         }

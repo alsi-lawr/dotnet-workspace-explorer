@@ -176,35 +176,96 @@ module internal Pipe =
 
     let private commandDescriptor commandId =
         try
-            SolutionPersistenceMutator.TryDescribe(CommandId.Create commandId)
+            let id = CommandId.Create commandId
+
+            SolutionPersistenceMutator.TryDescribe id
+            |> Option.orElseWith (fun () -> ProjectMutations.tryDescribe id)
         with :? ArgumentException as error ->
             raise (ArgumentException(error.Message, "commandId"))
+
+    type private PlannedMutation =
+        | SolutionPlan of SolutionMutationPlan
+        | ProjectPlan of ProjectMutationPlan
+
+    let private plannedActions =
+        function
+        | SolutionPlan plan ->
+            seq {
+                match plan.FileRename with
+                | Some rename -> yield MutationAction.Rename(rename.Source.Value, rename.Destination.Value)
+                | None -> ()
+
+                yield MutationAction.ReplaceFile(plan.BackingPath.Value, plan.Contents)
+            }
+        | ProjectPlan plan -> plan.Actions :> seq<MutationAction>
+
+    let private plannedPaths =
+        function
+        | SolutionPlan plan ->
+            seq {
+                yield plan.BackingPath
+
+                match plan.FileRename with
+                | Some rename ->
+                    yield rename.Source
+                    yield rename.Destination
+                | None -> ()
+            }
+        | ProjectPlan plan -> plan.Paths :> seq<WorkspaceArtifactPath>
+
+    let private plannedRequest =
+        function
+        | SolutionPlan plan -> plan.Request
+        | ProjectPlan plan -> plan.Request
+
+    let private planMutation
+        (workspace: SolutionWorkspace)
+        (state: WorkspaceState)
+        (request: CommandMutationRequest)
+        cancellationToken
+        =
+        task {
+            match SolutionPersistenceMutator.TryDescribe request.CommandId with
+            | Some _ ->
+                let! plan = SolutionPersistenceMutator.PlanAsync(workspace, request, cancellationToken)
+
+                return
+                    plan
+                    |> function
+                        | Success value -> Success(SolutionPlan value)
+                        | Failure failure -> Failure failure
+            | None ->
+                match request.TargetId with
+                | None ->
+                    return
+                        Failure(
+                            NotFound(
+                                "targetId",
+                                WorkspaceDiagnostic.CreateSimple(
+                                    WorkspaceDiagnosticSeverity.Error,
+                                    WorkspaceDiagnosticCode.Create "not_found",
+                                    "A project target is required.",
+                                    false,
+                                    CorrelationId.New()
+                                )
+                            )
+                        )
+                | Some target ->
+                    let! project = state.ProjectAsync(target, cancellationToken)
+
+                    match project with
+                    | Failure failure -> return Failure failure
+                    | Success(projectWorkspace, project, snapshot) ->
+                        match ProjectMutations.plan projectWorkspace project snapshot request cancellationToken with
+                        | Success value -> return Success(ProjectPlan value)
+                        | Failure failure -> return Failure failure
+        }
 
     let private mutationNotifications =
         function
         | WorkspaceInvalidationResult.Delta delta -> [ PublicProtocol.workspaceDelta delta ]
         | WorkspaceInvalidationResult.Reset reset -> [ PublicProtocol.workspaceReset reset ]
         | WorkspaceInvalidationResult.None -> []
-
-    let private mutationActions (plan: SolutionMutationPlan) =
-        seq {
-            match plan.FileRename with
-            | Some rename -> yield MutationAction.Rename(rename.Source.Value, rename.Destination.Value)
-            | None -> ()
-
-            yield MutationAction.ReplaceFile(plan.BackingPath.Value, plan.Contents)
-        }
-
-    let private mutationPaths (plan: SolutionMutationPlan) =
-        seq {
-            yield plan.BackingPath
-
-            match plan.FileRename with
-            | Some rename ->
-                yield rename.Source
-                yield rename.Destination
-            | None -> ()
-        }
 
     let isPipeInvocation (arguments: string array) =
         match arguments with
@@ -633,7 +694,9 @@ module internal Pipe =
                                     return
                                         Ok
                                             { Result =
-                                                SolutionPersistenceMutator.Discover(commandWorkspace.Value, target)
+                                                Seq.append
+                                                    (SolutionPersistenceMutator.Discover(commandWorkspace.Value, target))
+                                                    (ProjectMutations.discover commandWorkspace.Value target)
                                                 |> PublicProtocol.commandListResult
                                               Notifications = []
                                               BackgroundWork = None
@@ -650,8 +713,10 @@ module internal Pipe =
                                     | _, None ->
                                         return Error(RpcErrors.create "not_found" "The command was not found." None)
                                     | Ok target, Some descriptor when
-                                        SolutionPersistenceMutator.Discover(commandWorkspace.Value, target)
-                                        |> Seq.exists (fun candidate -> candidate.CommandId = descriptor.CommandId)
+                                        (Seq.append
+                                            (SolutionPersistenceMutator.Discover(commandWorkspace.Value, target))
+                                            (ProjectMutations.discover commandWorkspace.Value target)
+                                         |> Seq.exists (fun candidate -> candidate.CommandId = descriptor.CommandId))
                                         ->
                                         return
                                             Ok
@@ -689,17 +754,17 @@ module internal Pipe =
                                                   ExpectedRevision = WorkspaceRevision.Create expectedRevision }
 
                                             let! planned =
-                                                SolutionPersistenceMutator.PlanAsync(
-                                                    commandWorkspace.Value,
-                                                    request,
+                                                planMutation
+                                                    commandWorkspace.Value
+                                                    state
+                                                    request
                                                     requestCancellationToken
-                                                )
 
                                             match planned with
                                             | WorkspaceOutcome.Failure failure ->
                                                 return Error(PublicProtocol.failureError failure)
                                             | WorkspaceOutcome.Success plan ->
-                                                match coordinator.Prepare(plan.Request, mutationActions plan) with
+                                                match coordinator.Prepare(plannedRequest plan, plannedActions plan) with
                                                 | WorkspaceOutcome.Failure failure ->
                                                     return Error(PublicProtocol.failureError failure)
                                                 | WorkspaceOutcome.Success preview ->
@@ -735,11 +800,11 @@ module internal Pipe =
                                                   ExpectedRevision = WorkspaceRevision.Create expectedRevision }
 
                                             let! planned =
-                                                SolutionPersistenceMutator.PlanAsync(
-                                                    commandWorkspace.Value,
-                                                    request,
+                                                planMutation
+                                                    commandWorkspace.Value
+                                                    state
+                                                    request
                                                     requestCancellationToken
-                                                )
 
                                             match planned with
                                             | WorkspaceOutcome.Failure failure ->
@@ -749,8 +814,8 @@ module internal Pipe =
 
                                                 match
                                                     coordinator.Execute(
-                                                        plan.Request,
-                                                        mutationActions plan,
+                                                        plannedRequest plan,
+                                                        plannedActions plan,
                                                         token,
                                                         requestCancellationToken
                                                     )
@@ -762,7 +827,7 @@ module internal Pipe =
                                                 | WorkspaceOutcome.Success MutationApplyResult.Applied ->
                                                     let! invalidated =
                                                         state.InvalidateFromTransactionAsync(
-                                                            mutationPaths plan,
+                                                            plannedPaths plan,
                                                             CancellationToken.None
                                                         )
 
