@@ -707,6 +707,7 @@ type MutationCoordinator
                         let reversals = ResizeArray<string * (unit -> unit)>()
                         let cleanup = ResizeArray<string>()
                         let irreversible = ResizeArray<string>()
+                        let relocationSources = ResizeArray<string * string * string>()
                         let mutable failure = None
 
                         let fingerprint path =
@@ -826,6 +827,39 @@ type MutationCoordinator
 
                                     if MutationFiles.exists source && not caseOnly then
                                         invalidOp "The renamed source artifact still exists."
+                                | MutationAction.Move(source, destination) when
+                                    request.CommandId.Value = "project.physical-move"
+                                    && Directory.Exists source
+                                    ->
+                                    let expected = fingerprint source
+                                    cleanup.Add destination
+
+                                    MutationFiles.copyNoFollow source destination
+
+                                    verifyFingerprint
+                                        expected
+                                        destination
+                                        "The staged project directory did not verify."
+
+                                    cleanup.Remove destination |> ignore
+
+                                    reversals.Insert(
+                                        0,
+                                        ($"remove copied project directory {destination}",
+                                         fun () ->
+                                             verifyFingerprint
+                                                 expected
+                                                 destination
+                                                 "The copied project directory changed before compensation."
+
+                                             MutationFiles.remove destination
+
+                                             if MutationFiles.exists destination then
+                                                 invalidOp
+                                                     "The copied project directory remained after compensation.")
+                                    )
+
+                                    relocationSources.Add(source, destination, expected)
                                 | MutationAction.Move(source, destination) ->
                                     let stage = MutationFiles.temporaryBeside destination "stage"
                                     cleanup.Add stage
@@ -893,6 +927,46 @@ type MutationCoordinator
                                 | MutationAction.Delete(path, true, recursive) ->
                                     MutationFiles.deletePermanent path recursive
                                     irreversible.Add $"permanently deleted: {path}"
+
+                                cancellationToken.ThrowIfCancellationRequested()
+
+                            for source, destination, expected in relocationSources do
+                                cancellationToken.ThrowIfCancellationRequested()
+
+                                let sourceExpected = fingerprint source
+                                let destinationExpected = fingerprint destination
+
+                                if
+                                    sourceExpected <> destinationExpected
+                                    || sourceExpected <> expected
+                                then
+                                    invalidOp
+                                        "The copied project directory no longer matches its source."
+
+                                let temporary = MutationFiles.temporaryBeside source "source"
+                                cleanup.Add temporary
+                                MutationFiles.move source temporary
+
+                                reversals.Insert(
+                                    0,
+                                    ($"restore project source {source}",
+                                     fun () ->
+                                         verifyFingerprint
+                                             destinationExpected
+                                             destination
+                                             "The copied project directory changed before source restoration."
+
+                                         if MutationFiles.exists source then
+                                             invalidOp
+                                                 "The project source changed before restoration."
+
+                                         MutationFiles.move temporary source
+
+                                         verifyFingerprint
+                                             sourceExpected
+                                             source
+                                             "The restored project source did not verify.")
+                                )
 
                                 cancellationToken.ThrowIfCancellationRequested()
                         with

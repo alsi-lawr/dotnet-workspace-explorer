@@ -21,6 +21,7 @@ module internal CanonicalMutationPlanning =
     type PlannedMutation =
         | SolutionPlan of SolutionMutationPlan
         | ProjectPlan of ProjectMutationPlan
+        | CompositePlan of ProjectMutationPlan
         | CanonicalPlan of MutationPreviewRequest * WorkspaceArtifactPath array
 
     let plannedActions =
@@ -35,6 +36,7 @@ module internal CanonicalMutationPlanning =
                 yield MutationAction.ReplaceFile(plan.BackingPath.Value, plan.Contents)
             }
         | ProjectPlan plan -> plan.Actions :> seq<MutationAction>
+        | CompositePlan plan -> plan.Actions :> seq<MutationAction>
         | CanonicalPlan _ -> Seq.empty
 
     let plannedPaths =
@@ -50,12 +52,14 @@ module internal CanonicalMutationPlanning =
                 | None -> ()
             }
         | ProjectPlan plan -> plan.Paths :> seq<WorkspaceArtifactPath>
+        | CompositePlan plan -> plan.Paths :> seq<WorkspaceArtifactPath>
         | CanonicalPlan(_, paths) -> paths :> seq<WorkspaceArtifactPath>
 
     let plannedRequest =
         function
         | SolutionPlan plan -> plan.Request
         | ProjectPlan plan -> plan.Request
+        | CompositePlan plan -> plan.Request
         | CanonicalPlan(request, _) -> request
 
     let private projectPaths root (workspace: SolutionWorkspace) targetId =
@@ -232,18 +236,31 @@ module internal CanonicalMutationPlanning =
         (cancellationToken: CancellationToken)
         =
         task {
-            match CanonicalCommands.tryDescribe request.CommandId with
-            | Some _ when CanonicalCommands.isMutation request.CommandId.Value ->
-                return! planCanonical workspace state request cancellationToken
-            | _ ->
-                match SolutionPersistenceMutator.TryDescribe request.CommandId with
-                | Some _ ->
-                    let! plan =
-                        SolutionPersistenceMutator.PlanAsync(workspace, request, cancellationToken)
+            match request.CommandId with
+            | commandId when ProjectRelocationPlanning.isComposite commandId ->
+                let! plan = ProjectRelocationPlanning.plan workspace state request cancellationToken
 
-                    return
-                        match plan with
-                        | Success value -> Success(SolutionPlan value)
-                        | Failure failure -> Failure failure
-                | None -> return! planProject state request cancellationToken
+                return
+                    match plan with
+                    | Success value -> Success(CompositePlan value)
+                    | Failure failure -> Failure failure
+            | _ ->
+                match CanonicalCommands.tryDescribe request.CommandId with
+                | Some _ when CanonicalCommands.isMutation request.CommandId.Value ->
+                    return! planCanonical workspace state request cancellationToken
+                | _ ->
+                    match SolutionPersistenceMutator.TryDescribe request.CommandId with
+                    | Some _ ->
+                        let! plan =
+                            SolutionPersistenceMutator.PlanAsync(
+                                workspace,
+                                request,
+                                cancellationToken
+                            )
+
+                        return
+                            match plan with
+                            | Success value -> Success(SolutionPlan value)
+                            | Failure failure -> Failure failure
+                    | None -> return! planProject state request cancellationToken
         }

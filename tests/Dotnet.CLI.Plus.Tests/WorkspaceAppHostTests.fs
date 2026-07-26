@@ -49,7 +49,7 @@ module internal PipeTest =
 
     let temporaryDirectory name =
         let path =
-            Path.Combine(Path.GetTempPath(), $"dotnet-cli-plus-{name}-{Guid.NewGuid():N}")
+            Path.Combine(AppContext.BaseDirectory, $".dotnet-cli-plus-{name}-{Guid.NewGuid():N}")
 
         Directory.CreateDirectory path |> ignore
         path
@@ -1895,16 +1895,27 @@ type WorkspaceAppHostTests() =
         Assert.StartsWith("{", direct.StandardOutput.ReadToEnd().TrimStart())
 
     [<Fact>]
-    member _.``should hydrate preview and execute a project rename before publishing its delta``() =
+    member _.``should bind incoming conditional references into a confirmed project rename``() =
         let directory = PipeTest.temporaryDirectory "pipe-command"
 
         try
             let solution = Path.Combine(directory, "Demo.slnx")
             let source = Path.Combine(directory, "One.fsproj")
             let destination = Path.Combine(directory, "Renamed.fsproj")
+            let incoming = Path.Combine(directory, "Ref.fsproj")
             let model = SolutionModel()
             model.AddProject("One.fsproj", null, null) |> ignore
+            model.AddProject("Ref.fsproj", null, null) |> ignore
             PipeTest.writeProject source
+
+            File.WriteAllText(
+                incoming,
+                "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup>"
+                + "<ProjectReference Include=\"One.fsproj\" Condition=\"'$(Configuration)' == 'Debug'\" />"
+                + "</ItemGroup><PropertyGroup><TargetFramework>net10.0</TargetFramework>"
+                + "</PropertyGroup></Project>"
+            )
+
             PipeTest.save solution model
             use child = PipeTest.startPipe "solution" solution
 
@@ -1961,10 +1972,11 @@ type WorkspaceAppHostTests() =
                 let projectId =
                     PipeTest.field "nodes" rootResult
                     |> RpcValue.requireArray "nodes"
-                    |> Seq.filter (fun node ->
-                        PipeTest.field "kind" node = RpcValue.String "project")
-                    |> Seq.map (PipeTest.field "id" >> RpcValue.requireString "id")
-                    |> Seq.exactlyOne
+                    |> Seq.find (fun node ->
+                        PipeTest.field "kind" node = RpcValue.String "project"
+                        && PipeTest.field "name" node = RpcValue.String "One")
+                    |> PipeTest.field "id"
+                    |> RpcValue.requireString "id"
 
                 let children =
                     PipeTest.map
@@ -2039,6 +2051,9 @@ type WorkspaceAppHostTests() =
                 let previewId =
                     PipeTest.field "previewId" previewResult |> RpcValue.requireString "previewId"
 
+                Assert.True(File.Exists source)
+                File.ReadAllText incoming |> should contain "One.fsproj"
+
                 let execute =
                     PipeTest.map
                         [ "commandId", RpcValue.String "solution.project.rename"
@@ -2076,6 +2091,10 @@ type WorkspaceAppHostTests() =
 
                 Assert.False(File.Exists source)
                 Assert.True(File.Exists destination)
+                File.ReadAllText incoming |> should contain "Renamed.fsproj"
+
+                File.ReadAllText incoming
+                |> should contain "Condition=\"'$(Configuration)' == 'Debug'\""
 
                 let reopened =
                     SolutionSerializers

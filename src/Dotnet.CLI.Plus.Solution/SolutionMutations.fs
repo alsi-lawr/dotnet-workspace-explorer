@@ -505,6 +505,25 @@ type SolutionPersistenceMutator private () =
             workspace: SolutionWorkspace,
             command: CommandMutationRequest,
             cancellationToken: CancellationToken
+        ) =
+        SolutionPersistenceMutator.PlanCore(workspace, command, cancellationToken, false, None)
+
+    static member internal PlanRelocationAsync
+        (
+            workspace: SolutionWorkspace,
+            command: CommandMutationRequest,
+            folder: NodeId option,
+            cancellationToken: CancellationToken
+        ) =
+        SolutionPersistenceMutator.PlanCore(workspace, command, cancellationToken, true, folder)
+
+    static member private PlanCore
+        (
+            workspace: SolutionWorkspace,
+            command: CommandMutationRequest,
+            cancellationToken: CancellationToken,
+            allowMissingProjectPath: bool,
+            relocationFolder: NodeId option
         ) : Task<WorkspaceOutcome<SolutionMutationPlan>> =
         task {
             if workspace.WorkspaceDescriptor.IsReadOnly then
@@ -944,7 +963,10 @@ type SolutionPersistenceMutator private () =
                                                         solutionDirectory
                                                         path
 
-                                                if not (File.Exists absolute) then
+                                                if
+                                                    not allowMissingProjectPath
+                                                    && not (File.Exists absolute)
+                                                then
                                                     Error "The project file was not found."
                                                 elif
                                                     model.SolutionProjects
@@ -968,7 +990,22 @@ type SolutionPersistenceMutator private () =
 
                                                     transactionPaths <- [ absolute ]
                                                     project.FilePath <- relative
-                                                    Ok()))
+
+                                                    match relocationFolder with
+                                                    | None -> Ok()
+                                                    | Some id ->
+                                                        SolutionMutations.findFolder workspace id
+                                                        |> Option.bind (fun folder ->
+                                                            SolutionMutations.modelFolder
+                                                                model
+                                                                folder.Path)
+                                                        |> Option.map (fun folder ->
+                                                            project.MoveToFolder folder
+                                                            Ok())
+                                                        |> Option.defaultValue (
+                                                            Error
+                                                                "The destination folder was not found."
+                                                        )))
                                     | "solution.build-type.add" ->
                                         SolutionMutations.requiredText "name" command.Arguments
                                         |> Result.bind (fun name ->

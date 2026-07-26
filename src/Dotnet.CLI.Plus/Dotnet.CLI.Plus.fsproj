@@ -28,6 +28,7 @@
         <Compile Include="PipeCommandProtocol.fs" />
         <Compile Include="CommandCompensation.fs" />
         <Compile Include="CanonicalCommandOperation.fs" />
+        <Compile Include="ProjectRelocationOperation.fs" />
         <Compile Include="PipeCommandRequests.fs" />
         <Compile Include="Pipe.fs" />
         <Compile Include="Program.fs" />

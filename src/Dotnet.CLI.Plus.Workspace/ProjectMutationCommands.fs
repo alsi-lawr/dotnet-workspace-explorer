@@ -72,6 +72,15 @@ module internal ProjectMutationCommands =
                     parameter "name" CommandParameterType.Choice true "Metadata name"
                     parameter "value" CommandParameterType.Text true "Value" ]
               command
+                  "project.physical-move"
+                  "Move project directory"
+                  [ parameter
+                        "destination"
+                        CommandParameterType.Path
+                        true
+                        "New destination directory"
+                    parameter "folder" CommandParameterType.NodeId false "Solution folder" ]
+              command
                   "project.property.set"
                   "Set project property"
                   [ parameter "name" CommandParameterType.Choice true "Property name"

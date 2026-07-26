@@ -223,6 +223,46 @@ module internal PipeCommandRequests =
                                             previewId
                                             argv
                                             requestCancellationToken
+                | Ok target, Some descriptor, Some previewId when
+                    descriptor.CommandId.Value = "project.physical-move"
+                    ->
+                    match commandArguments workspace descriptor arguments with
+                    | Error rpcError -> return Error rpcError
+                    | Ok parsed ->
+                        let mutationRequest =
+                            { CommandId = descriptor.CommandId
+                              TargetId = target
+                              Arguments = parsed
+                              ExpectedRevision = WorkspaceRevision.Create expectedRevision }
+
+                        let! planned =
+                            planMutation
+                                workspace
+                                context.State
+                                mutationRequest
+                                requestCancellationToken
+
+                        match planned with
+                        | Failure failure -> return Error(PublicProtocol.failureError failure)
+                        | Success(CompositePlan plan) ->
+                            return!
+                                ProjectRelocationOperation.Start(
+                                    { Workspace = workspace
+                                      State = context.State
+                                      Watcher = context.Watcher
+                                      Coordinator = context.Coordinator
+                                      PublicationGate = context.PublicationGate
+                                      ActiveOperations = context.ActiveOperations
+                                      WorkspaceRoot = context.WorkspaceRoot
+                                      MaximumFrameBytes = context.MaximumFrameBytes
+                                      RebuildWatcher = context.RebuildWatcher
+                                      MutationNotifications = context.MutationNotifications },
+                                    mutationRequest,
+                                    CompositePlan plan,
+                                    previewId,
+                                    requestCancellationToken
+                                )
+                        | Success _ -> return Error(RpcErrors.internalError)
                 | _, _, None ->
                     return Error(RpcErrors.invalidParams "command/execute requires previewId.")
                 | Ok target, Some descriptor, Some previewId ->
