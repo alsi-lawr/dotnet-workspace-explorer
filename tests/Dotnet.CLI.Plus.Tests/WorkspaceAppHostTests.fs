@@ -866,6 +866,77 @@ type WorkspaceAppHostTests() =
             PipeTest.closeProject session
 
     [<Fact>]
+    member _.``should move a project folder and preserve conditional metadata``() =
+        let session =
+            PipeTest.openProjectWithSetup
+                "folder-move-scenario"
+                (fun directory ->
+                    let folder = Path.Combine(directory, "Old")
+                    Directory.CreateDirectory folder |> ignore
+                    File.WriteAllText(Path.Combine(folder, "Source.txt"), "source"))
+                ("<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>"
+                 + "<ItemGroup><Content Include=\"Old/Source.txt\" Condition=\"'$(Configuration)' == 'Debug'\">"
+                 + "<Link>Old/Source.txt</Link></Content></ItemGroup></Project>")
+
+        try
+            let source = Path.Combine(session.Directory, "Old")
+            let destination = Path.Combine(session.Directory, "Moved")
+
+            PipeTest.previewAndExecute
+                session.Child
+                3u
+                "project.folder.move"
+                session.ProjectId
+                (PipeTest.map
+                    [ "path", RpcValue.String source; "destination", RpcValue.String destination ])
+                0L
+                true
+
+            File.Exists(Path.Combine(destination, "Source.txt")) |> should equal true
+            let project = File.ReadAllText session.Project
+            Assert.Contains("Include=\"Moved/Source.txt\"", project)
+            Assert.Contains("Condition=\"'$(Configuration)' == 'Debug'\"", project)
+            Assert.Contains("<Link>Moved/Source.txt</Link>", project)
+        finally
+            PipeTest.closeProject session
+
+    [<Fact>]
+    member _.``should refuse project folder copy collisions and generated destinations``() =
+        let external = PipeTest.temporaryDirectory "folder-copy-refusal-source"
+        File.WriteAllText(Path.Combine(external, "Source.txt"), "source")
+
+        let session =
+            PipeTest.openProject
+                "folder-copy-refusal-scenario"
+                "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"
+
+        try
+            let collision = Path.Combine(session.Directory, "Collision")
+            Directory.CreateDirectory collision |> ignore
+
+            PipeTest.previewFailure
+                session
+                3u
+                "project.folder.copy"
+                (PipeTest.map
+                    [ "source", RpcValue.String external; "path", RpcValue.String collision ])
+                0L
+
+            PipeTest.previewFailure
+                session
+                5u
+                "project.folder.new"
+                (PipeTest.map
+                    [ "path", RpcValue.String(Path.Combine(session.Directory, ".generated")) ])
+                0L
+
+            File.Exists(Path.Combine(external, "Source.txt")) |> should equal true
+            Directory.Exists collision |> should equal true
+        finally
+            PipeTest.closeProject session
+            Directory.Delete(external, true)
+
+    [<Fact>]
     member _.``should write a local curated property``() =
         let session =
             PipeTest.openProject "local-property-scenario" "<Project Sdk=\"Microsoft.NET.Sdk\" />"

@@ -161,7 +161,12 @@ module internal ProjectFolderPlanning =
                     let destination = canonicalNewDirectory projectDirectory (path "path") |> unwrap
                     let relative = normalizedRelative projectDirectory destination
                     appendFolder document relative
-                    makePlan workspace command [ save () ] [ projectPath; destination ]
+
+                    makePlan
+                        workspace
+                        command
+                        [ save () ]
+                        [ projectPath; destination; destinationParent destination ]
                 | "project.folder.copy" ->
                     let source =
                         canonicalExternalDirectory projectDirectory (path "source") |> unwrap
@@ -172,25 +177,21 @@ module internal ProjectFolderPlanning =
                     |> Result.map ignore
                     |> unwrap
 
-                    makePlan workspace command [] [ projectPath; source; destination ]
+                    makePlan
+                        workspace
+                        command
+                        []
+                        [ projectPath; source; destination; destinationParent destination ]
                 | "project.folder.link" ->
                     let source =
                         canonicalExternalDirectory projectDirectory (path "source") |> unwrap
 
-                    let destination = Path.GetFullPath(path "path", projectDirectory)
+                    let destination = canonicalNewDirectory projectDirectory (path "path") |> unwrap
+
                     let relative = normalizedRelative projectDirectory destination
                     let itemType = requiredItemType command.Arguments |> unwrap
 
-                    if
-                        not (isProjectLocal projectDirectory destination)
-                        || generated projectDirectory destination
-                    then
-                        raise (
-                            ArgumentException
-                                "The link path must be a writable project-local folder."
-                        )
-
-                    completeTree source |> Result.map ignore |> unwrap
+                    completeTree projectDirectory source |> Result.map ignore |> unwrap
 
                     appendExternalLink
                         document
@@ -198,7 +199,11 @@ module internal ProjectFolderPlanning =
                         (source.Replace(Path.DirectorySeparatorChar, '/'))
                         relative
 
-                    makePlan workspace command [ save () ] [ projectPath; source ]
+                    makePlan
+                        workspace
+                        command
+                        [ save () ]
+                        [ projectPath; source; destination; destinationParent destination ]
                 | "project.folder.rename" ->
                     let source = canonicalDirectory projectDirectory (path "path") |> unwrap
                     let name = requiredText "name" command.Arguments |> unwrap
@@ -229,14 +234,17 @@ module internal ProjectFolderPlanning =
 
                     let sourceRelative = normalizedRelative projectDirectory source
                     let destinationRelative = normalizedRelative projectDirectory destination
-                    rejectAmbiguousDescendantRewrite document |> unwrap
+
+                    ensureDirectOwnership projectPath sourceRelative source snapshot document
+                    |> unwrap
+
                     rewriteOwnedDescendants sourceRelative destinationRelative document |> unwrap
 
                     makePlan
                         workspace
                         command
                         [ MutationAction.Move(source, destination); save () ]
-                        [ projectPath; source; destination ]
+                        [ projectPath; source; destination; destinationParent destination ]
                 | "project.folder.move" ->
                     let source = canonicalDirectory projectDirectory (path "path") |> unwrap
 
@@ -249,18 +257,21 @@ module internal ProjectFolderPlanning =
 
                     let sourceRelative = normalizedRelative projectDirectory source
                     let destinationRelative = normalizedRelative projectDirectory destination
-                    rejectAmbiguousDescendantRewrite document |> unwrap
+
+                    ensureDirectOwnership projectPath sourceRelative source snapshot document
+                    |> unwrap
+
                     rewriteOwnedDescendants sourceRelative destinationRelative document |> unwrap
 
                     makePlan
                         workspace
                         command
                         [ MutationAction.Move(source, destination); save () ]
-                        [ projectPath; source; destination ]
+                        [ projectPath; source; destination; destinationParent destination ]
                 | "project.folder.remove"
                 | "project.folder.delete" ->
                     let folder = canonicalDirectory projectDirectory (path "path") |> unwrap
-                    completeTree folder |> Result.map ignore |> unwrap
+                    completeTree projectDirectory folder |> Result.map ignore |> unwrap
                     let relative = normalizedRelative projectDirectory folder
                     removeOwnedDescendants relative document
 
@@ -278,3 +289,4 @@ module internal ProjectFolderPlanning =
             with
             | :? ArgumentException as error -> invalid "path" error.Message
             | :? IOException as error -> invalid "path" error.Message
+            | :? UnauthorizedAccessException as error -> invalid "path" error.Message

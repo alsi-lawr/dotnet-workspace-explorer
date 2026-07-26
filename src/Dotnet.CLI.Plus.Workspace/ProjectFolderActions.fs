@@ -43,8 +43,10 @@ module internal ProjectFolderActions =
 
     let paths =
         function
-        | ProjectFolderAction.CreateDirectory path -> [ path ]
-        | ProjectFolderAction.CopyDirectory(source, destination) -> [ source; destination ]
+        | ProjectFolderAction.CreateDirectory path ->
+            [ path; ProjectFolderPaths.destinationParent path ]
+        | ProjectFolderAction.CopyDirectory(source, destination) ->
+            [ source; destination; ProjectFolderPaths.destinationParent destination ]
 
     let writeDigest (writer: BinaryWriter) =
         function

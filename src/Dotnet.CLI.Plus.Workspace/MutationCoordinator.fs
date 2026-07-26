@@ -614,6 +614,7 @@ type MutationCoordinator
                             | Error error -> invalidOp error
                             | Ok folderActions ->
                                 for action in folderActions do
+                                    cancellationToken.ThrowIfCancellationRequested()
                                     let applied = ProjectFolderActions.execute action
 
                                     reversals.Insert(
@@ -621,6 +622,8 @@ type MutationCoordinator
                                         ($"compensate folder action {action}",
                                          fun () -> ProjectFolderActions.compensate applied)
                                     )
+
+                                    cancellationToken.ThrowIfCancellationRequested()
 
                             for action in plan do
                                 cancellationToken.ThrowIfCancellationRequested()

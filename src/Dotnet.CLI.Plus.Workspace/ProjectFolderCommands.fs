@@ -68,6 +68,7 @@ module internal ProjectFolderCommands =
             targetId
             |> Option.bind (fun id ->
                 workspace.RootProjection.Projects
-                |> Seq.tryFind (fun project -> project.Node.NodeId = id)
+                |> Seq.tryFind (fun project ->
+                    project.Node.NodeId = id && project.Node.Supports WorkspaceCapabilityId.Write)
                 |> Option.map (fun _ -> all))
             |> Option.defaultValue ImmutableArray<CommandDescriptor>.Empty

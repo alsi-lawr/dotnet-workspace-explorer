@@ -57,6 +57,19 @@ module private MutationTest =
             |> Seq.map WorkspaceArtifactPath.Create
             |> ImmutableArray.CreateRange }
 
+    let folderRequest command paths arguments =
+        { CommandId = CommandId.Create command
+          Targets = paths |> Seq.map WorkspaceArtifactPath.Create |> ImmutableArray.CreateRange
+          Arguments = CommandArguments.Create arguments
+          ExpectedRevision = WorkspaceRevision.Create 0L
+          Intents = ImmutableHashSet.Create MutationIntent.Overwrite
+          AuthorizedRoots =
+            paths |> Seq.map WorkspaceArtifactPath.Create |> ImmutableArray.CreateRange }
+
+    let argument name value =
+        { ParameterId = CommandParameterId.Create name
+          Value = Path(WorkspaceArtifactPath.Create value) }
+
     let coordinator root clock revision trash =
         MutationCoordinator(WorkspaceArtifactPath.Create root, clock, revision, trash)
 
@@ -103,6 +116,43 @@ module private MutationTest =
         coordinator.Execute(request, actions, preview.Confirmation, CancellationToken.None)
 
 type MutationCoordinatorTests() =
+    [<Fact>]
+    member _.``should leave a pre-cancelled folder copy unapplied``() =
+        let root = MutationTest.directory "pre-cancelled-folder-copy"
+        let source = Path.Combine(root, "Source")
+        let destination = Path.Combine(root, "Destination")
+        let project = Path.Combine(root, "Demo.csproj")
+        Directory.CreateDirectory source |> ignore
+        File.WriteAllText(Path.Combine(source, "Source.txt"), "source")
+        File.WriteAllText(project, "<Project />")
+
+        try
+            let coordinator =
+                MutationTest.coordinator
+                    root
+                    TimeProvider.System
+                    (fun () -> WorkspaceRevision.Create 0L)
+                    (MutationTest.RefusingTrash "unused")
+
+            let request =
+                MutationTest.folderRequest
+                    "project.folder.copy"
+                    [ project; source; destination; root ]
+                    [ MutationTest.argument "source" source
+                      MutationTest.argument "path" destination ]
+
+            let preview = MutationTest.preview coordinator request []
+            use cancelled = new CancellationTokenSource()
+            cancelled.Cancel()
+
+            match coordinator.Execute(request, [], preview.Confirmation, cancelled.Token) with
+            | Success(RolledBack(Cancelled _)) -> ()
+            | result -> failwithf "Expected cancelled rollback, got %A" result
+
+            Directory.Exists destination |> should equal false
+        finally
+            Directory.Delete(root, true)
+
     [<Fact>]
     member _.``should consume confirmations once and bind them to the exact executable plan``() =
         let root = MutationTest.directory "binding"

@@ -1,13 +1,100 @@
 namespace Dotnet.CLI.Plus
 
 open System
+open System.IO
 open System.Xml.Linq
+open Dotnet.CLI.Plus.MSBuild
 
 module internal ProjectFolderXml =
     open ProjectXml
 
     let private hasMacro (value: string) =
         value.Contains("$(", StringComparison.Ordinal)
+
+    let private sourceLeaf (source: string) =
+        source.TrimEnd('/').Split('/', StringSplitOptions.RemoveEmptyEntries)
+        |> Array.tryLast
+        |> Option.defaultValue String.Empty
+
+    let private matchesRelative source (value: string) =
+        value.Equals(source, StringComparison.OrdinalIgnoreCase)
+        || value.StartsWith($"{source}/", StringComparison.OrdinalIgnoreCase)
+
+    let private maybeMacroSource source (value: string) =
+        let leaf = sourceLeaf source
+
+        hasMacro value
+        && not (String.IsNullOrWhiteSpace leaf)
+        && (value.Equals(leaf, StringComparison.OrdinalIgnoreCase)
+            || value.Contains($"/{leaf}/", StringComparison.OrdinalIgnoreCase)
+            || value.EndsWith($"/{leaf}", StringComparison.OrdinalIgnoreCase))
+
+    let private projectRelativeValue (projectPath: string) (value: string) =
+        let directory =
+            Path.GetDirectoryName projectPath
+            |> Option.ofObj
+            |> Option.defaultValue (Directory.GetCurrentDirectory())
+
+        Path.GetFullPath(value, directory)
+
+    let private isUnder source path =
+        let relative = Path.GetRelativePath(source, path)
+
+        relative = "."
+        || (not (Path.IsPathRooted relative)
+            && relative <> ".."
+            && not (relative.StartsWith $"..{Path.DirectorySeparatorChar}"))
+
+    let private declarationValues (document: XDocument) =
+        seq {
+            for element in document.Descendants() do
+                for attributeName in [ "Include"; "Update"; "Remove"; "Link" ] do
+                    match element.Attribute(name attributeName) |> Option.ofObj with
+                    | Some attribute -> yield attribute.Value
+                    | None -> ()
+
+                if element.Name = name "Link" then
+                    yield element.Value
+        }
+
+    let private importedDeclarationAffects sourceRelative sourcePath importPath =
+        let document, _, _, _ = readDocument importPath
+
+        declarationValues document
+        |> Seq.exists (fun value ->
+            maybeMacroSource sourceRelative value
+            || (not (hasMacro value)
+                && isUnder sourcePath (projectRelativeValue importPath value)))
+
+    let ensureDirectOwnership
+        (projectPath: string)
+        (sourceRelative: string)
+        (sourcePath: string)
+        (snapshot: EvaluationSnapshot)
+        (document: XDocument)
+        =
+        let directValues = declarationValues document |> Seq.toArray
+
+        if directValues |> Array.exists (maybeMacroSource sourceRelative) then
+            Error "An affected project declaration uses an MSBuild macro."
+        else
+            snapshot.Imports
+            |> Seq.filter (fun imported ->
+                not (
+                    String.Equals(imported.Value, projectPath, StringComparison.OrdinalIgnoreCase)
+                )
+                && File.Exists imported.Value)
+            |> Seq.tryPick (fun imported ->
+                try
+                    if importedDeclarationAffects sourceRelative sourcePath imported.Value then
+                        Some "An affected project declaration is owned by an import."
+                    else
+                        None
+                with
+                | :? IOException as error -> Some error.Message
+                | :? UnauthorizedAccessException as error -> Some error.Message)
+            |> Option.map Error
+            |> Option.defaultValue (Ok())
 
     let private rewritePrefix source destination (value: string) =
         if hasMacro value then
@@ -28,16 +115,12 @@ module internal ProjectFolderXml =
                     element.Attribute(name attributeName)
                     |> Option.ofObj
                     |> Option.map (fun attribute -> attributeName, attribute)))
-            |> Seq.filter (fun (_, attribute) ->
-                attribute.Value.Equals(source, StringComparison.OrdinalIgnoreCase)
-                || attribute.Value.StartsWith($"{source}/", StringComparison.OrdinalIgnoreCase))
+            |> Seq.filter (fun (_, attribute) -> matchesRelative source attribute.Value)
             |> Seq.toArray
 
         let links =
             document.Descendants(name "Link")
-            |> Seq.filter (fun element ->
-                element.Value.Equals(source, StringComparison.OrdinalIgnoreCase)
-                || element.Value.StartsWith($"{source}/", StringComparison.OrdinalIgnoreCase))
+            |> Seq.filter (fun element -> matchesRelative source element.Value)
             |> Seq.toArray
 
         affected
@@ -76,18 +159,6 @@ module internal ProjectFolderXml =
         |> Seq.filter (fun element ->
             [ "Include"; "Update" ]
             |> Seq.exists (fun attributeName ->
-                attribute attributeName element
-                |> Option.exists (fun value ->
-                    value.Equals(source, StringComparison.OrdinalIgnoreCase)
-                    || value.StartsWith($"{source}/", StringComparison.OrdinalIgnoreCase))))
+                attribute attributeName element |> Option.exists (matchesRelative source)))
         |> Seq.toArray
         |> Array.iter removeItem
-
-    let rejectAmbiguousDescendantRewrite (document: XDocument) =
-        document.Descendants()
-        |> Seq.collect (fun element ->
-            [ "Include"; "Update"; "Remove"; "Link" ]
-            |> Seq.choose (fun attributeName -> attribute attributeName element))
-        |> Seq.tryFind hasMacro
-        |> Option.map (fun _ -> Error "Folder declaration rewrites cannot contain MSBuild macros.")
-        |> Option.defaultValue (Ok())
