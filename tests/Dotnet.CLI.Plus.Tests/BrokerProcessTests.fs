@@ -176,17 +176,15 @@ type BrokerProcessTests() =
         let directory = BrokerProcess.temporaryDirectory "broker-lifecycle-arguments"
 
         try
-            let result =
-                BrokerProcess.run
-                    directory
-                    "capture"
-                    [ "--json"; "build"; "--no-restore"; "--verbosity"; "quiet" ]
-                    []
-
-            BrokerProcess.success result |> should equal true
-
-            BrokerProcess.childArguments result
-            |> should equal [| "build"; "--no-restore"; "--verbosity"; "quiet" |]
+            for arguments in
+                [ [ "restore"; "Demo.slnx" ], [| "restore"; "Demo.slnx" |]
+                  [ "build"; "--no-restore"; "--verbosity"; "quiet" ],
+                  [| "build"; "--no-restore"; "--verbosity"; "quiet" |]
+                  [ "run"; "--project"; "App.fsproj" ], [| "run"; "--project"; "App.fsproj" |] ] do
+                let supplied, expected = arguments
+                let result = BrokerProcess.run directory "capture" ("--json" :: supplied) []
+                BrokerProcess.success result |> should equal true
+                BrokerProcess.childArguments result |> should equal expected
         finally
             BrokerProcess.delete directory
 

@@ -146,8 +146,10 @@ module internal LaunchProfiles =
     let private normalizeRelative root value =
         Path.GetRelativePath(root, value).Replace('\\', '/')
 
-    let private normalizeProfilePath root value =
-        Path.GetFullPath(value, root) |> normalizeRelative root
+    let private normalizeProfilePath root (value: string) =
+        value.Replace('\\', Path.DirectorySeparatorChar)
+        |> fun path -> Path.GetFullPath(path, root)
+        |> normalizeRelative root
 
     let private resolveProject (workspace: SolutionWorkspace) operand =
         let root = solutionDirectory workspace

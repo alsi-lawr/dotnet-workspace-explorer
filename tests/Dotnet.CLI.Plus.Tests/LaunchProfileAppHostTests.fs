@@ -74,12 +74,17 @@ type LaunchProfileAppHostTests() =
         let directory = BrokerProcess.temporaryDirectory "launch-profile-unknown-fields"
 
         try
-            let solution, project, _ = LaunchProfileAppHost.createSolution directory ".slnx"
+            let solution, _, _ = LaunchProfileAppHost.createSolution directory ".slnx"
+            let nested = Path.Combine(directory, "Nested")
+            Directory.CreateDirectory nested |> ignore
+            let project = Path.Combine(nested, "App.fsproj")
+            File.WriteAllText(project, "<Project />")
+            BrokerProcess.saveSolution solution [ project ]
             let profile = Path.ChangeExtension(solution, ".slnLaunch")
 
             File.WriteAllText(
                 profile,
-                "[{\"Name\":\"Start\",\"Unknown\":{\"nested\":true},\"Projects\":[{\"Path\":\"First.fsproj\",\"Action\":\"Start\",\"Keep\":\"yes\"}]}]"
+                "[{\"Name\":\"Start\",\"Unknown\":{\"nested\":true},\"Projects\":[{\"Path\":\"Nested\\\\App.fsproj\",\"Action\":\"Start\",\"Keep\":\"yes\"}]}]"
             )
 
             let updated =
@@ -190,5 +195,35 @@ type LaunchProfileAppHostTests() =
 
             project.GetProperty("Action").GetString()
             |> should equal "StartWithoutDebugging"
+
+            let listed =
+                CanonicalAppHost.executeRead
+                    session
+                    5u
+                    "solution.launch.list"
+                    None
+                    (CanonicalAppHost.argumentMap [])
+                    completion.Revision
+
+            listed.Output |> should equal [ "Start\n" ]
+
+            listed.Notifications
+            |> should equal [ "operation/progress"; "operation/output"; "operation/completed" ]
+
+            let removed =
+                CanonicalAppHost.execute
+                    session
+                    7u
+                    "solution.launch.remove"
+                    None
+                    (CanonicalAppHost.argumentMap [ "name", RpcValue.String "Start" ])
+                    listed.Revision
+
+            removed.Outcome |> should equal "succeeded"
+
+            removed.Notifications
+            |> should equal [ "operation/progress"; "operation/completed" ]
+
+            File.ReadAllText(profile).Trim() |> should equal "[]"
         finally
             CanonicalAppHost.stop session

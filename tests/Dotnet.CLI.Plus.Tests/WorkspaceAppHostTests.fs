@@ -2163,7 +2163,13 @@ type WorkspaceAppHostTests() =
                 |> RpcValue.requireArray "commands"
                 |> Seq.map (PipeTest.field "id" >> RpcValue.requireString "id")
                 |> Seq.toArray
-                |> should equal [| "template.list"; "template.show" |]
+                |> should
+                    equal
+                    [| "solution.launch.list"
+                       "lifecycle.restore"
+                       "lifecycle.build"
+                       "template.list"
+                       "template.show" |]
 
                 let describe = PipeTest.map [ "commandId", RpcValue.String "solution.folder.add" ]
 
