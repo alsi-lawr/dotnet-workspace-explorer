@@ -715,6 +715,10 @@ module internal ProjectMutations =
                                 if allIncluded || containsItemGlob document kind includeValue then
                                     [], [], []
                                 else
+                                    itemTypes
+                                    |> Set.remove kind
+                                    |> Seq.iter (fun itemType -> appendRemove document itemType includeValue)
+
                                     appendItem document kind includeValue []
                                     [ updatedDocument () ], [ projectPath ], []
                             elif external directory source && not link then

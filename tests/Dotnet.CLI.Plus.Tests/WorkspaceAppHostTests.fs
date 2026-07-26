@@ -504,6 +504,43 @@ type WorkspaceAppHostTests() =
             PipeTest.closeProject session
 
     [<Fact>]
+    member _.``should normalize default directory items when adding a different build action``() =
+        let session =
+            PipeTest.openProjectWithSetup
+                "directory-build-action-scenario"
+                (fun directory ->
+                    let assets = Path.Combine(directory, "Assets")
+                    Directory.CreateDirectory(assets) |> ignore
+                    File.WriteAllText(Path.Combine(assets, "Readme.txt"), "readme"))
+                "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"
+
+        try
+            let assets = Path.Combine(session.Directory, "Assets")
+
+            PipeTest.previewAndExecute
+                session.Child
+                3u
+                "project.item.add"
+                session.ProjectId
+                (PipeTest.map [ "path", RpcValue.String assets; "itemType", RpcValue.String "Content" ])
+                0L
+                true
+
+            let project = File.ReadAllText session.Project
+            Assert.Contains("<None Remove=\"Assets/**/*\"", project)
+            Assert.Contains("<Content Include=\"Assets/**/*\"", project)
+
+            let names = PipeTest.readAllProjectChildNames session 5u 1L
+            Assert.Contains(names, fun name -> name.StartsWith("Content: Assets/Readme.txt", StringComparison.Ordinal))
+
+            Assert.False(
+                names
+                |> Array.exists (fun name -> name.StartsWith("None: Assets/Readme.txt", StringComparison.Ordinal))
+            )
+        finally
+            PipeTest.closeProject session
+
+    [<Fact>]
     member _.``should copy or link external project files without local directory operands``() =
         let external = PipeTest.temporaryDirectory "external-item-scenario"
         let source = Path.Combine(external, "Source.txt")
