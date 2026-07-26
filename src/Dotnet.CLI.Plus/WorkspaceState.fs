@@ -46,20 +46,6 @@ module internal ProjectPropertyRegistry =
               "PublishTrimmed"
               "PublishAot" ]
 
-    let private repositoryImportNames =
-        Set.ofList
-            [ "Directory.Build.props"
-              "Directory.Build.targets"
-              "Directory.Packages.props" ]
-
-    let private external directory path =
-        let relative = Path.GetRelativePath(directory, path)
-
-        Path.IsPathRooted relative
-        || relative = ".."
-        || relative.StartsWith($"..{Path.DirectorySeparatorChar}")
-        || relative.StartsWith($"..{Path.AltDirectorySeparatorChar}")
-
     let private generated directory path =
         let relative = Path.GetRelativePath(directory, path).Replace('\\', '/')
 
@@ -85,15 +71,7 @@ module internal ProjectPropertyRegistry =
             |> Option.defaultValue workspaceDirectory
 
         snapshot.Imports
-        |> Seq.filter (fun path ->
-            let fileName =
-                Path.GetFileName(path.Value) |> Option.ofObj |> Option.defaultValue String.Empty
-
-            File.Exists path.Value
-            && not (generated projectDirectory path.Value)
-            && (path.Value = snapshot.ProjectPath.Value
-                || not (external workspaceDirectory path.Value)
-                || repositoryImportNames.Contains fileName))
+        |> Seq.filter (fun path -> File.Exists path.Value && not (generated projectDirectory path.Value))
         |> Seq.distinct
         |> ImmutableArray.CreateRange
 

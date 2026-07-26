@@ -6,6 +6,7 @@ open System
 open System.Collections.Generic
 open System.Diagnostics
 open System.IO
+open System.Text
 open System.Threading
 open System.Threading.Tasks
 open Dotnet.CLI.Plus.Transport
@@ -241,559 +242,565 @@ module private PipeTest =
             | Notification("workspace/delta", _) -> ()
             | frame -> failwithf "Expected mutation delta, got %A" frame
 
+    type ProjectSession =
+        { Directory: string
+          Project: string
+          Child: Process
+          ProjectId: string }
+
+    let openProjectWithSetup name setup (projectContents: string) =
+        let directory = temporaryDirectory name
+        let solution = Path.Combine(directory, "Demo.slnx")
+        let project = Path.Combine(directory, "Demo.csproj")
+        let model = SolutionModel()
+        model.AddProject("Demo.csproj", "Demo", null) |> ignore
+        setup directory
+        File.WriteAllText(project, projectContents)
+        save solution model
+        let child = startPipe "solution" solution
+
+        let sessionInitialize =
+            map
+                [ "protocolVersion", map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 4L ]
+                  "clientInfo", map [ "name", RpcValue.String "test" ]
+                  "capabilities",
+                  RpcValue.array
+                      [ RpcValue.String "workspace.root"
+                        RpcValue.String "workspace.children"
+                        RpcValue.String "workspace.delta"
+                        RpcValue.String "workspace.export"
+                        RpcValue.String "workspace.refresh"
+                        RpcValue.String "operation.cancel" ]
+                  "limits",
+                  map
+                      [ "maxFrameBytes", RpcValue.Integer 65536L
+                        "maxPageSize", RpcValue.Integer 100L ] ]
+
+        send child false (request 1u "initialize" sessionInitialize)
+        readFrame child |> response 1u |> ignore
+        send child false (request 2u "workspace/root" RpcValue.emptyMap)
+        let error, root = readFrame child |> response 2u
+
+        match error with
+        | Some value -> failwithf "Workspace root failed: %s" value.Message
+        | None ->
+            let projectId =
+                field "nodes" root
+                |> RpcValue.requireArray "nodes"
+                |> Seq.find (fun node -> field "kind" node = RpcValue.String "project")
+                |> field "id"
+                |> RpcValue.requireString "id"
+
+            { Directory = directory
+              Project = project
+              Child = child
+              ProjectId = projectId }
+
+    let openProject name projectContents =
+        openProjectWithSetup name ignore projectContents
+
+    let closeProject session =
+        try
+            shutdown session.Child 99u
+        finally
+            disposeProcess session.Child
+
+            if Directory.Exists session.Directory then
+                Directory.Delete(session.Directory, true)
+
+    let previewFailure session id commandId arguments revision =
+        send
+            session.Child
+            false
+            (request
+                id
+                "command/preview"
+                (map
+                    [ "commandId", RpcValue.String commandId
+                      "targetId", RpcValue.String session.ProjectId
+                      "arguments", arguments
+                      "expectedRevision", RpcValue.Integer revision ]))
+
+        let error, _ = readFrame session.Child |> response id
+        Assert.Equal("invalid_input", error.Value.Code)
+
+    let readAllProjectChildNames session firstRequestId expectedRevision =
+        let names = ResizeArray<string>()
+        let mutable continuation = None
+        let mutable requestId = firstRequestId
+        let mutable first = true
+
+        while first || continuation.IsSome do
+            let fields =
+                [ "parentId", RpcValue.String session.ProjectId
+                  "pageSize", RpcValue.Integer 100L ]
+                |> fun fields ->
+                    continuation
+                    |> Option.map (fun token -> ("continuationToken", RpcValue.String token) :: fields)
+                    |> Option.defaultValue fields
+
+            send session.Child false (request requestId "workspace/children" (map fields))
+
+            let (error, page), _, _ =
+                responseAfterWorkspaceNotifications session.Child requestId expectedRevision
+
+            Assert.True(error.IsNone)
+
+            field "nodes" page
+            |> RpcValue.requireArray "nodes"
+            |> Seq.iter (fun node -> names.Add(field "name" node |> RpcValue.requireString "name"))
+
+            continuation <-
+                match RpcValue.tryField "nextToken" page with
+                | Some(RpcValue.String token) -> Some token
+                | Some RpcValue.Nil
+                | None -> None
+                | Some value -> failwithf "Unexpected continuation token: %A" value
+
+            requestId <- requestId + 1u
+            first <- false
+
+        names |> Seq.toArray
+
 type WorkspaceAppHostTests() =
     [<Fact>]
-    member _.``should mutate project items through the previewed public commands``() =
-        let directory = PipeTest.temporaryDirectory "project-item-glob-command"
-        let external = PipeTest.temporaryDirectory "project-item-external-command"
+    member _.``should keep excluded and existing directory item additions explicit only when needed``() =
+        let session =
+            PipeTest.openProjectWithSetup
+                "item-glob-scenario"
+                (fun directory ->
+                    let included = Path.Combine(directory, "Included")
+                    Directory.CreateDirectory(included) |> ignore
+                    File.WriteAllText(Path.Combine(included, "Nested.cs"), "class Nested { }"))
+                "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework><DefaultItemExcludes>$(DefaultItemExcludes);Excluded.cs</DefaultItemExcludes></PropertyGroup></Project>"
 
         try
-            let solution = Path.Combine(directory, "Demo.slnx")
-            let project = Path.Combine(directory, "Demo.csproj")
-            let source = Path.Combine(directory, "Extra.cs")
-            let content = Path.Combine(directory, "Extra.txt")
-            let created = Path.Combine(directory, "New.cs")
-            let copySource = Path.Combine(directory, "CopySource.txt")
-            let copiedItem = Path.Combine(directory, "Copy.txt")
-            let renamedItem = Path.Combine(directory, "Renamed.txt")
-            let movedDirectory = Path.Combine(directory, "Moved")
-            let movedItem = Path.Combine(movedDirectory, "Renamed.txt")
-            let deleted = Path.Combine(directory, "Delete.txt")
-            let generatedDirectory = Path.Combine(directory, "obj")
-            let generated = Path.Combine(generatedDirectory, "Generated.cs")
-            let trashHome = Path.Combine(directory, "data")
-            let externalCopy = Path.Combine(external, "External.txt")
-            let externalLink = Path.Combine(external, "Linked.txt")
-            let externalDirectory = Path.Combine(external, "Directory")
-            let model = SolutionModel()
-            model.AddProject("Demo.csproj", "Demo", null) |> ignore
+            let before = File.ReadAllBytes session.Project
+            let included = Path.Combine(session.Directory, "Included")
 
-            File.WriteAllText(
-                project,
-                "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"
-            )
+            PipeTest.previewAndExecute
+                session.Child
+                3u
+                "project.item.add"
+                session.ProjectId
+                (PipeTest.map [ "path", RpcValue.String included; "itemType", RpcValue.String "Compile" ])
+                0L
+                true
 
-            File.WriteAllText(source, "class Extra { }")
-            File.WriteAllText(content, "content")
-            File.WriteAllText(copySource, "copy source")
-            File.WriteAllText(deleted, "delete")
-            Directory.CreateDirectory(movedDirectory) |> ignore
-            Directory.CreateDirectory(generatedDirectory) |> ignore
-            Directory.CreateDirectory(trashHome) |> ignore
-            File.WriteAllText(generated, "class Generated { }")
-            File.WriteAllText(externalCopy, "copy")
-            File.WriteAllText(externalLink, "link")
-            Directory.CreateDirectory(externalDirectory) |> ignore
-            File.WriteAllText(Path.Combine(externalDirectory, "Nested.txt"), "nested")
-            PipeTest.save solution model
-            let before = File.ReadAllBytes project
+            Assert.Equal<byte>(before, File.ReadAllBytes session.Project)
+            let excluded = Path.Combine(session.Directory, "Excluded.cs")
 
-            use child =
-                if OperatingSystem.IsLinux() then
-                    PipeTest.startPipeWithDataHome "solution" solution (Some trashHome)
-                else
-                    PipeTest.startPipe "solution" solution
+            PipeTest.previewAndExecute
+                session.Child
+                5u
+                "project.item.new"
+                session.ProjectId
+                (PipeTest.map
+                    [ "path", RpcValue.String excluded
+                      "itemType", RpcValue.String "Compile"
+                      "contents", RpcValue.String "class Excluded { }" ])
+                1L
+                true
 
-            try
-                PipeTest.send child false (PipeTest.request 1u "initialize" PipeTest.initialize)
-                PipeTest.readFrame child |> PipeTest.response 1u |> ignore
-                PipeTest.send child false (PipeTest.request 2u "workspace/root" RpcValue.emptyMap)
-                let rootError, root = PipeTest.readFrame child |> PipeTest.response 2u
-
-                match rootError with
-                | Some error -> failwithf "Workspace root failed: %s: %s" error.Code error.Message
-                | None -> ()
-
-                let projectId =
-                    PipeTest.field "nodes" root
-                    |> RpcValue.requireArray "nodes"
-                    |> Seq.find (fun node -> PipeTest.field "kind" node = RpcValue.String "project")
-                    |> PipeTest.field "id"
-                    |> RpcValue.requireString "id"
-
-                PipeTest.previewAndExecute
-                    child
-                    3u
-                    "project.item.add"
-                    projectId
-                    (PipeTest.map [ "path", RpcValue.String source; "itemType", RpcValue.String "Compile" ])
-                    0L
-                    true
-
-                Assert.Equal<byte>(before, File.ReadAllBytes project)
-
-                PipeTest.previewAndExecute
-                    child
-                    5u
-                    "project.item.remove"
-                    projectId
-                    (PipeTest.map [ "path", RpcValue.String content ])
-                    1L
-                    true
-
-                Assert.True(File.Exists content)
-                Assert.Contains("<None Remove=\"Extra.txt\"", File.ReadAllText project)
-
-                let projectBeforeExternalCopy = File.ReadAllBytes project
-
-                PipeTest.previewAndExecute
-                    child
-                    7u
-                    "project.item.add"
-                    projectId
-                    (PipeTest.map [ "path", RpcValue.String externalCopy; "itemType", RpcValue.String "None" ])
-                    2L
-                    true
-
-                let copied = Path.Combine(directory, "External.txt")
-                Assert.True(File.Exists copied)
-                Assert.Equal("copy", File.ReadAllText copied)
-                Assert.Equal<byte>(projectBeforeExternalCopy, File.ReadAllBytes project)
-
-                PipeTest.previewAndExecute
-                    child
-                    9u
-                    "project.item.add"
-                    projectId
-                    (PipeTest.map
-                        [ "path", RpcValue.String externalLink
-                          "itemType", RpcValue.String "Content"
-                          "link", RpcValue.Boolean true ])
-                    3L
-                    true
-
-                let linkedXml = File.ReadAllText project
-                Assert.True(File.Exists externalLink)
-                Assert.False(File.Exists(Path.Combine(directory, "Linked.txt")))
-                Assert.Contains("<Content Include=", linkedXml)
-                Assert.Contains("<Link>Linked.txt</Link>", linkedXml)
-
-                let projectBeforeNew = File.ReadAllBytes project
-
-                PipeTest.previewAndExecute
-                    child
-                    11u
-                    "project.item.new"
-                    projectId
-                    (PipeTest.map
-                        [ "path", RpcValue.String created
-                          "itemType", RpcValue.String "Compile"
-                          "contents", RpcValue.String "class New { }" ])
-                    4L
-                    true
-
-                Assert.Equal("class New { }", File.ReadAllText created)
-                Assert.Equal<byte>(projectBeforeNew, File.ReadAllBytes project)
-
-                let projectBeforeCopy = File.ReadAllBytes project
-
-                PipeTest.previewAndExecute
-                    child
-                    13u
-                    "project.item.copy"
-                    projectId
-                    (PipeTest.map
-                        [ "source", RpcValue.String copySource
-                          "path", RpcValue.String copiedItem
-                          "itemType", RpcValue.String "None" ])
-                    5L
-                    true
-
-                Assert.Equal("copy source", File.ReadAllText copiedItem)
-                Assert.Equal<byte>(projectBeforeCopy, File.ReadAllBytes project)
-
-                PipeTest.previewAndExecute
-                    child
-                    15u
-                    "project.item.set-metadata"
-                    projectId
-                    (PipeTest.map
-                        [ "path", RpcValue.String source
-                          "name", RpcValue.String "CopyToOutputDirectory"
-                          "value", RpcValue.String "Always" ])
-                    6L
-                    true
-
-                let metadataXml = File.ReadAllText project
-                Assert.Contains("<Compile Update=\"Extra.cs\"", metadataXml)
-                Assert.DoesNotContain("<Compile Include=\"Extra.cs\"", metadataXml)
-                Assert.Contains("<CopyToOutputDirectory>Always</CopyToOutputDirectory>", metadataXml)
-
-                PipeTest.previewAndExecute
-                    child
-                    17u
-                    "project.item.set-build-action"
-                    projectId
-                    (PipeTest.map [ "path", RpcValue.String created; "itemType", RpcValue.String "Content" ])
-                    7L
-                    true
-
-                let buildActionXml = File.ReadAllText project
-                Assert.Contains("<Compile Remove=\"New.cs\"", buildActionXml)
-                Assert.Contains("<Content Include=\"New.cs\"", buildActionXml)
-
-                PipeTest.previewAndExecute
-                    child
-                    19u
-                    "project.item.rename"
-                    projectId
-                    (PipeTest.map [ "path", RpcValue.String copiedItem; "name", RpcValue.String "Renamed.txt" ])
-                    8L
-                    true
-
-                Assert.False(File.Exists copiedItem)
-                Assert.True(File.Exists renamedItem)
-
-                PipeTest.previewAndExecute
-                    child
-                    21u
-                    "project.item.move"
-                    projectId
-                    (PipeTest.map
-                        [ "path", RpcValue.String renamedItem
-                          "destination", RpcValue.String movedItem ])
-                    9L
-                    true
-
-                Assert.False(File.Exists renamedItem)
-                Assert.True(File.Exists movedItem)
-
-                PipeTest.previewAndExecute
-                    child
-                    23u
-                    "project.item.remove"
-                    projectId
-                    (PipeTest.map [ "path", RpcValue.String movedItem ])
-                    10L
-                    true
-
-                let explicitRemovedXml = File.ReadAllText project
-                Assert.DoesNotContain("<Content Remove=\"Moved/Renamed.txt\"", explicitRemovedXml)
-                Assert.True(File.Exists movedItem)
-
-                PipeTest.previewAndExecute
-                    child
-                    25u
-                    "project.item.remove"
-                    projectId
-                    (PipeTest.map [ "path", RpcValue.String source ])
-                    11L
-                    true
-
-                let removedXml = File.ReadAllText project
-                Assert.Contains("<Compile Remove=\"Extra.cs\"", removedXml)
-                Assert.DoesNotContain("<Compile Update=\"Extra.cs\"", removedXml)
-                Assert.True(File.Exists source)
-
-                PipeTest.previewAndExecute
-                    child
-                    27u
-                    "project.item.delete"
-                    projectId
-                    (PipeTest.map [ "path", RpcValue.String deleted ])
-                    12L
-                    true
-
-                Assert.False(File.Exists deleted)
-                Assert.Contains("<None Remove=\"Delete.txt\"", File.ReadAllText project)
-
-                if OperatingSystem.IsLinux() then
-                    let trashed =
-                        Directory.EnumerateFiles(Path.Combine(trashHome, "Trash", "files"))
-                        |> Seq.exactlyOne
-
-                    Assert.Equal("delete", File.ReadAllText trashed)
-
-                let xmlBeforeCollision = File.ReadAllBytes project
-
-                let collision =
-                    PipeTest.map
-                        [ "commandId", RpcValue.String "project.item.add"
-                          "targetId", RpcValue.String projectId
-                          "arguments",
-                          PipeTest.map [ "path", RpcValue.String externalCopy; "itemType", RpcValue.String "Content" ]
-                          "expectedRevision", RpcValue.Integer 13L ]
-
-                PipeTest.send child false (PipeTest.request 29u "command/preview" collision)
-                let collisionError, _ = PipeTest.readFrame child |> PipeTest.response 29u
-                Assert.Equal("invalid_input", collisionError.Value.Code)
-                Assert.Equal<byte>(xmlBeforeCollision, File.ReadAllBytes project)
-                Assert.Equal("copy", File.ReadAllText copied)
-
-                let generatedRequest =
-                    PipeTest.map
-                        [ "commandId", RpcValue.String "project.item.new"
-                          "targetId", RpcValue.String projectId
-                          "arguments",
-                          PipeTest.map [ "path", RpcValue.String generated; "itemType", RpcValue.String "Compile" ]
-                          "expectedRevision", RpcValue.Integer 13L ]
-
-                PipeTest.send child false (PipeTest.request 30u "command/preview" generatedRequest)
-                let generatedError, _ = PipeTest.readFrame child |> PipeTest.response 30u
-                Assert.Equal("invalid_input", generatedError.Value.Code)
-
-                let externalDirectoryRequest =
-                    PipeTest.map
-                        [ "commandId", RpcValue.String "project.item.add"
-                          "targetId", RpcValue.String projectId
-                          "arguments",
-                          PipeTest.map
-                              [ "path", RpcValue.String externalDirectory
-                                "itemType", RpcValue.String "Content" ]
-                          "expectedRevision", RpcValue.Integer 13L ]
-
-                PipeTest.send child false (PipeTest.request 31u "command/preview" externalDirectoryRequest)
-                let externalDirectoryError, _ = PipeTest.readFrame child |> PipeTest.response 31u
-                Assert.Equal("invalid_input", externalDirectoryError.Value.Code)
-
-                let localLinkRequest =
-                    PipeTest.map
-                        [ "commandId", RpcValue.String "project.item.add"
-                          "targetId", RpcValue.String projectId
-                          "arguments",
-                          PipeTest.map
-                              [ "path", RpcValue.String source
-                                "itemType", RpcValue.String "Compile"
-                                "link", RpcValue.Boolean true ]
-                          "expectedRevision", RpcValue.Integer 13L ]
-
-                PipeTest.send child false (PipeTest.request 32u "command/preview" localLinkRequest)
-                let localLinkError, _ = PipeTest.readFrame child |> PipeTest.response 32u
-                Assert.Equal("invalid_input", localLinkError.Value.Code)
-                PipeTest.shutdown child 33u
-            finally
-                PipeTest.disposeProcess child
+            Assert.Contains("<Compile Include=\"Excluded.cs\"", File.ReadAllText session.Project)
         finally
-            if Directory.Exists directory then
-                Directory.Delete(directory, true)
-
-            if Directory.Exists external then
-                Directory.Delete(external, true)
+            PipeTest.closeProject session
 
     [<Fact>]
-    member _.``should write a curated project property through the previewed public command``() =
-        let directory = PipeTest.temporaryDirectory "project-property-command"
+    member _.``should copy or link external project files without local directory operands``() =
+        let external = PipeTest.temporaryDirectory "external-item-scenario"
+        let source = Path.Combine(external, "Source.txt")
+        let link = Path.Combine(external, "Link.txt")
+        File.WriteAllText(source, "copy")
+        File.WriteAllText(link, "link")
+
+        let session =
+            PipeTest.openProject "external-item-scenario" "<Project Sdk=\"Microsoft.NET.Sdk\" />"
 
         try
-            let solution = Path.Combine(directory, "Demo.slnx")
-            let project = Path.Combine(directory, "Demo.fsproj")
-            let props = Path.Combine(directory, "Directory.Build.props")
-            let unknown = Path.Combine(directory, "Unknown.csproj")
-            let model = SolutionModel()
-            model.AddProject("Demo.fsproj", "Demo", null) |> ignore
-            model.AddProject("Unknown.csproj", "Unknown", null) |> ignore
+            PipeTest.previewAndExecute
+                session.Child
+                3u
+                "project.item.add"
+                session.ProjectId
+                (PipeTest.map [ "path", RpcValue.String source; "itemType", RpcValue.String "None" ])
+                0L
+                true
 
-            File.WriteAllText(
-                project,
-                "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <!-- retain -->\n  <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>\n</Project>"
-            )
+            Assert.Equal("copy", File.ReadAllText(Path.Combine(session.Directory, "Source.txt")))
 
-            File.WriteAllText(
-                props,
-                "<Project>\r\n  <!-- shared -->\r\n  <PropertyGroup>\r\n    <AssemblyName>Shared.Unconditional</AssemblyName>\r\n    <Version Condition=\"'$(Configuration)' == 'Debug'\">1.0.0</Version>\r\n  </PropertyGroup>\r\n</Project>\r\n"
-            )
+            PipeTest.previewAndExecute
+                session.Child
+                5u
+                "project.item.add"
+                session.ProjectId
+                (PipeTest.map
+                    [ "path", RpcValue.String link
+                      "itemType", RpcValue.String "Content"
+                      "link", RpcValue.Boolean true ])
+                1L
+                true
 
-            File.WriteAllText(unknown, "<Project><PropertyGroup><Value>readable</Value></PropertyGroup></Project>")
+            Assert.False(File.Exists(Path.Combine(session.Directory, "Link.txt")))
+            Assert.Contains("<Link>Link.txt</Link>", File.ReadAllText session.Project)
 
-            PipeTest.save solution model
-
-            let initialize =
-                PipeTest.map
-                    [ "protocolVersion", PipeTest.map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 4L ]
-                      "clientInfo", PipeTest.map [ "name", RpcValue.String "test" ]
-                      "capabilities",
-                      RpcValue.array
-                          [ RpcValue.String "workspace.root"
-                            RpcValue.String "workspace.children"
-                            RpcValue.String "workspace.delta"
-                            RpcValue.String "workspace.export"
-                            RpcValue.String "workspace.refresh"
-                            RpcValue.String "operation.cancel"
-                            RpcValue.String "unknown.claim" ]
-                      "limits",
-                      PipeTest.map
-                          [ "maxFrameBytes", RpcValue.Integer 65536L
-                            "maxPageSize", RpcValue.Integer 100L ] ]
-
-            use child = PipeTest.startPipe "solution" solution
-
-            try
-                PipeTest.send child false (PipeTest.request 1u "initialize" initialize)
-                PipeTest.readFrame child |> PipeTest.response 1u |> ignore
-                PipeTest.send child false (PipeTest.request 2u "workspace/root" RpcValue.emptyMap)
-                let rootError, root = PipeTest.readFrame child |> PipeTest.response 2u
-
-                match rootError with
-                | Some error -> failwithf "Workspace root failed: %s: %s" error.Code error.Message
-                | None -> ()
-
-                let projectId name =
-                    PipeTest.field "nodes" root
-                    |> RpcValue.requireArray "nodes"
-                    |> Seq.find (fun node ->
-                        PipeTest.field "kind" node = RpcValue.String "project"
-                        && PipeTest.field "name" node = RpcValue.String name)
-                    |> PipeTest.field "id"
-                    |> RpcValue.requireString "id"
-
-                let demoId = projectId "Demo"
-                let unknownId = projectId "Unknown"
-
-                let localArguments =
-                    PipeTest.map
-                        [ "name", RpcValue.String "RootNamespace"
-                          "value", RpcValue.String "Demo.Root" ]
-
-                PipeTest.previewAndExecute child 3u "project.property.set" demoId localArguments 0L true
-
-                let localContents = File.ReadAllText project
-                Assert.Contains("<!-- retain -->", localContents)
-                Assert.Contains("<RootNamespace>Demo.Root</RootNamespace>", localContents)
-                let projectBeforeImportedPreview = File.ReadAllBytes project
-                let propsBeforeImportedPreview = File.ReadAllBytes props
-
-                let importedWithoutScope =
-                    PipeTest.map
-                        [ "commandId", RpcValue.String "project.property.set"
-                          "targetId", RpcValue.String demoId
-                          "arguments",
-                          PipeTest.map
-                              [ "name", RpcValue.String "AssemblyName"
-                                "value", RpcValue.String "Demo.Custom" ]
-                          "expectedRevision", RpcValue.Integer 1L ]
-
-                PipeTest.send child false (PipeTest.request 5u "command/preview" importedWithoutScope)
-                let importedWithoutScopeError, _ = PipeTest.readFrame child |> PipeTest.response 5u
-                Assert.Equal("invalid_input", importedWithoutScopeError.Value.Code)
-                Assert.Equal<byte>(projectBeforeImportedPreview, File.ReadAllBytes project)
-                Assert.Equal<byte>(propsBeforeImportedPreview, File.ReadAllBytes props)
-
-                let propertyLevelWithoutScope =
-                    PipeTest.map
-                        [ "commandId", RpcValue.String "project.property.set"
-                          "targetId", RpcValue.String demoId
-                          "arguments",
-                          PipeTest.map [ "name", RpcValue.String "Version"; "value", RpcValue.String "2.0.0" ]
-                          "expectedRevision", RpcValue.Integer 1L ]
-
-                PipeTest.send child false (PipeTest.request 50u "command/preview" propertyLevelWithoutScope)
-
-                let propertyLevelWithoutScopeError, _ =
-                    PipeTest.readFrame child |> PipeTest.response 50u
-
-                Assert.Equal("invalid_input", propertyLevelWithoutScopeError.Value.Code)
-
-                let propertyLevelWithScope =
-                    PipeTest.map
-                        [ "commandId", RpcValue.String "project.property.set"
-                          "targetId", RpcValue.String demoId
-                          "arguments",
-                          PipeTest.map
-                              [ "name", RpcValue.String "Version"
-                                "value", RpcValue.String "2.0.0"
-                                "scope", RpcValue.String props
-                                "condition", RpcValue.String "'$(Configuration)' == 'Debug'" ]
-                          "expectedRevision", RpcValue.Integer 1L ]
-
-                PipeTest.send child false (PipeTest.request 51u "command/preview" propertyLevelWithScope)
-
-                let propertyLevelWithScopeError, _ =
-                    PipeTest.readFrame child |> PipeTest.response 51u
-
-                Assert.Equal("invalid_input", propertyLevelWithScopeError.Value.Code)
-
-                let importedWithScope =
-                    PipeTest.map
-                        [ "name", RpcValue.String "AssemblyName"
-                          "value", RpcValue.String "Shared.After"
-                          "scope", RpcValue.String props
-                          "condition", RpcValue.String "'$(Configuration)' == 'Debug'" ]
-
-                PipeTest.previewAndExecute child 6u "project.property.set" demoId importedWithScope 1L true
-
-                Assert.Equal<byte>(projectBeforeImportedPreview, File.ReadAllBytes project)
-                let propsContents = File.ReadAllText props
-                Assert.Contains("\r\n", propsContents)
-                Assert.Contains("<!-- shared -->", propsContents)
-                Assert.Contains("<AssemblyName>Shared.Unconditional</AssemblyName>", propsContents)
-                Assert.Contains("<AssemblyName>Shared.After</AssemblyName>", propsContents)
-
-                let children =
-                    PipeTest.map [ "parentId", RpcValue.String demoId; "pageSize", RpcValue.Integer 100L ]
-
-                PipeTest.send child false (PipeTest.request 8u "workspace/children" children)
-                let childrenError, childrenResult = PipeTest.readFrame child |> PipeTest.response 8u
-
-                match childrenError with
-                | Some error -> failwithf "Property children failed: %s: %s" error.Code error.Message
-                | None -> ()
-
-                let propertyNodes =
-                    PipeTest.field "nodes" childrenResult |> RpcValue.requireArray "nodes"
-
-                let declaredImportName =
-                    RpcValue.String
-                        "Declared AssemblyName = Shared.After [scope: Directory.Build.props; condition: '$(Configuration)' == 'Debug']"
-
-                let declaredRootNamespaceName =
-                    RpcValue.String "Declared RootNamespace = Demo.Root [scope: Demo.fsproj; condition: <none>]"
-
-                let declaredImport =
-                    propertyNodes
-                    |> Seq.find (fun node -> PipeTest.field "name" node = declaredImportName)
-
-                propertyNodes
-                |> Seq.exists (fun node ->
-                    PipeTest.field "name" node
-                    |> RpcValue.requireString "name"
-                    |> fun name -> name.StartsWith("Evaluated AssemblyName = ", StringComparison.Ordinal))
-                |> Assert.True
-
-                propertyNodes
-                |> Seq.exists (fun node -> PipeTest.field "name" node = declaredRootNamespaceName)
-                |> Assert.True
-
-                match PipeTest.readFrame child with
-                | Notification("workspace/delta", parameters) ->
-                    Assert.Equal(
-                        2L,
-                        PipeTest.field "baseRevision" parameters
-                        |> RpcValue.requireInteger "baseRevision"
-                    )
-
-                    Assert.Equal(3L, PipeTest.field "newRevision" parameters |> RpcValue.requireInteger "newRevision")
-                | frame -> failwithf "Expected declared-property hydration delta, got %A" frame
-
-                PipeTest.send child false (PipeTest.request 9u "workspace/children" children)
-
-                let repeatedChildrenError, repeatedChildren =
-                    PipeTest.readFrame child |> PipeTest.response 9u
-
-                Assert.True(repeatedChildrenError.IsNone)
-
-                let repeatedImport =
-                    PipeTest.field "nodes" repeatedChildren
-                    |> RpcValue.requireArray "nodes"
-                    |> Seq.find (fun node -> PipeTest.field "name" node = declaredImportName)
-
-                Assert.Equal(PipeTest.field "id" declaredImport, PipeTest.field "id" repeatedImport)
-                let unknownBefore = File.ReadAllBytes unknown
-
-                let unknownPreview =
-                    PipeTest.map
-                        [ "commandId", RpcValue.String "project.property.set"
-                          "targetId", RpcValue.String unknownId
-                          "arguments", localArguments
-                          "expectedRevision", RpcValue.Integer 3L ]
-
-                PipeTest.send child false (PipeTest.request 10u "command/preview" unknownPreview)
-                let unknownError, _ = PipeTest.readFrame child |> PipeTest.response 10u
-                Assert.Equal("unsupported_capability", unknownError.Value.Code)
-                Assert.Equal<byte>(unknownBefore, File.ReadAllBytes unknown)
-                PipeTest.shutdown child 11u
-            finally
-                PipeTest.disposeProcess child
+            PipeTest.previewFailure
+                session
+                7u
+                "project.item.add"
+                (PipeTest.map [ "path", RpcValue.String source; "itemType", RpcValue.String "Content" ])
+                2L
         finally
+            PipeTest.closeProject session
+            Directory.Delete(external, true)
+
+    [<Fact>]
+    member _.``should set metadata and build action through public project commands``() =
+        let session =
+            PipeTest.openProject "metadata-scenario" "<Project Sdk=\"Microsoft.NET.Sdk\" />"
+
+        try
+            let source = Path.Combine(session.Directory, "Source.cs")
+            File.WriteAllText(source, "class Source { }")
+
+            PipeTest.previewAndExecute
+                session.Child
+                3u
+                "project.item.set-metadata"
+                session.ProjectId
+                (PipeTest.map
+                    [ "path", RpcValue.String source
+                      "name", RpcValue.String "CopyToOutputDirectory"
+                      "value", RpcValue.String "Always" ])
+                0L
+                true
+
+            Assert.Contains("<Compile Update=\"Source.cs\"", File.ReadAllText session.Project)
+
+            PipeTest.previewAndExecute
+                session.Child
+                5u
+                "project.item.set-build-action"
+                session.ProjectId
+                (PipeTest.map [ "path", RpcValue.String source; "itemType", RpcValue.String "Content" ])
+                1L
+                true
+
+            Assert.Contains("<Content Include=\"Source.cs\"", File.ReadAllText session.Project)
+        finally
+            PipeTest.closeProject session
+
+    [<Fact>]
+    member _.``should refuse directory operands for file project commands``() =
+        let session =
+            PipeTest.openProject "directory-refusal-scenario" "<Project Sdk=\"Microsoft.NET.Sdk\" />"
+
+        try
+            let folder = Path.Combine(session.Directory, "Folder")
+            Directory.CreateDirectory(folder) |> ignore
+
+            [ "project.item.new", PipeTest.map [ "path", RpcValue.String folder; "itemType", RpcValue.String "Compile" ]
+              "project.item.copy",
+              PipeTest.map
+                  [ "source", RpcValue.String folder
+                    "path", RpcValue.String(Path.Combine(session.Directory, "Copy.cs"))
+                    "itemType", RpcValue.String "Compile" ]
+              "project.item.add",
+              PipeTest.map
+                  [ "path", RpcValue.String folder
+                    "itemType", RpcValue.String "Compile"
+                    "link", RpcValue.Boolean true ]
+              "project.item.rename", PipeTest.map [ "path", RpcValue.String folder; "name", RpcValue.String "Renamed" ]
+              "project.item.move",
+              PipeTest.map [ "path", RpcValue.String folder; "destination", RpcValue.String folder ]
+              "project.item.remove", PipeTest.map [ "path", RpcValue.String folder ]
+              "project.item.delete", PipeTest.map [ "path", RpcValue.String folder ] ]
+            |> List.iteri (fun index (command, arguments) ->
+                PipeTest.previewFailure session (uint32 (3 + index)) command arguments 0L)
+        finally
+            PipeTest.closeProject session
+
+    [<Fact>]
+    member _.``should write a local curated property``() =
+        let session =
+            PipeTest.openProject "local-property-scenario" "<Project Sdk=\"Microsoft.NET.Sdk\" />"
+
+        try
+            PipeTest.previewAndExecute
+                session.Child
+                3u
+                "project.property.set"
+                session.ProjectId
+                (PipeTest.map
+                    [ "name", RpcValue.String "RootNamespace"
+                      "value", RpcValue.String "Demo.Root" ])
+                0L
+                true
+
+            Assert.Contains("<RootNamespace>Demo.Root</RootNamespace>", File.ReadAllText session.Project)
+        finally
+            PipeTest.closeProject session
+
+    [<Fact>]
+    member _.``should reject unsupported conditional property mutation``() =
+        let session =
+            PipeTest.openProject
+                "conditional-property-scenario"
+                "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><Version Condition=\"'$(MSBuildProjectName)' == 'Demo'\">1.0</Version></PropertyGroup></Project>"
+
+        try
+            PipeTest.previewFailure
+                session
+                3u
+                "project.property.set"
+                (PipeTest.map [ "name", RpcValue.String "Version"; "value", RpcValue.String "2.0" ])
+                0L
+        finally
+            PipeTest.closeProject session
+
+    [<Fact>]
+    member _.``should refuse project mutations for unknown project systems``() =
+        let session =
+            PipeTest.openProject
+                "unknown-project-system-scenario"
+                "<Project><PropertyGroup><Value>readable</Value></PropertyGroup></Project>"
+
+        try
+            PipeTest.send
+                session.Child
+                false
+                (PipeTest.request
+                    3u
+                    "command/preview"
+                    (PipeTest.map
+                        [ "commandId", RpcValue.String "project.property.set"
+                          "targetId", RpcValue.String session.ProjectId
+                          "arguments",
+                          PipeTest.map
+                              [ "name", RpcValue.String "RootNamespace"
+                                "value", RpcValue.String "Demo.Root" ]
+                          "expectedRevision", RpcValue.Integer 0L ]))
+
+            let error, _ = PipeTest.readFrame session.Child |> PipeTest.response 3u
+            Assert.Equal("unsupported_capability", error.Value.Code)
+        finally
+            PipeTest.closeProject session
+
+    [<Fact>]
+    member _.``should rename move and remove file project items without directory mutation``() =
+        let session =
+            PipeTest.openProjectWithSetup
+                "rename-move-scenario"
+                (fun directory -> File.WriteAllText(Path.Combine(directory, "Move.txt"), "move"))
+                "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup><Content Include=\"Move.txt\" /></ItemGroup></Project>"
+
+        try
+            let source = Path.Combine(session.Directory, "Move.txt")
+            let renamed = Path.Combine(session.Directory, "Renamed.txt")
+            let moved = Path.Combine(session.Directory, "Moved.txt")
+
+            PipeTest.previewAndExecute
+                session.Child
+                3u
+                "project.item.rename"
+                session.ProjectId
+                (PipeTest.map [ "path", RpcValue.String source; "name", RpcValue.String "Renamed.txt" ])
+                0L
+                true
+
+            PipeTest.previewAndExecute
+                session.Child
+                5u
+                "project.item.move"
+                session.ProjectId
+                (PipeTest.map [ "path", RpcValue.String renamed; "destination", RpcValue.String moved ])
+                1L
+                true
+
+            PipeTest.previewAndExecute
+                session.Child
+                7u
+                "project.item.remove"
+                session.ProjectId
+                (PipeTest.map [ "path", RpcValue.String moved ])
+                2L
+                true
+
+            Assert.True(File.Exists moved)
+            Assert.DoesNotContain("Moved.txt\"", File.ReadAllText session.Project)
+        finally
+            PipeTest.closeProject session
+
+    [<Fact>]
+    member _.``should preserve external encoded imported property files``() =
+        let external = PipeTest.temporaryDirectory "encoded-property-scenario"
+        let props = Path.Combine(external, "Shared.props")
+        let encoding = Encoding.GetEncoding(28591)
+
+        File.WriteAllBytes(
+            props,
+            encoding.GetBytes(
+                "<?xml version=\"1.0\" encoding=\"iso-8859-1\"?>\r\n<Project>\r\n  <!-- café shared -->\r\n  <PropertyGroup Condition=\"'$(MSBuildProjectName)' == 'Demo'\"><AssemblyName>Café</AssemblyName></PropertyGroup>\r\n</Project>\r\n"
+            )
+        )
+
+        let session =
+            PipeTest.openProject
+                "encoded-property-scenario"
+                $"<Project Sdk=\"Microsoft.NET.Sdk\"><Import Project=\"{props.Replace('\\', '/')}\" /></Project>"
+
+        try
+            PipeTest.previewAndExecute
+                session.Child
+                3u
+                "project.property.set"
+                session.ProjectId
+                (PipeTest.map
+                    [ "name", RpcValue.String "AssemblyName"
+                      "value", RpcValue.String "After"
+                      "scope", RpcValue.String props
+                      "condition", RpcValue.String "'$(MSBuildProjectName)' == 'Demo'" ])
+                0L
+                true
+
+            let contents = File.ReadAllText(props, encoding)
+            Assert.Contains("encoding=\"iso-8859-1\"", contents)
+            Assert.Contains("<!-- café shared -->", contents)
+            Assert.Contains("\r\n", contents)
+            Assert.Contains("Condition=\"'$(MSBuildProjectName)' == 'Demo'\"", contents)
+            Assert.Contains("<AssemblyName>After</AssemblyName>", contents)
+
+            PipeTest.send
+                session.Child
+                false
+                (PipeTest.request
+                    5u
+                    "workspace/children"
+                    (PipeTest.map
+                        [ "parentId", RpcValue.String session.ProjectId
+                          "pageSize", RpcValue.Integer 100L ]))
+
+            let (childrenError, children), _, _ =
+                PipeTest.responseAfterWorkspaceNotifications session.Child 5u 1L
+
+            Assert.True(childrenError.IsNone)
+
+            let names = ResizeArray<string>()
+
+            let appendNames page =
+                PipeTest.field "nodes" page
+                |> RpcValue.requireArray "nodes"
+                |> Seq.iter (fun node -> names.Add(PipeTest.field "name" node |> RpcValue.requireString "name"))
+
+            appendNames children
+
+            let mutable continuation =
+                match RpcValue.tryField "nextToken" children with
+                | Some(RpcValue.String token) -> Some token
+                | Some RpcValue.Nil
+                | None -> None
+                | Some value -> failwithf "Unexpected continuation token: %A" value
+
+            let mutable requestId = 6u
+
+            while continuation.IsSome do
+                PipeTest.send
+                    session.Child
+                    false
+                    (PipeTest.request
+                        requestId
+                        "workspace/children"
+                        (PipeTest.map
+                            [ "parentId", RpcValue.String session.ProjectId
+                              "pageSize", RpcValue.Integer 100L
+                              "continuationToken", RpcValue.String continuation.Value ]))
+
+                let (pageError, page), _, _ =
+                    PipeTest.responseAfterWorkspaceNotifications session.Child requestId 1L
+
+                Assert.True(pageError.IsNone)
+                appendNames page
+
+                continuation <-
+                    match RpcValue.tryField "nextToken" page with
+                    | Some(RpcValue.String token) -> Some token
+                    | Some RpcValue.Nil
+                    | None -> None
+                    | Some value -> failwithf "Unexpected continuation token: %A" value
+
+                requestId <- requestId + 1u
+
+            Assert.Contains(
+                names,
+                fun name -> name.Contains("Evaluated AssemblyName = After", StringComparison.Ordinal)
+            )
+
+            Assert.Contains(
+                names,
+                fun name ->
+                    name.Contains("Declared AssemblyName = After", StringComparison.Ordinal)
+                    && name.Contains("condition: '$(MSBuildProjectName)' == 'Demo'", StringComparison.Ordinal)
+            )
+        finally
+            PipeTest.closeProject session
+            Directory.Delete(external, true)
+
+    [<Fact>]
+    member _.``should delete project files through the native trash boundary``() =
+        let directory = PipeTest.temporaryDirectory "delete-trash-scenario"
+        let trashHome = Path.Combine(directory, "data")
+        let solution = Path.Combine(directory, "Demo.slnx")
+        let project = Path.Combine(directory, "Demo.csproj")
+        let deleted = Path.Combine(directory, "Delete.txt")
+        let model = SolutionModel()
+        model.AddProject("Demo.csproj", "Demo", null) |> ignore
+        File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        File.WriteAllText(deleted, "delete")
+        Directory.CreateDirectory(trashHome) |> ignore
+        PipeTest.save solution model
+
+        use child =
+            if OperatingSystem.IsLinux() then
+                PipeTest.startPipeWithDataHome "solution" solution (Some trashHome)
+            else
+                PipeTest.startPipe "solution" solution
+
+        try
+            PipeTest.send child false (PipeTest.request 1u "initialize" PipeTest.initialize)
+            PipeTest.readFrame child |> PipeTest.response 1u |> ignore
+            PipeTest.send child false (PipeTest.request 2u "workspace/root" RpcValue.emptyMap)
+            let _, root = PipeTest.readFrame child |> PipeTest.response 2u
+
+            let projectId =
+                PipeTest.field "nodes" root
+                |> RpcValue.requireArray "nodes"
+                |> Seq.find (fun node -> PipeTest.field "kind" node = RpcValue.String "project")
+                |> PipeTest.field "id"
+                |> RpcValue.requireString "id"
+
+            PipeTest.previewAndExecute
+                child
+                3u
+                "project.item.delete"
+                projectId
+                (PipeTest.map [ "path", RpcValue.String deleted ])
+                0L
+                true
+
+            Assert.False(File.Exists deleted)
+            Assert.Contains("<None Remove=\"Delete.txt\"", File.ReadAllText project)
+
+            if OperatingSystem.IsLinux() then
+                let trashed =
+                    Directory.EnumerateFiles(Path.Combine(trashHome, "Trash", "files"))
+                    |> Seq.exactlyOne
+
+                Assert.Equal("delete", File.ReadAllText trashed)
+
+            PipeTest.shutdown child 5u
+        finally
+            PipeTest.disposeProcess child
+
             if Directory.Exists directory then
                 Directory.Delete(directory, true)
 

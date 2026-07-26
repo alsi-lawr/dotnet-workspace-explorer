@@ -235,7 +235,6 @@ internal sealed class WorkerEvaluator : IDisposable
                 property.EvaluatedValue
             ))
             .OrderBy(property => property.Name, StringComparer.Ordinal)
-            .ThenBy(property => property.Value, StringComparer.Ordinal)
             .ToImmutableArray();
         var items = project
             .AllEvaluatedItems.Select(item => MaterializeItem(projectPath.Value, item))

@@ -7,6 +7,7 @@ open System.Collections.Immutable
 open System.Globalization
 open System.IO
 open System.Text
+open System.Text.RegularExpressions
 open System.Threading
 open Dotnet.CLI.Plus.Core
 open Dotnet.CLI.Plus.MSBuild
@@ -175,7 +176,7 @@ module internal ProjectMutations =
               "LastGenOutput"
               "CustomToolNamespace" ]
 
-    let private validateProperty name value =
+    let private validateProperty projectDirectory name value =
         if
             not (ProjectPropertyRegistry.Names.Contains name)
             || String.IsNullOrWhiteSpace value
@@ -203,8 +204,20 @@ module internal ProjectMutations =
             && not (Set.contains value (Set.ofList [ "Exe"; "Library"; "WinExe"; "Module" ]))
         then
             Error "OutputType must be Exe, Library, WinExe, or Module."
-        elif name = "AssemblyOriginatorKeyFile" && Path.IsPathRooted value then
-            Error "AssemblyOriginatorKeyFile must be a project-relative path."
+        elif name = "AssemblyOriginatorKeyFile" then
+            let keyPath = Path.GetFullPath(value, projectDirectory)
+            let relative = Path.GetRelativePath(projectDirectory, keyPath)
+
+            let outside =
+                Path.IsPathRooted relative
+                || relative = ".."
+                || relative.StartsWith($"..{Path.DirectorySeparatorChar}")
+                || relative.StartsWith($"..{Path.AltDirectorySeparatorChar}")
+
+            if Path.IsPathRooted value || outside then
+                Error "AssemblyOriginatorKeyFile must stay within the project directory."
+            else
+                Ok()
         else
             Ok()
 
@@ -229,15 +242,48 @@ module internal ProjectMutations =
 
     let private readDocument path =
         let bytes = File.ReadAllBytes path
-        use reader = new StreamReader(new MemoryStream(bytes), Encoding.UTF8, true)
-        let text = reader.ReadToEnd()
-        let encoding = reader.CurrentEncoding
-        let preamble = encoding.GetPreamble()
+        use stream = new MemoryStream(bytes)
+        let settings = XmlReaderSettings()
+        settings.IgnoreWhitespace <- false
+        use reader = XmlReader.Create(stream, settings)
+        let document = XDocument.Load(reader, LoadOptions.PreserveWhitespace)
 
-        let hasPreamble =
-            preamble.Length > 0
-            && bytes.Length >= preamble.Length
-            && bytes[.. preamble.Length - 1] = preamble
+        let declarationEncoding =
+            document.Declaration
+            |> Option.ofObj
+            |> Option.bind (fun declaration ->
+                try
+                    declaration.Encoding |> Option.ofObj |> Option.map Encoding.GetEncoding
+                with :? ArgumentException ->
+                    None)
+
+        let bomCandidates: (byte array * Encoding) list =
+            [ UTF32Encoding(false, true).GetPreamble(), (UTF32Encoding(false, true) :> Encoding)
+              UTF32Encoding(true, true).GetPreamble(), (UTF32Encoding(true, true) :> Encoding)
+              Encoding.Unicode.GetPreamble(), Encoding.Unicode
+              Encoding.BigEndianUnicode.GetPreamble(), Encoding.BigEndianUnicode
+              Encoding.UTF8.GetPreamble(), Encoding.UTF8 ]
+
+        let bomEncoding =
+            bomCandidates
+            |> Seq.tryPick (fun (preamble, candidate) ->
+                if
+                    preamble.Length > 0
+                    && bytes.Length >= preamble.Length
+                    && bytes[.. preamble.Length - 1] = preamble
+                then
+                    Some candidate
+                else
+                    None)
+
+        let encoding =
+            bomEncoding
+            |> Option.orElse declarationEncoding
+            |> Option.defaultValue Encoding.UTF8
+
+        let hasPreamble = bomEncoding.IsSome
+
+        let text = encoding.GetString bytes
 
         let lineEnding =
             if text.Contains("\r\n", StringComparison.Ordinal) then
@@ -247,7 +293,7 @@ module internal ProjectMutations =
             else
                 Environment.NewLine
 
-        XDocument.Parse(text, LoadOptions.PreserveWhitespace), encoding, hasPreamble, lineEnding
+        document, encoding, hasPreamble, lineEnding
 
     type private EncodingWriter(encoding: Encoding) =
         inherit StringWriter(CultureInfo.InvariantCulture)
@@ -340,58 +386,104 @@ module internal ProjectMutations =
             && not (isNull item.ResolvedPath)
             && item.ResolvedPath.Value = path)
 
-    let private defaultItemPolicy (snapshot: EvaluationSnapshot) (itemType: string) (path: string) =
-        let enabled (name: string) =
-            snapshot.Dimensions
-            |> Seq.collect _.Properties
-            |> Seq.filter (fun property -> property.Name = name)
-            |> Seq.map (fun property ->
-                not (String.Equals(property.Value, "false", StringComparison.OrdinalIgnoreCase)))
-            |> Seq.distinct
-            |> Seq.toArray
-            |> function
-                | [||] -> true
-                | [| value |] -> value
-                | _ -> raise (ArgumentException $"The default item policy for '{name}' conflicts across dimensions.")
+    let private globMatches (pattern: string) (value: string) =
+        let normalize (path: string) =
+            path.Trim().Replace('\\', '/')
+            |> fun value -> Regex.Replace(value, "/+", "/")
+            |> fun value ->
+                if value.StartsWith("./", StringComparison.Ordinal) then
+                    value[2..]
+                else
+                    value
 
+        let normalized = normalize pattern
+
+        if
+            String.IsNullOrWhiteSpace normalized
+            || normalized.Contains("$(", StringComparison.Ordinal)
+        then
+            false
+        else
+            let source =
+                Regex
+                    .Escape(normalized)
+                    .Replace("\\*\\*/", "(?:.*/)?")
+                    .Replace("\\*\\*", ".*")
+                    .Replace("\\*", "[^/]*")
+                    .Replace("\\?", "[^/]")
+
+            Regex.IsMatch(normalize value, $"^{source}$", RegexOptions.IgnoreCase ||| RegexOptions.CultureInvariant)
+
+    let private defaultItemPolicy (snapshot: EvaluationSnapshot) (itemType: string) (path: string) =
         let projectDirectory =
             Path.GetDirectoryName snapshot.ProjectPath.Value
             |> Option.ofObj
             |> Option.defaultValue (Directory.GetCurrentDirectory())
 
-        let extension = Path.GetExtension(path).ToLowerInvariant()
-
         if external projectDirectory path then
             false
         else
-            let defaultItems = enabled "EnableDefaultItems"
+            let relative = relativePath projectDirectory (WorkspaceArtifactPath.Create path)
+            let absolute = Path.GetFullPath(path).Replace('\\', '/')
+            let extension = Path.GetExtension(path).ToLowerInvariant()
 
-            match itemType with
-            | "Compile" ->
-                let compileItems = enabled "EnableDefaultCompileItems"
+            let enabled (dimension: EvaluationDimensionSnapshot) name =
+                dimension.Properties
+                |> Seq.filter (fun property -> property.Name = name)
+                |> Seq.tryLast
+                |> Option.map (fun property ->
+                    not (String.Equals(property.Value, "false", StringComparison.OrdinalIgnoreCase)))
+                |> Option.defaultValue true
+
+            let excluded (dimension: EvaluationDimensionSnapshot) =
+                dimension.Properties
+                |> Seq.filter (fun property ->
+                    property.Name = "DefaultItemExcludes"
+                    || property.Name = "DefaultItemExcludesInProjectFolder"
+                    || property.Name = "DefaultExcludesInProjectFolder")
+                |> Seq.groupBy _.Name
+                |> Seq.collect (fun (_, properties) ->
+                    properties
+                    |> Seq.last
+                    |> fun property -> property.Value.Split(';', StringSplitOptions.RemoveEmptyEntries))
+                |> Seq.exists (fun pattern ->
+                    let pattern = pattern.Trim()
+
+                    if Path.IsPathRooted pattern then
+                        globMatches pattern absolute
+                    else
+                        globMatches pattern relative)
+
+            let included (dimension: EvaluationDimensionSnapshot) =
+                let defaultItems = enabled dimension "EnableDefaultItems"
+                let compileItems = enabled dimension "EnableDefaultCompileItems"
+                let embeddedResourceItems = enabled dimension "EnableDefaultEmbeddedResourceItems"
+                let noneItems = enabled dimension "EnableDefaultNoneItems"
 
                 defaultItems
-                && compileItems
-                && Set.contains extension (Set.ofList [ ".cs"; ".fs"; ".vb" ])
-            | "EmbeddedResource" ->
-                let embeddedResourceItems = enabled "EnableDefaultEmbeddedResourceItems"
+                && not (excluded dimension)
+                && match itemType with
+                   | "Compile" -> compileItems && Set.contains extension (Set.ofList [ ".cs"; ".fs"; ".vb" ])
+                   | "EmbeddedResource" ->
+                       embeddedResourceItems
+                       && Set.contains extension (Set.ofList [ ".resx"; ".resw" ])
+                   | "None" ->
+                       noneItems
+                       && not (
+                           (Set.contains extension (Set.ofList [ ".cs"; ".fs"; ".vb" ]) && compileItems)
+                           || (Set.contains extension (Set.ofList [ ".resx"; ".resw" ])
+                               && embeddedResourceItems)
+                       )
+                   | _ -> false
 
-                defaultItems
-                && embeddedResourceItems
-                && Set.contains extension (Set.ofList [ ".resx"; ".resw" ])
-            | "None" ->
-                let noneItems = enabled "EnableDefaultNoneItems"
-                let compileItems = enabled "EnableDefaultCompileItems"
-                let embeddedResourceItems = enabled "EnableDefaultEmbeddedResourceItems"
-
-                defaultItems
-                && noneItems
-                && not (
-                    (Set.contains extension (Set.ofList [ ".cs"; ".fs"; ".vb" ]) && compileItems)
-                    || (Set.contains extension (Set.ofList [ ".resx"; ".resw" ])
-                        && embeddedResourceItems)
-                )
-            | _ -> false
+            snapshot.Dimensions
+            |> Seq.map included
+            |> Seq.distinct
+            |> Seq.toArray
+            |> function
+                | [||] -> false
+                | [| value |] -> value
+                | _ -> raise (ArgumentException "The default item policy conflicts across evaluation dimensions.")
 
     let private generated (directory: string) (path: string) =
         let relative = Path.GetRelativePath(directory, path).Replace('\\', '/')
@@ -420,6 +512,10 @@ module internal ProjectMutations =
             raise (ArgumentException "The effective item type is ambiguous.")
 
         types[0]
+
+    let private containsItemGlob (document: XDocument) itemType includeValue =
+        document.Descendants(name itemType)
+        |> Seq.exists (fun item -> attribute "Include" item = Some includeValue)
 
     let private request
         (workspace: SolutionWorkspace)
@@ -527,6 +623,9 @@ module internal ProjectMutations =
                     let item path = itemPath path |> unwrap
                     let kind () = itemType () |> unwrap
 
+                    let directoryOperand path =
+                        Directory.Exists path || Path.EndsInDirectorySeparator path
+
                     let actions, paths, intents =
                         match command.CommandId.Value with
                         | "project.item.add" ->
@@ -542,8 +641,20 @@ module internal ProjectMutations =
                                     raise (ArgumentException "Linked items must be external files.")
 
                                 let includePath = relativePath directory (WorkspaceArtifactPath.Create source)
-                                appendItem document kind ($"{(includePath.TrimEnd('/'))}/**/*") []
-                                [ updatedDocument () ], [ projectPath ], []
+                                let includeValue = $"{(includePath.TrimEnd('/'))}/**/*"
+
+                                let files =
+                                    Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories)
+                                    |> Seq.toArray
+
+                                let allIncluded =
+                                    files.Length > 0 && (files |> Array.forall (evaluatedAs snapshot kind))
+
+                                if allIncluded || containsItemGlob document kind includeValue then
+                                    [], [], []
+                                else
+                                    appendItem document kind includeValue []
+                                    [ updatedDocument () ], [ projectPath ], []
                             elif external directory source && not link then
                                 let destination = Path.Combine(directory, Path.GetFileName source)
 
@@ -586,7 +697,9 @@ module internal ProjectMutations =
                         | "project.item.new" ->
                             let destination, kind = item "path", kind ()
 
-                            if generated directory destination then
+                            if directoryOperand destination then
+                                raise (ArgumentException "New project items must be files.")
+                            elif generated directory destination then
                                 raise (ArgumentException "Generated items are read-only.")
                             elif File.Exists destination || Directory.Exists destination then
                                 raise (ArgumentException "The destination item already exists.")
@@ -618,12 +731,13 @@ module internal ProjectMutations =
                                  [ destination; projectPath ]),
                             []
                         | "project.item.copy" ->
-                            let source, destination, kind =
-                                requiredPath "source" command.Arguments |> unwrap, item "path", kind ()
+                            let source, destination, kind = item "source", item "path", kind ()
 
-                            if generated directory source.Value || generated directory destination then
+                            if directoryOperand source || directoryOperand destination then
+                                raise (ArgumentException "Copied project items must be files.")
+                            elif generated directory source || generated directory destination then
                                 raise (ArgumentException "Generated items are read-only.")
-                            elif not (File.Exists source.Value) then
+                            elif not (File.Exists source) then
                                 raise (ArgumentException "The source item does not exist.")
 
                             if File.Exists destination || Directory.Exists destination then
@@ -639,14 +753,14 @@ module internal ProjectMutations =
                                     []
 
                             (if globbed then
-                                 [ MutationAction.ReplaceFile(destination, File.ReadAllBytes source.Value) ]
+                                 [ MutationAction.ReplaceFile(destination, File.ReadAllBytes source) ]
                              else
-                                 [ MutationAction.ReplaceFile(destination, File.ReadAllBytes source.Value)
+                                 [ MutationAction.ReplaceFile(destination, File.ReadAllBytes source)
                                    updatedDocument () ]),
                             (if globbed then
-                                 [ destination; source.Value ]
+                                 [ destination; source ]
                              else
-                                 [ destination; projectPath; source.Value ]),
+                                 [ destination; projectPath; source ]),
                             []
                         | "project.item.rename"
                         | "project.item.move" ->
@@ -666,7 +780,9 @@ module internal ProjectMutations =
                                 else
                                     item "destination"
 
-                            if generated directory source || generated directory destination then
+                            if directoryOperand source || directoryOperand destination then
+                                raise (ArgumentException "Rename and move require file operands.")
+                            elif generated directory source || generated directory destination then
                                 raise (ArgumentException "Generated items are read-only.")
                             elif
                                 not (File.Exists source)
@@ -714,7 +830,9 @@ module internal ProjectMutations =
                         | "project.item.delete" ->
                             let path = item "path"
 
-                            if generated directory path then
+                            if directoryOperand path then
+                                raise (ArgumentException "Remove and delete require file operands.")
+                            elif generated directory path then
                                 raise (ArgumentException "Generated items are read-only.")
 
                             let includeValue = relativePath directory (WorkspaceArtifactPath.Create path)
@@ -817,7 +935,7 @@ module internal ProjectMutations =
                                 requiredChoice "name" command.Arguments |> unwrap,
                                 requiredText "value" command.Arguments |> unwrap
 
-                            validateProperty propertyName propertyValue |> unwrap
+                            validateProperty directory propertyName propertyValue |> unwrap
 
                             let scope =
                                 match value "scope" command.Arguments with
