@@ -7,11 +7,12 @@ open System.Diagnostics
 open System.IO
 open System.Text.Json
 open System.Threading
+open FsUnit.Xunit
 open Microsoft.VisualStudio.SolutionPersistence.Model
 open Microsoft.VisualStudio.SolutionPersistence.Serializer
 open Xunit
 
-module private BrokerProcess =
+module internal BrokerProcess =
     type Result =
         { ExitCode: int
           StandardOutput: string
@@ -56,7 +57,7 @@ module private BrokerProcess =
         let destination = Path.Combine(directory, "fake-host")
         Directory.CreateDirectory destination |> ignore
 
-        for source in Directory.EnumerateFiles(sourceDirectory) do
+        for source in Directory.EnumerateFiles sourceDirectory do
             let target = Path.Combine(destination, Path.GetFileName source)
             File.Copy(source, target, true)
 
@@ -79,7 +80,7 @@ module private BrokerProcess =
             .GetResult()
 
     let start directory mode arguments environment =
-        let info = ProcessStartInfo(product)
+        let info = ProcessStartInfo product
         info.UseShellExecute <- false
         info.RedirectStandardOutput <- true
         info.RedirectStandardError <- true
@@ -100,14 +101,14 @@ module private BrokerProcess =
         Assert.NotNull child
         let output = child.StandardOutput.ReadToEndAsync()
         let error = child.StandardError.ReadToEndAsync()
-        Assert.True(child.WaitForExit(10000), "The CLI child did not exit.")
+        Assert.True(child.WaitForExit 10000, "The CLI child did not exit.")
 
         { ExitCode = child.ExitCode
           StandardOutput = output.Result
           StandardError = error.Result }
 
     let json result =
-        JsonDocument.Parse(result.StandardOutput)
+        JsonDocument.Parse result.StandardOutput
 
     let success result =
         use document = json result
@@ -115,8 +116,15 @@ module private BrokerProcess =
 
     let diagnosticCode result =
         use document = json result
-        let diagnostics = document.RootElement.GetProperty("diagnostics")
+        let diagnostics = document.RootElement.GetProperty "diagnostics"
         diagnostics[0].GetProperty("code").GetString()
+
+    let childArguments result =
+        use document = json result
+
+        document.RootElement.GetProperty("result").GetProperty("childArguments").EnumerateArray()
+        |> Seq.map _.GetString()
+        |> Seq.toArray
 
     let waitForFile path =
         if not (File.Exists path) then
@@ -135,6 +143,110 @@ module private BrokerProcess =
 
 type BrokerProcessTests() =
     [<Fact>]
+    member _.``should forward empty values and operands through child-owned package arguments``() =
+        let directory = BrokerProcess.temporaryDirectory "broker-package-arguments"
+
+        try
+            let project = Path.Combine(directory, "App.fsproj")
+            File.WriteAllText(project, "<Project />")
+
+            let arguments =
+                [ "package"
+                  "add"
+                  "Example.Package"
+                  "--project"
+                  project
+                  "--extension-option"
+                  String.Empty
+                  "extension-operand" ]
+
+            let result = BrokerProcess.run directory "capture" ("--json" :: arguments) []
+            BrokerProcess.success result |> should equal true
+            BrokerProcess.childArguments result |> should equal (List.toArray arguments)
+        finally
+            BrokerProcess.delete directory
+
+    [<Fact>]
+    member _.``should verify package versions and references in the requested framework condition``
+        ()
+        =
+        let directory = BrokerProcess.temporaryDirectory "broker-framework-postconditions"
+
+        try
+            let project = Path.Combine(directory, "App.fsproj")
+            let wrongReference = Path.Combine(directory, "Wrong.fsproj")
+            let requestedReference = Path.Combine(directory, "Requested.fsproj")
+            let net9Condition = "'$(TargetFramework)' == 'net9.0'"
+            let net10Condition = "'$(TargetFramework)' == 'net10.0'"
+
+            File.WriteAllText(wrongReference, "<Project />")
+            File.WriteAllText(requestedReference, "<Project />")
+
+            File.WriteAllText(
+                project,
+                "<Project>"
+                + $"<ItemGroup Condition=\"{net9Condition}\">"
+                + "<PackageReference Include=\"Example.Package\" />"
+                + "<ProjectReference Include=\"Wrong.fsproj\" />"
+                + "</ItemGroup>"
+                + $"<ItemGroup Condition=\"{net10Condition}\">"
+                + "<PackageReference Include=\"example.package\" />"
+                + "<ProjectReference Include=\"Requested.fsproj\" />"
+                + "</ItemGroup>"
+                + "</Project>"
+            )
+
+            File.WriteAllText(
+                Path.Combine(directory, "Directory.Packages.props"),
+                "<Project>"
+                + $"<ItemGroup Condition=\"{net9Condition}\">"
+                + "<PackageVersion Include=\"EXAMPLE.PACKAGE\" Version=\"9.0.0\" />"
+                + "</ItemGroup>"
+                + $"<ItemGroup Condition=\"{net10Condition}\">"
+                + "<PackageVersion Include=\"EXAMPLE.PACKAGE\" Version=\"10.0.0\" />"
+                + "</ItemGroup>"
+                + "</Project>"
+            )
+
+            let package version =
+                BrokerProcess.run
+                    directory
+                    "capture"
+                    [ "--json"
+                      "package"
+                      "add"
+                      "Example.Package"
+                      "--version"
+                      version
+                      "--project"
+                      project
+                      "--framework"
+                      "net10.0" ]
+                    []
+
+            BrokerProcess.success (package "10.0.0") |> should equal true
+            BrokerProcess.success (package "9.0.0") |> should equal false
+
+            let reference path =
+                BrokerProcess.run
+                    directory
+                    "capture"
+                    [ "--json"
+                      "reference"
+                      "add"
+                      path
+                      "--project"
+                      project
+                      "--framework"
+                      "net10.0" ]
+                    []
+
+            BrokerProcess.success (reference requestedReference) |> should equal true
+            BrokerProcess.success (reference wrongReference) |> should equal false
+        finally
+            BrokerProcess.delete directory
+
+    [<Fact>]
     member _.``should reject unsafe mutation targets before launching dotnet``() =
         let directory = BrokerProcess.temporaryDirectory "broker-preflight"
 
@@ -147,7 +259,8 @@ type BrokerProcessTests() =
                 [ [ "package"; "add"; "Example.Package"; "--project"; solution ], "invalid_input"
                   [ "reference"; "add"; "Other.fsproj"; "--project"; solution ], "invalid_input"
                   [ "solution"; "read-only.slnf"; "add"; "App.fsproj" ], "unsupported_capability"
-                  [ "solution"; solution; "add"; Path.Combine(directory, "none", "*.fsproj") ], "invalid_input" ]
+                  [ "solution"; solution; "add"; Path.Combine(directory, "none", "*.fsproj") ],
+                  "invalid_input" ]
 
             for arguments, expectedCode in cases do
                 let result =
@@ -164,7 +277,7 @@ type BrokerProcessTests() =
             BrokerProcess.delete directory
 
     [<Fact>]
-    member _.``should require verified postconditions for package reference template file and output mutations``() =
+    member _.``should verify package reference template file and output mutation results``() =
         let directory = BrokerProcess.temporaryDirectory "broker-postconditions"
 
         try
@@ -175,7 +288,10 @@ type BrokerProcessTests() =
 
             File.WriteAllText(
                 project,
-                "<Project><ItemGroup><PackageReference Include=\"Example.Package\" Version=\"2.0.0\" /><ProjectReference Include=\"Other.fsproj\" /></ItemGroup></Project>"
+                "<Project><ItemGroup>"
+                + "<PackageReference Include=\"Example.Package\" Version=\"2.0.0\" />"
+                + "<ProjectReference Include=\"Other.fsproj\" />"
+                + "</ItemGroup></Project>"
             )
 
             File.WriteAllText(source, "#:package Example.Package@2.0.0\nConsole.WriteLine(1);")
@@ -201,7 +317,9 @@ type BrokerProcessTests() =
                   "capture", [ "reference"; "add"; reference; "--project"; project ], []
                   "capture", [ "package"; "add"; "Example.Package@2.0.0"; "--file"; source ], []
                   "capture", [ "new"; "install"; "Example.Template" ], [ "DOTNET_CLI_HOME", home ]
-                  "create-output", [ "new"; "console"; "--output"; Path.Combine(directory, "created") ], [] ]
+                  "create-output",
+                  [ "new"; "console"; "--output"; Path.Combine(directory, "created") ],
+                  [] ]
 
             for mode, arguments, environment in cases do
                 let result = BrokerProcess.run directory mode ("--json" :: arguments) environment
@@ -210,7 +328,7 @@ type BrokerProcessTests() =
             BrokerProcess.delete directory
 
     [<Fact>]
-    member _.``should verify exact solution membership with glob sentinel and backing-volume case rules``() =
+    member _.``should verify solution membership with glob sentinel and filesystem case rules``() =
         let directory = BrokerProcess.temporaryDirectory "broker-paths"
 
         try
@@ -227,15 +345,22 @@ type BrokerProcessTests() =
                     else
                         [ "--json"; "solution"; solution; "add"; operand ]
 
-                Assert.True(BrokerProcess.success (BrokerProcess.run directory "capture" arguments []))
+                Assert.True(
+                    BrokerProcess.success (BrokerProcess.run directory "capture" arguments [])
+                )
 
-            if
-                Dotnet.CLI.Plus.Core.HostFileSystemCaseDetector.DetectFromExistingPath solution = Dotnet.CLI.Plus.Core.HostFileSystemCaseSemantics.Sensitive
-            then
+            let caseSemantics =
+                Dotnet.CLI.Plus.Core.HostFileSystemCaseDetector.DetectFromExistingPath solution
+
+            if caseSemantics = Dotnet.CLI.Plus.Core.HostFileSystemCaseSemantics.Sensitive then
                 let mismatched = Path.Combine(directory, "src", "actual.fsproj")
 
                 let result =
-                    BrokerProcess.run directory "capture" [ "--json"; "solution"; solution; "add"; mismatched ] []
+                    BrokerProcess.run
+                        directory
+                        "capture"
+                        [ "--json"; "solution"; solution; "add"; mismatched ]
+                        []
 
                 Assert.False(BrokerProcess.success result)
         finally
@@ -267,7 +392,10 @@ type BrokerProcessTests() =
 
             match Dotnet.CLI.Plus.Solution.SolutionStore.OpenAsync(solution).Result with
             | Dotnet.CLI.Plus.Core.Success workspace ->
-                Assert.Contains(workspace.RootProjection.Folders, fun item -> item.Path = "/src/nested/")
+                Assert.Contains(
+                    workspace.RootProjection.Folders,
+                    fun item -> item.Path = "/src/nested/"
+                )
             | outcome -> failwithf "Expected the persisted folder, got %A" outcome
 
             let refused =
@@ -284,13 +412,18 @@ type BrokerProcessTests() =
 
             Assert.False(BrokerProcess.success refused)
             use document = BrokerProcess.json refused
-            Assert.Equal(JsonValueKind.Null, document.RootElement.GetProperty("externalExitCode").ValueKind)
+
+            Assert.Equal(
+                JsonValueKind.Null,
+                document.RootElement.GetProperty("externalExitCode").ValueKind
+            )
+
             Assert.False(File.Exists marker)
         finally
             BrokerProcess.delete directory
 
     [<Fact>]
-    member _.``should sanitize child output and preserve external exit mapping in the json failure envelope``() =
+    member _.``should sanitize output and preserve exit mapping in the json failure envelope``() =
         let directory = BrokerProcess.temporaryDirectory "broker-failure"
 
         try
@@ -305,7 +438,11 @@ type BrokerProcessTests() =
             Assert.False(document.RootElement.GetProperty("success").GetBoolean())
             Assert.Equal(23, document.RootElement.GetProperty("externalExitCode").GetInt32())
             Assert.Equal("external_tool_failed", diagnostic.GetProperty("code").GetString())
-            Assert.Equal("failure", document.RootElement.GetProperty("result").GetProperty("standardError").GetString())
+
+            Assert.Equal(
+                "failure",
+                document.RootElement.GetProperty("result").GetProperty("standardError").GetString()
+            )
         finally
             BrokerProcess.delete directory
 
@@ -328,10 +465,10 @@ type BrokerProcessTests() =
             let buffer = Array.zeroCreate<char> 5
             let first = child.StandardOutput.ReadAsync(buffer, 0, buffer.Length)
             BrokerProcess.waitForFile marker
-            Assert.True(first.Wait(5000), "The first output chunk was not streamed.")
+            Assert.True(first.Wait 5000, "The first output chunk was not streamed.")
             Assert.Equal("first", String buffer)
             File.WriteAllText(release, "continue")
-            Assert.True(child.WaitForExit(10000))
+            Assert.True(child.WaitForExit 10000)
             Assert.Equal("second", child.StandardOutput.ReadToEnd())
             Assert.Equal(0, child.ExitCode)
         finally
@@ -353,11 +490,11 @@ type BrokerProcessTests() =
                         [ "DOTNET_PLUS_FAKE_HOST_CHILD_PID", pidFile ]
 
                 BrokerProcess.waitForFile pidFile
-                let childPid = File.ReadAllText(pidFile) |> Int32.Parse
+                let childPid = File.ReadAllText pidFile |> Int32.Parse
                 use signal = Process.Start("kill", $"-INT {child.Id}")
                 signal.WaitForExit()
                 Assert.Equal(0, signal.ExitCode)
-                Assert.True(child.WaitForExit(10000), "The interrupted broker did not exit.")
+                Assert.True(child.WaitForExit 10000, "The interrupted broker did not exit.")
                 Assert.Equal(1, child.ExitCode)
 
                 Assert.Equal(
@@ -368,7 +505,8 @@ type BrokerProcessTests() =
                           StandardError = child.StandardError.ReadToEnd() }
                 )
 
-                Assert.Throws<ArgumentException>(fun () -> Process.GetProcessById(childPid) |> ignore)
+                Assert.Throws<ArgumentException>(fun () ->
+                    Process.GetProcessById childPid |> ignore)
                 |> ignore
             finally
                 BrokerProcess.delete directory

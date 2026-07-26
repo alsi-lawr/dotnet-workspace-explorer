@@ -38,6 +38,20 @@ public sealed record EvaluatedReference(string Include, WorkspaceArtifactPath? R
 
 public sealed record EvaluatedPackage(string Id, string? Version);
 
+public sealed record EvaluatedPackageMembership(
+    string Id,
+    string? Version,
+    WorkspaceArtifactPath DeclaringPath,
+    string Condition
+);
+
+public sealed record EvaluatedPackageVersion(
+    string Id,
+    string? Version,
+    WorkspaceArtifactPath DeclaringPath,
+    string Condition
+);
+
 public sealed record EvaluationDimensionSnapshot(
     TargetFramework? TargetFramework,
     ImmutableArray<EvaluatedProperty> Properties,
@@ -49,6 +63,10 @@ public sealed record EvaluationDimensionSnapshot(
 )
 {
     public bool IsOuterBuild => TargetFramework is null;
+
+    public ImmutableArray<EvaluatedPackageMembership> PackageMemberships { get; init; } = [];
+
+    public ImmutableArray<EvaluatedPackageVersion> PackageVersions { get; init; } = [];
 }
 
 public sealed record EvaluationSnapshot(

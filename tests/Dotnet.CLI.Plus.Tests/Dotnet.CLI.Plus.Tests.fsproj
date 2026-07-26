@@ -14,6 +14,7 @@
         <Compile Include="SolutionMutationTests.fs" />
         <Compile Include="BrokerProcessTests.fs" />
         <Compile Include="WorkspaceAppHostTests.fs" />
+        <Compile Include="CanonicalCommandAppHostTests.fs" />
     </ItemGroup>
 
     <ItemGroup>
@@ -32,6 +33,7 @@
         <ProjectReference Include="../../src/Dotnet.CLI.Plus/Dotnet.CLI.Plus.fsproj" />
         <ProjectReference Include="../../src/Dotnet.CLI.Plus.Solution/Dotnet.CLI.Plus.Solution.fsproj" />
         <ProjectReference Include="../../src/Dotnet.CLI.Plus.Transport/Dotnet.CLI.Plus.Transport.fsproj" />
+        <ProjectReference Include="../../src/Dotnet.CLI.Plus.Workspace/Dotnet.CLI.Plus.Workspace.fsproj" />
         <ProjectReference Include="../Dotnet.CLI.Plus.FakeHost/Dotnet.CLI.Plus.FakeHost.fsproj" />
     </ItemGroup>
 </Project>

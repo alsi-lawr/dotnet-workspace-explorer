@@ -7,7 +7,7 @@ namespace Dotnet.CLI.Plus.MSBuild;
 internal static class WorkerProtocol
 {
     internal const string ProfileName = "dotnet-cli-plus/msbuild";
-    internal const int ProtocolMajor = 1;
+    internal const int ProtocolMajor = 2;
     internal const int ProtocolMinor = 0;
 
     internal static readonly RpcProfile Profile = RpcHost.CreateProfile(

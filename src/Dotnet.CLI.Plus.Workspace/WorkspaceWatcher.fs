@@ -24,7 +24,7 @@ type internal WatcherHandoff =
 
 type internal BoundedHintBuffer(capacity: int, comparer: StringComparer) =
     let sync = obj ()
-    let paths = HashSet<string>(comparer)
+    let paths = HashSet<string> comparer
     let mutable accepting = false
     let mutable lost = false
 
@@ -83,7 +83,12 @@ module internal WatcherHints =
     let renamePaths oldPath newPath = ImmutableArray.Create(oldPath, newPath)
 
 type internal WorkspaceWatcher
-    (state: WorkspaceState, hintCapacity: int, getFrameLimit: unit -> int, publicationGate: SemaphoreSlim) =
+    (
+        state: WorkspaceState,
+        hintCapacity: int,
+        getFrameLimit: unit -> int,
+        publicationGate: SemaphoreSlim
+    ) =
     let hints = BoundedHintBuffer(hintCapacity, state.PathComparer)
     let rebuildGate = new SemaphoreSlim(1, 1)
     let lifecycleGate = obj ()
@@ -136,10 +141,14 @@ type internal WorkspaceWatcher
         let relative = Path.GetRelativePath(directory, path)
 
         relative = "."
-        || (not (Path.IsPathRooted relative)
-            && relative <> ".."
-            && not (relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
-            && not (relative.StartsWith($"..{Path.AltDirectorySeparatorChar}", StringComparison.Ordinal)))
+        || not (Path.IsPathRooted relative)
+           && relative <> ".."
+           && not (
+               relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+           )
+           && not (
+               relative.StartsWith($"..{Path.AltDirectorySeparatorChar}", StringComparison.Ordinal)
+           )
 
     let samePath left right = state.PathComparer.Equals(left, right)
 
@@ -172,11 +181,10 @@ type internal WorkspaceWatcher
                 |> Seq.collect (fun spec ->
                     spec.Filters
                     |> Seq.map (fun filter ->
-                        if filter.IndexOfAny([| '*'; '?' |]) >= 0 then
+                        if filter.IndexOfAny [| '*'; '?' |] >= 0 then
                             None
                         else
                             Some(Path.Combine(spec.Directory, filter))))
-
                 |> Seq.toArray
 
             if paths |> Array.exists Option.isNone then
@@ -284,7 +292,8 @@ type internal WorkspaceWatcher
                 WorkspaceDiagnostic.CreateSimple(
                     WorkspaceDiagnosticSeverity.Warning,
                     WorkspaceDiagnosticCode.Create "workspace.watch_uncertain",
-                    "File watcher activation could not be verified; request a fresh workspace graph.",
+                    "File watcher activation could not be verified; "
+                    + "request a fresh workspace graph.",
                     true,
                     CorrelationId.New()
                 )
@@ -304,7 +313,8 @@ type internal WorkspaceWatcher
                     WorkspaceDiagnostic.CreateSimple(
                         WorkspaceDiagnosticSeverity.Warning,
                         WorkspaceDiagnosticCode.Create "workspace.delta_pressure",
-                        "The verified delta exceeded delivery capacity; request a fresh workspace graph.",
+                        "The verified delta exceeded delivery capacity; "
+                        + "request a fresh workspace graph.",
                         true,
                         CorrelationId.New()
                     )
@@ -448,7 +458,13 @@ type internal WorkspaceWatcher
                                     do! publicationGate.WaitAsync sessionToken
 
                                     try
-                                        let! _ = this.ResolveActivationHandoffAsync(handoff, publish, sessionToken)
+                                        let! _ =
+                                            this.ResolveActivationHandoffAsync(
+                                                handoff,
+                                                publish,
+                                                sessionToken
+                                            )
+
                                         ()
                                     finally
                                         publicationGate.Release() |> ignore
@@ -466,7 +482,8 @@ type internal WorkspaceWatcher
                                         stopWatchersUnsafe ())
 
                             let drainedEpoch, drained =
-                                lock lifecycleGate (fun () -> Volatile.Read(&lifecycleGeneration), hints.Drain())
+                                lock lifecycleGate (fun () ->
+                                    Volatile.Read(&lifecycleGeneration), hints.Drain())
 
                             match drained with
                             | HintDrain.Empty -> do! resolveQueued ()
@@ -480,8 +497,10 @@ type internal WorkspaceWatcher
                                         let diagnostic =
                                             WorkspaceDiagnostic.CreateSimple(
                                                 WorkspaceDiagnosticSeverity.Warning,
-                                                WorkspaceDiagnosticCode.Create "workspace.watch_overflow",
-                                                "File watching lost changes; request a fresh workspace graph.",
+                                                WorkspaceDiagnosticCode.Create
+                                                    "workspace.watch_overflow",
+                                                "File watching lost changes; "
+                                                + "request a fresh workspace graph.",
                                                 true,
                                                 CorrelationId.New()
                                             )
@@ -502,10 +521,15 @@ type internal WorkspaceWatcher
                                         match outcome with
                                         | WorkspaceInvalidationResult.None -> ()
                                         | WorkspaceInvalidationResult.Delta delta ->
-                                            let! delivered = publishDeltaOrReset publish delta sessionToken
+                                            let! delivered =
+                                                publishDeltaOrReset publish delta sessionToken
 
                                             if delivered then
-                                                let! _ = this.RebuildAndRevalidateAsync(publish, sessionToken)
+                                                let! _ =
+                                                    this.RebuildAndRevalidateAsync(
+                                                        publish,
+                                                        sessionToken
+                                                    )
 
                                                 ()
                                         | WorkspaceInvalidationResult.Reset reset ->

@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <AssemblyName>Dotnet.CLI.Plus.Broker</AssemblyName>
+        <RootNamespace>Dotnet.CLI.Plus.Broker</RootNamespace>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../Dotnet.CLI.Plus.Core/Dotnet.CLI.Plus.Core.fsproj" />
+        <ProjectReference Include="../Dotnet.CLI.Plus.Solution/Dotnet.CLI.Plus.Solution.fsproj" />
+        <ProjectReference Include="../Dotnet.CLI.Plus.Workspace/Dotnet.CLI.Plus.Workspace.fsproj" />
+        <PackageReference Include="FSharp.Core" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Compile Include="AssemblyInfo.fs" />
+        <Compile Include="BrokerContracts.fs" />
+        <Compile Include="CommandParsing.fs" />
+        <Compile Include="PostconditionVerification.fs" />
+        <Compile Include="ProcessExecution.fs" />
+        <Compile Include="Broker.fs" />
+    </ItemGroup>
+</Project>

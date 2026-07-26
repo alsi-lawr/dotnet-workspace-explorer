@@ -15,18 +15,20 @@
         <ProjectReference Include="../Dotnet.CLI.Plus.Solution/Dotnet.CLI.Plus.Solution.fsproj" />
         <ProjectReference Include="../Dotnet.CLI.Plus.Transport/Dotnet.CLI.Plus.Transport.fsproj" />
         <ProjectReference Include="../Dotnet.CLI.Plus.MSBuild/Dotnet.CLI.Plus.MSBuild.csproj" />
+        <ProjectReference Include="../Dotnet.CLI.Plus.Workspace/Dotnet.CLI.Plus.Workspace.fsproj" />
+        <ProjectReference Include="../Dotnet.CLI.Plus.Broker/Dotnet.CLI.Plus.Broker.fsproj" />
         <PackageReference Include="FSharp.Core" />
         <PackageReference Include="Microsoft.Build.Locator" IncludeAssets="runtime" />
         <PackageReference Include="Microsoft.NET.StringTools" ExcludeAssets="runtime" PrivateAssets="all" />
     </ItemGroup>
 
     <ItemGroup>
-        <Compile Include="MutationCoordinator.fs" />
-        <Compile Include="Compatibility.fs" />
-        <Compile Include="CanonicalCommands.fs" />
-        <Compile Include="WorkspaceState.fs" />
-        <Compile Include="WorkspaceWatcher.fs" />
-        <Compile Include="ProjectMutations.fs" />
+        <Compile Include="PipeOperations.fs" />
+        <Compile Include="PipeWorkspaceRequests.fs" />
+        <Compile Include="PipeCommandProtocol.fs" />
+        <Compile Include="CommandCompensation.fs" />
+        <Compile Include="CanonicalCommandOperation.fs" />
+        <Compile Include="PipeCommandRequests.fs" />
         <Compile Include="Pipe.fs" />
         <Compile Include="Program.fs" />
     </ItemGroup>

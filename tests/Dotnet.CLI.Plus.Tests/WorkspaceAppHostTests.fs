@@ -10,11 +10,12 @@ open System.Text
 open System.Threading
 open System.Threading.Tasks
 open Dotnet.CLI.Plus.Transport
+open FsUnit.Xunit
 open Microsoft.VisualStudio.SolutionPersistence.Model
 open Microsoft.VisualStudio.SolutionPersistence.Serializer
 open Xunit
 
-module private PipeTest =
+module internal PipeTest =
     let request id name parameters =
         RpcCodec.encodeFrame (Request(id, name, parameters))
 
@@ -31,7 +32,8 @@ module private PipeTest =
                     RpcValue.String "workspace.refresh"
                     RpcValue.String "operation.cancel"
                     RpcValue.String "unknown.claim" ]
-              "limits", map [ "maxFrameBytes", RpcValue.Integer 1024L; "maxPageSize", RpcValue.Integer 50L ] ]
+              "limits",
+              map [ "maxFrameBytes", RpcValue.Integer 1024L; "maxPageSize", RpcValue.Integer 50L ] ]
 
     let save path model =
         let serializer = SolutionSerializers.GetSerializerByMoniker path
@@ -40,7 +42,9 @@ module private PipeTest =
     let writeProject path =
         File.WriteAllText(
             path,
-            "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"
+            "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup>"
+            + "<TargetFramework>net10.0</TargetFramework>"
+            + "</PropertyGroup></Project>"
         )
 
     let temporaryDirectory name =
@@ -62,7 +66,7 @@ module private PipeTest =
             repositoryRoot parent.FullName
 
     let buildConfiguration =
-        let frameworkDirectory = DirectoryInfo(AppContext.BaseDirectory)
+        let frameworkDirectory = DirectoryInfo AppContext.BaseDirectory
 
         if isNull frameworkDirectory.Parent then
             failwith "Could not determine the active build configuration."
@@ -86,8 +90,8 @@ module private PipeTest =
     let fixturePath name =
         Path.Combine(AppContext.BaseDirectory, "ConformanceFixtures", name)
 
-    let startPipeWithDataHome alias solution dataHome =
-        let start = ProcessStartInfo(apphost)
+    let startPipeWithEnvironment alias solution environment =
+        let start = ProcessStartInfo apphost
         start.ArgumentList.Add alias
         start.ArgumentList.Add solution
         start.ArgumentList.Add "--pipe"
@@ -97,7 +101,8 @@ module private PipeTest =
         start.RedirectStandardError <- true
         start.CreateNoWindow <- true
 
-        dataHome |> Option.iter (fun path -> start.Environment["XDG_DATA_HOME"] <- path)
+        for name, value in environment do
+            start.Environment[name] <- value
 
         let child = Process.Start start
 
@@ -105,6 +110,14 @@ module private PipeTest =
             failwith "Failed to start the built apphost."
 
         child
+
+    let startPipeWithDataHome alias solution dataHome =
+        let environment =
+            dataHome
+            |> Option.map (fun path -> [ "XDG_DATA_HOME", path ])
+            |> Option.defaultValue []
+
+        startPipeWithEnvironment alias solution environment
 
     let startPipe alias solution =
         startPipeWithDataHome alias solution None
@@ -136,7 +149,8 @@ module private PipeTest =
             | Ok length when length = pending.Count ->
                 match RpcCodec.decodeFrame RpcCodec.secureLimits (pending.ToArray()) with
                 | Ok(RpcFrameDecodeResult.Frame value) -> frame <- Some(value, length)
-                | Ok(RpcFrameDecodeResult.RecoverableError _) -> failwith "Server stdout contained a request error."
+                | Ok(RpcFrameDecodeResult.RecoverableError _) ->
+                    failwith "Server stdout contained a request error."
                 | Error error -> failwithf "Invalid apphost frame: %A" error
             | Ok _ -> failwith "The frame reader consumed an unexpected byte count."
 
@@ -192,17 +206,17 @@ module private PipeTest =
         let frame, size = readFrameWithSize child
         Assert.True(size <= 1024)
         let error, result = response id frame
-        Assert.True(error.IsNone)
+        Assert.True error.IsNone
         Assert.Equal(RpcValue.Boolean true, field "accepted" result)
         child.StandardInput.Close()
-        Assert.True(child.WaitForExit(5000), "The apphost did not exit after shutdown.")
+        Assert.True(child.WaitForExit 5000, "The apphost did not exit after shutdown.")
         Assert.Equal(-1, child.StandardOutput.BaseStream.ReadByte())
         Assert.Equal(0, child.ExitCode)
         Assert.Equal(String.Empty, child.StandardError.ReadToEnd())
 
     let disposeProcess (child: Process) =
         if not child.HasExited then
-            child.Kill(true)
+            child.Kill true
             child.WaitForExit()
 
         child.Dispose()
@@ -261,7 +275,8 @@ module private PipeTest =
 
         let sessionInitialize =
             map
-                [ "protocolVersion", map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 4L ]
+                [ "protocolVersion",
+                  map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 4L ]
                   "clientInfo", map [ "name", RpcValue.String "test" ]
                   "capabilities",
                   RpcValue.array
@@ -336,7 +351,8 @@ module private PipeTest =
                   "pageSize", RpcValue.Integer 100L ]
                 |> fun fields ->
                     continuation
-                    |> Option.map (fun token -> ("continuationToken", RpcValue.String token) :: fields)
+                    |> Option.map (fun token ->
+                        ("continuationToken", RpcValue.String token) :: fields)
                     |> Option.defaultValue fields
 
             send session.Child false (request requestId "workspace/children" (map fields))
@@ -344,7 +360,7 @@ module private PipeTest =
             let (error, page), _, _ =
                 responseAfterWorkspaceNotifications session.Child requestId expectedRevision
 
-            Assert.True(error.IsNone)
+            Assert.True error.IsNone
 
             field "nodes" page
             |> RpcValue.requireArray "nodes"
@@ -368,8 +384,11 @@ type WorkspaceAppHostTests() =
         let session =
             PipeTest.openProjectWithSetup
                 "worker-content-default-scenario"
-                (fun directory -> File.WriteAllText(Path.Combine(directory, "appsettings.json"), "{}"))
-                "<Project Sdk=\"Microsoft.NET.Sdk.Worker\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"
+                (fun directory ->
+                    File.WriteAllText(Path.Combine(directory, "appsettings.json"), "{}"))
+                ("<Project Sdk=\"Microsoft.NET.Sdk.Worker\"><PropertyGroup>"
+                 + "<TargetFramework>net10.0</TargetFramework>"
+                 + "</PropertyGroup></Project>")
 
         try
             let settings = Path.Combine(session.Directory, "appsettings.json")
@@ -380,7 +399,8 @@ type WorkspaceAppHostTests() =
                 3u
                 "project.item.add"
                 session.ProjectId
-                (PipeTest.map [ "path", RpcValue.String settings; "itemType", RpcValue.String "Content" ])
+                (PipeTest.map
+                    [ "path", RpcValue.String settings; "itemType", RpcValue.String "Content" ])
                 0L
                 true
 
@@ -391,7 +411,8 @@ type WorkspaceAppHostTests() =
                 5u
                 "project.item.add"
                 session.ProjectId
-                (PipeTest.map [ "path", RpcValue.String settings; "itemType", RpcValue.String "None" ])
+                (PipeTest.map
+                    [ "path", RpcValue.String settings; "itemType", RpcValue.String "None" ])
                 1L
                 true
 
@@ -401,11 +422,16 @@ type WorkspaceAppHostTests() =
             Assert.DoesNotContain("<Content Include=\"appsettings.json\"", project)
 
             let names = PipeTest.readAllProjectChildNames session 7u 2L
-            Assert.Contains(names, fun name -> name.StartsWith("None: appsettings.json", StringComparison.Ordinal))
+
+            Assert.Contains(
+                names,
+                fun name -> name.StartsWith("None: appsettings.json", StringComparison.Ordinal)
+            )
 
             Assert.False(
                 names
-                |> Array.exists (fun name -> name.StartsWith("Content: appsettings.json", StringComparison.Ordinal))
+                |> Array.exists (fun name ->
+                    name.StartsWith("Content: appsettings.json", StringComparison.Ordinal))
             )
         finally
             PipeTest.closeProject session
@@ -417,9 +443,11 @@ type WorkspaceAppHostTests() =
                 "web-content-default-scenario"
                 (fun directory ->
                     let wwwroot = Path.Combine(directory, "wwwroot")
-                    Directory.CreateDirectory(wwwroot) |> ignore
+                    Directory.CreateDirectory wwwroot |> ignore
                     File.WriteAllText(Path.Combine(wwwroot, "site.css"), "body {}"))
-                "<Project Sdk=\"Microsoft.NET.Sdk.Web\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"
+                ("<Project Sdk=\"Microsoft.NET.Sdk.Web\"><PropertyGroup>"
+                 + "<TargetFramework>net10.0</TargetFramework>"
+                 + "</PropertyGroup></Project>")
 
         try
             let site = Path.Combine(session.Directory, "wwwroot", "site.css")
@@ -430,7 +458,8 @@ type WorkspaceAppHostTests() =
                 3u
                 "project.item.add"
                 session.ProjectId
-                (PipeTest.map [ "path", RpcValue.String site; "itemType", RpcValue.String "Content" ])
+                (PipeTest.map
+                    [ "path", RpcValue.String site; "itemType", RpcValue.String "Content" ])
                 0L
                 true
 
@@ -451,25 +480,33 @@ type WorkspaceAppHostTests() =
             Assert.DoesNotContain("<Content Include=\"wwwroot/site.css\"", project)
 
             let names = PipeTest.readAllProjectChildNames session 7u 2L
-            Assert.Contains(names, fun name -> name.StartsWith("None: wwwroot/site.css", StringComparison.Ordinal))
+
+            Assert.Contains(
+                names,
+                fun name -> name.StartsWith("None: wwwroot/site.css", StringComparison.Ordinal)
+            )
 
             Assert.False(
                 names
-                |> Array.exists (fun name -> name.StartsWith("Content: wwwroot/site.css", StringComparison.Ordinal))
+                |> Array.exists (fun name ->
+                    name.StartsWith("Content: wwwroot/site.css", StringComparison.Ordinal))
             )
         finally
             PipeTest.closeProject session
 
     [<Fact>]
-    member _.``should keep excluded and existing directory item additions explicit only when needed``() =
+    member _.``should keep directory item additions explicit only when needed``() =
         let session =
             PipeTest.openProjectWithSetup
                 "item-glob-scenario"
                 (fun directory ->
                     let included = Path.Combine(directory, "Included")
-                    Directory.CreateDirectory(included) |> ignore
+                    Directory.CreateDirectory included |> ignore
                     File.WriteAllText(Path.Combine(included, "Nested.cs"), "class Nested { }"))
-                "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework><DefaultItemExcludes>$(DefaultItemExcludes);Excluded.cs</DefaultItemExcludes></PropertyGroup></Project>"
+                ("<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup>"
+                 + "<TargetFramework>net10.0</TargetFramework>"
+                 + "<DefaultItemExcludes>$(DefaultItemExcludes);Excluded.cs</DefaultItemExcludes>"
+                 + "</PropertyGroup></Project>")
 
         try
             let before = File.ReadAllBytes session.Project
@@ -480,7 +517,8 @@ type WorkspaceAppHostTests() =
                 3u
                 "project.item.add"
                 session.ProjectId
-                (PipeTest.map [ "path", RpcValue.String included; "itemType", RpcValue.String "Compile" ])
+                (PipeTest.map
+                    [ "path", RpcValue.String included; "itemType", RpcValue.String "Compile" ])
                 0L
                 true
 
@@ -510,9 +548,11 @@ type WorkspaceAppHostTests() =
                 "directory-build-action-scenario"
                 (fun directory ->
                     let assets = Path.Combine(directory, "Assets")
-                    Directory.CreateDirectory(assets) |> ignore
+                    Directory.CreateDirectory assets |> ignore
                     File.WriteAllText(Path.Combine(assets, "Readme.txt"), "readme"))
-                "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"
+                ("<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup>"
+                 + "<TargetFramework>net10.0</TargetFramework>"
+                 + "</PropertyGroup></Project>")
 
         try
             let assets = Path.Combine(session.Directory, "Assets")
@@ -522,7 +562,8 @@ type WorkspaceAppHostTests() =
                 3u
                 "project.item.add"
                 session.ProjectId
-                (PipeTest.map [ "path", RpcValue.String assets; "itemType", RpcValue.String "Content" ])
+                (PipeTest.map
+                    [ "path", RpcValue.String assets; "itemType", RpcValue.String "Content" ])
                 0L
                 true
 
@@ -531,11 +572,16 @@ type WorkspaceAppHostTests() =
             Assert.Contains("<Content Include=\"Assets/**/*\"", project)
 
             let names = PipeTest.readAllProjectChildNames session 5u 1L
-            Assert.Contains(names, fun name -> name.StartsWith("Content: Assets/Readme.txt", StringComparison.Ordinal))
+
+            Assert.Contains(
+                names,
+                fun name -> name.StartsWith("Content: Assets/Readme.txt", StringComparison.Ordinal)
+            )
 
             Assert.False(
                 names
-                |> Array.exists (fun name -> name.StartsWith("None: Assets/Readme.txt", StringComparison.Ordinal))
+                |> Array.exists (fun name ->
+                    name.StartsWith("None: Assets/Readme.txt", StringComparison.Ordinal))
             )
         finally
             PipeTest.closeProject session
@@ -552,12 +598,15 @@ type WorkspaceAppHostTests() =
             PipeTest.openProject "external-item-scenario" "<Project Sdk=\"Microsoft.NET.Sdk\" />"
 
         try
+            let addArguments =
+                PipeTest.map [ "path", RpcValue.String source; "itemType", RpcValue.String "None" ]
+
             PipeTest.previewAndExecute
                 session.Child
                 3u
                 "project.item.add"
                 session.ProjectId
-                (PipeTest.map [ "path", RpcValue.String source; "itemType", RpcValue.String "None" ])
+                addArguments
                 0L
                 true
 
@@ -582,7 +631,8 @@ type WorkspaceAppHostTests() =
                 session
                 7u
                 "project.item.add"
-                (PipeTest.map [ "path", RpcValue.String source; "itemType", RpcValue.String "Content" ])
+                (PipeTest.map
+                    [ "path", RpcValue.String source; "itemType", RpcValue.String "Content" ])
                 2L
         finally
             PipeTest.closeProject session
@@ -616,7 +666,8 @@ type WorkspaceAppHostTests() =
                 5u
                 "project.item.set-build-action"
                 session.ProjectId
-                (PipeTest.map [ "path", RpcValue.String source; "itemType", RpcValue.String "Content" ])
+                (PipeTest.map
+                    [ "path", RpcValue.String source; "itemType", RpcValue.String "Content" ])
                 1L
                 true
 
@@ -627,13 +678,16 @@ type WorkspaceAppHostTests() =
     [<Fact>]
     member _.``should refuse directory operands for file project commands``() =
         let session =
-            PipeTest.openProject "directory-refusal-scenario" "<Project Sdk=\"Microsoft.NET.Sdk\" />"
+            PipeTest.openProject
+                "directory-refusal-scenario"
+                "<Project Sdk=\"Microsoft.NET.Sdk\" />"
 
         try
             let folder = Path.Combine(session.Directory, "Folder")
-            Directory.CreateDirectory(folder) |> ignore
+            Directory.CreateDirectory folder |> ignore
 
-            [ "project.item.new", PipeTest.map [ "path", RpcValue.String folder; "itemType", RpcValue.String "Compile" ]
+            [ "project.item.new",
+              PipeTest.map [ "path", RpcValue.String folder; "itemType", RpcValue.String "Compile" ]
               "project.item.copy",
               PipeTest.map
                   [ "source", RpcValue.String folder
@@ -644,7 +698,8 @@ type WorkspaceAppHostTests() =
                   [ "path", RpcValue.String folder
                     "itemType", RpcValue.String "Compile"
                     "link", RpcValue.Boolean true ]
-              "project.item.rename", PipeTest.map [ "path", RpcValue.String folder; "name", RpcValue.String "Renamed" ]
+              "project.item.rename",
+              PipeTest.map [ "path", RpcValue.String folder; "name", RpcValue.String "Renamed" ]
               "project.item.move",
               PipeTest.map [ "path", RpcValue.String folder; "destination", RpcValue.String folder ]
               "project.item.remove", PipeTest.map [ "path", RpcValue.String folder ]
@@ -671,7 +726,10 @@ type WorkspaceAppHostTests() =
                 0L
                 true
 
-            Assert.Contains("<RootNamespace>Demo.Root</RootNamespace>", File.ReadAllText session.Project)
+            Assert.Contains(
+                "<RootNamespace>Demo.Root</RootNamespace>",
+                File.ReadAllText session.Project
+            )
         finally
             PipeTest.closeProject session
 
@@ -680,7 +738,9 @@ type WorkspaceAppHostTests() =
         let session =
             PipeTest.openProject
                 "conditional-property-scenario"
-                "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><Version Condition=\"'$(MSBuildProjectName)' == 'Demo'\">1.0</Version></PropertyGroup></Project>"
+                ("<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup>"
+                 + "<Version Condition=\"'$(MSBuildProjectName)' == 'Demo'\">1.0</Version>"
+                 + "</PropertyGroup></Project>")
 
         try
             PipeTest.previewFailure
@@ -726,7 +786,8 @@ type WorkspaceAppHostTests() =
             PipeTest.openProjectWithSetup
                 "rename-move-scenario"
                 (fun directory -> File.WriteAllText(Path.Combine(directory, "Move.txt"), "move"))
-                "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup><Content Include=\"Move.txt\" /></ItemGroup></Project>"
+                ("<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup>"
+                 + "<Content Include=\"Move.txt\" /></ItemGroup></Project>")
 
         try
             let source = Path.Combine(session.Directory, "Move.txt")
@@ -738,7 +799,8 @@ type WorkspaceAppHostTests() =
                 3u
                 "project.item.rename"
                 session.ProjectId
-                (PipeTest.map [ "path", RpcValue.String source; "name", RpcValue.String "Renamed.txt" ])
+                (PipeTest.map
+                    [ "path", RpcValue.String source; "name", RpcValue.String "Renamed.txt" ])
                 0L
                 true
 
@@ -747,7 +809,8 @@ type WorkspaceAppHostTests() =
                 5u
                 "project.item.move"
                 session.ProjectId
-                (PipeTest.map [ "path", RpcValue.String renamed; "destination", RpcValue.String moved ])
+                (PipeTest.map
+                    [ "path", RpcValue.String renamed; "destination", RpcValue.String moved ])
                 1L
                 true
 
@@ -770,19 +833,24 @@ type WorkspaceAppHostTests() =
     member _.``should preserve external encoded imported property files``() =
         let external = PipeTest.temporaryDirectory "encoded-property-scenario"
         let props = Path.Combine(external, "Shared.props")
-        let encoding = Encoding.GetEncoding(28591)
+        let encoding = Encoding.GetEncoding 28591
 
         File.WriteAllBytes(
             props,
             encoding.GetBytes(
-                "<?xml version=\"1.0\" encoding=\"iso-8859-1\"?>\r\n<Project>\r\n  <!-- café shared -->\r\n  <PropertyGroup Condition=\"'$(MSBuildProjectName)' == 'Demo'\"><AssemblyName>Café</AssemblyName></PropertyGroup>\r\n</Project>\r\n"
+                "<?xml version=\"1.0\" encoding=\"iso-8859-1\"?>\r\n"
+                + "<Project>\r\n  <!-- café shared -->\r\n"
+                + "  <PropertyGroup Condition=\"'$(MSBuildProjectName)' == 'Demo'\">"
+                + "<AssemblyName>Café</AssemblyName></PropertyGroup>\r\n"
+                + "</Project>\r\n"
             )
         )
 
         let session =
             PipeTest.openProject
                 "encoded-property-scenario"
-                $"<Project Sdk=\"Microsoft.NET.Sdk\"><Import Project=\"{props.Replace('\\', '/')}\" /></Project>"
+                ($"<Project Sdk=\"Microsoft.NET.Sdk\">"
+                 + $"<Import Project=\"{props.Replace('\\', '/')}\" /></Project>")
 
         try
             PipeTest.previewAndExecute
@@ -818,14 +886,15 @@ type WorkspaceAppHostTests() =
             let (childrenError, children), _, _ =
                 PipeTest.responseAfterWorkspaceNotifications session.Child 5u 1L
 
-            Assert.True(childrenError.IsNone)
+            Assert.True childrenError.IsNone
 
             let names = ResizeArray<string>()
 
             let appendNames page =
                 PipeTest.field "nodes" page
                 |> RpcValue.requireArray "nodes"
-                |> Seq.iter (fun node -> names.Add(PipeTest.field "name" node |> RpcValue.requireString "name"))
+                |> Seq.iter (fun node ->
+                    names.Add(PipeTest.field "name" node |> RpcValue.requireString "name"))
 
             appendNames children
 
@@ -853,7 +922,7 @@ type WorkspaceAppHostTests() =
                 let (pageError, page), _, _ =
                     PipeTest.responseAfterWorkspaceNotifications session.Child requestId 1L
 
-                Assert.True(pageError.IsNone)
+                Assert.True pageError.IsNone
                 appendNames page
 
                 continuation <-
@@ -867,14 +936,18 @@ type WorkspaceAppHostTests() =
 
             Assert.Contains(
                 names,
-                fun name -> name.Contains("Evaluated AssemblyName = After", StringComparison.Ordinal)
+                fun name ->
+                    name.Contains("Evaluated AssemblyName = After", StringComparison.Ordinal)
             )
 
             Assert.Contains(
                 names,
                 fun name ->
                     name.Contains("Declared AssemblyName = After", StringComparison.Ordinal)
-                    && name.Contains("condition: '$(MSBuildProjectName)' == 'Demo'", StringComparison.Ordinal)
+                    && name.Contains(
+                        "condition: '$(MSBuildProjectName)' == 'Demo'",
+                        StringComparison.Ordinal
+                    )
             )
         finally
             PipeTest.closeProject session
@@ -891,7 +964,7 @@ type WorkspaceAppHostTests() =
         model.AddProject("Demo.csproj", "Demo", null) |> ignore
         File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
         File.WriteAllText(deleted, "delete")
-        Directory.CreateDirectory(trashHome) |> ignore
+        Directory.CreateDirectory trashHome |> ignore
         PipeTest.save solution model
 
         use child =
@@ -942,7 +1015,9 @@ type WorkspaceAppHostTests() =
     [<Theory>]
     [<InlineData("solution")>]
     [<InlineData("sln")>]
-    member _.``should serve a framed workspace session from the built apphost for both aliases``(alias: string) =
+    member _.``should serve a framed workspace session from the built apphost for both aliases``
+        (alias: string)
+        =
         let directory = PipeTest.temporaryDirectory "pipe-apphost"
 
         try
@@ -959,7 +1034,7 @@ type WorkspaceAppHostTests() =
                 let initializeError, initializeResult =
                     PipeTest.readFrame child |> PipeTest.response 1u
 
-                Assert.True(initializeError.IsNone)
+                Assert.True initializeError.IsNone
 
                 Assert.Equal(
                     0L,
@@ -976,12 +1051,16 @@ type WorkspaceAppHostTests() =
 
                 PipeTest.send child false (PipeTest.request 2u "workspace/root" RpcValue.emptyMap)
                 let rootError, rootResult = PipeTest.readFrame child |> PipeTest.response 2u
-                Assert.True(rootError.IsNone)
-                Assert.Equal(0L, PipeTest.field "revision" rootResult |> RpcValue.requireInteger "revision")
+                Assert.True rootError.IsNone
+
+                Assert.Equal(
+                    0L,
+                    PipeTest.field "revision" rootResult |> RpcValue.requireInteger "revision"
+                )
 
                 PipeTest.send child false (PipeTest.request 3u "workspace/export" RpcValue.emptyMap)
                 let exportError, exportResult = PipeTest.readFrame child |> PipeTest.response 3u
-                Assert.True(exportError.IsNone)
+                Assert.True exportError.IsNone
 
                 let operationId =
                     PipeTest.field "operationId" exportResult
@@ -997,27 +1076,48 @@ type WorkspaceAppHostTests() =
 
                     match frame with
                     | Notification("workspace/exportChunk", parameters) ->
-                        Assert.Equal(RpcValue.String operationId, PipeTest.field "operationId" parameters)
+                        Assert.Equal(
+                            RpcValue.String operationId,
+                            PipeTest.field "operationId" parameters
+                        )
 
                         Assert.Equal(
                             sequence,
-                            PipeTest.field "sequence" parameters |> RpcValue.requireInteger "sequence"
+                            PipeTest.field "sequence" parameters
+                            |> RpcValue.requireInteger "sequence"
                         )
 
                         sequence <- sequence + 1L
                     | Notification("operation/completed", parameters) ->
-                        Assert.Equal(RpcValue.String operationId, PipeTest.field "operationId" parameters)
-                        Assert.Equal(RpcValue.String "succeeded", PipeTest.field "outcome" parameters)
+                        Assert.Equal(
+                            RpcValue.String operationId,
+                            PipeTest.field "operationId" parameters
+                        )
+
+                        Assert.Equal(
+                            RpcValue.String "succeeded",
+                            PipeTest.field "outcome" parameters
+                        )
+
                         completions <- completions + 1
                         completed <- true
                     | frame -> failwithf "Unexpected export frame: %A" frame
 
                 Assert.Equal(1, completions)
 
-                PipeTest.send child false (PipeTest.request 4u "workspace/refresh" RpcValue.emptyMap)
+                PipeTest.send
+                    child
+                    false
+                    (PipeTest.request 4u "workspace/refresh" RpcValue.emptyMap)
+
                 let noOpError, noOpResult = PipeTest.readFrame child |> PipeTest.response 4u
-                Assert.True(noOpError.IsNone)
-                Assert.Equal(0L, PipeTest.field "revision" noOpResult |> RpcValue.requireInteger "revision")
+                Assert.True noOpError.IsNone
+
+                Assert.Equal(
+                    0L,
+                    PipeTest.field "revision" noOpResult |> RpcValue.requireInteger "revision"
+                )
+
                 Assert.Equal(RpcValue.Boolean false, PipeTest.field "reset" noOpResult)
 
                 let folder = model.AddFolder "/nested/"
@@ -1035,7 +1135,8 @@ type WorkspaceAppHostTests() =
                     match changedError with
                     | None ->
                         let changedRevision =
-                            PipeTest.field "revision" changedResult |> RpcValue.requireInteger "revision"
+                            PipeTest.field "revision" changedResult
+                            |> RpcValue.requireInteger "revision"
 
                         Assert.True(changedRevision > observedRevision)
 
@@ -1049,13 +1150,16 @@ type WorkspaceAppHostTests() =
 
                             Assert.Equal(
                                 changedRevision,
-                                PipeTest.field "newRevision" parameters |> RpcValue.requireInteger "newRevision"
+                                PipeTest.field "newRevision" parameters
+                                |> RpcValue.requireInteger "newRevision"
                             )
 
-                            let added = HashSet<string>(StringComparer.Ordinal)
+                            let added = HashSet<string> StringComparer.Ordinal
                             let mutable secondAdded = false
 
-                            for change in PipeTest.field "changes" parameters |> RpcValue.requireArray "changes" do
+                            for change in
+                                PipeTest.field "changes" parameters
+                                |> RpcValue.requireArray "changes" do
                                 if PipeTest.field "kind" change = RpcValue.String "add" then
                                     match PipeTest.field "parentId" change with
                                     | RpcValue.String parentId -> Assert.Contains(parentId, added)
@@ -1068,12 +1172,15 @@ type WorkspaceAppHostTests() =
                                     |> added.Add
                                     |> ignore
 
-                                    if
-                                        PipeTest.field "name" (PipeTest.field "node" change) = RpcValue.String "Second"
-                                    then
+                                    let name = PipeTest.field "name" (PipeTest.field "node" change)
+
+                                    if name = RpcValue.String "Second" then
                                         secondAdded <- true
 
-                            Assert.True(secondAdded, "The refreshed delta did not add the Second project.")
+                            Assert.True(
+                                secondAdded,
+                                "The refreshed delta did not add the Second project."
+                            )
 
                             changedRevision
                         | frame -> failwithf "Expected refresh delta, got %A" frame
@@ -1089,21 +1196,27 @@ type WorkspaceAppHostTests() =
                                     PipeTest.field "changes" parameters
                                     |> RpcValue.requireArray "changes"
                                     |> Seq.exists (fun change ->
+                                        let node = PipeTest.field "node" change
+
                                         PipeTest.field "kind" change = RpcValue.String "add"
-                                        && PipeTest.field "name" (PipeTest.field "node" change) = RpcValue.String
-                                            "Second")
+                                        && PipeTest.field "name" node = RpcValue.String "Second")
                                 | _ -> false
                         )
 
-                        PipeTest.send child false (PipeTest.request 9u "workspace/refresh" RpcValue.emptyMap)
+                        PipeTest.send
+                            child
+                            false
+                            (PipeTest.request 9u "workspace/refresh" RpcValue.emptyMap)
 
-                        let (recoveredError, recoveredResult), recoveredRevision, recoveredNotifications =
+                        let ((recoveredError, recoveredResult),
+                             recoveredRevision,
+                             recoveredNotifications) =
                             PipeTest.responseAfterWorkspaceNotifications child 9u observedRevision
 
-                        Assert.True(recoveredError.IsNone)
+                        Assert.True recoveredError.IsNone
                         Assert.Equal(RpcValue.Boolean false, PipeTest.field "reset" recoveredResult)
                         Assert.True(recoveredRevision >= observedRevision)
-                        Assert.Empty(recoveredNotifications)
+                        Assert.Empty recoveredNotifications
                         recoveredRevision
 
                 Assert.True(finalRevision > 0L)
@@ -1126,18 +1239,21 @@ type WorkspaceAppHostTests() =
     member _.``should consume the public pipe lifecycle from headless neovim``() =
         let nvimAvailable =
             try
-                let start = ProcessStartInfo("nvim")
-                start.ArgumentList.Add("--version")
+                let start = ProcessStartInfo "nvim"
+                start.ArgumentList.Add "--version"
                 start.RedirectStandardOutput <- true
                 start.RedirectStandardError <- true
                 start.UseShellExecute <- false
                 use nvim = Process.Start start
-                not (isNull nvim) && nvim.WaitForExit(5000) && nvim.ExitCode = 0
+                not (isNull nvim) && nvim.WaitForExit 5000 && nvim.ExitCode = 0
             with :? ComponentModel.Win32Exception ->
                 false
 
         if not nvimAvailable then
-            raise (Xunit.Sdk.SkipException.ForSkip("Neovim is not available; T-014 will provision it for CI."))
+            raise (
+                Sdk.SkipException.ForSkip "Neovim is not available; T-014 will provision it for CI."
+
+            )
 
         let directory = PipeTest.temporaryDirectory "nvim-conformance"
 
@@ -1145,7 +1261,11 @@ type WorkspaceAppHostTests() =
             let solution = Path.Combine(directory, "Neovim.slnx")
             let model = SolutionModel()
             model.AddProject("Included.csproj", "Included", null) |> ignore
-            File.Copy(PipeTest.fixturePath "Solutions/src/Included.csproj", Path.Combine(directory, "Included.csproj"))
+
+            File.Copy(
+                PipeTest.fixturePath "Solutions/src/Included.csproj",
+                Path.Combine(directory, "Included.csproj")
+            )
 
             for index in 1..20 do
                 let name = $"Project{index}"
@@ -1154,7 +1274,7 @@ type WorkspaceAppHostTests() =
 
             PipeTest.save solution model
 
-            let start = ProcessStartInfo("nvim")
+            let start = ProcessStartInfo "nvim"
             start.WorkingDirectory <- directory
             start.RedirectStandardOutput <- true
             start.RedirectStandardError <- true
@@ -1177,10 +1297,10 @@ type WorkspaceAppHostTests() =
 
             use nvim = Process.Start start
             Assert.NotNull nvim
-            let completed = nvim.WaitForExit(30000)
+            let completed = nvim.WaitForExit 30000
 
             if not completed then
-                nvim.Kill(true)
+                nvim.Kill true
                 nvim.WaitForExit()
 
             Assert.True(completed, "The headless Neovim client did not complete its lifecycle.")
@@ -1207,7 +1327,9 @@ type WorkspaceAppHostTests() =
             try
                 let initialize =
                     PipeTest.map
-                        [ "protocolVersion", PipeTest.map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 0L ]
+                        [ "protocolVersion",
+                          PipeTest.map
+                              [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 0L ]
                           "clientInfo", PipeTest.map [ "name", RpcValue.String "watch-test" ]
                           "capabilities",
                           RpcValue.array
@@ -1225,7 +1347,7 @@ type WorkspaceAppHostTests() =
                 let initializeError, initializeResult =
                     PipeTest.readFrame child |> PipeTest.response 1u
 
-                Assert.True(initializeError.IsNone)
+                Assert.True initializeError.IsNone
 
                 let workspaceId =
                     PipeTest.field "workspace" initializeResult
@@ -1238,34 +1360,45 @@ type WorkspaceAppHostTests() =
                 let projectId =
                     PipeTest.field "nodes" root
                     |> RpcValue.requireArray "nodes"
-                    |> Seq.filter (fun node -> PipeTest.field "kind" node = RpcValue.String "project")
+                    |> Seq.filter (fun node ->
+                        PipeTest.field "kind" node = RpcValue.String "project")
                     |> Seq.map (PipeTest.field "id" >> RpcValue.requireString "id")
                     |> Seq.exactlyOne
 
                 let children =
-                    PipeTest.map [ "parentId", RpcValue.String projectId; "pageSize", RpcValue.Integer 1L ]
+                    PipeTest.map
+                        [ "parentId", RpcValue.String projectId; "pageSize", RpcValue.Integer 1L ]
 
                 PipeTest.send child false (PipeTest.request 3u "workspace/children" children)
                 let childError, page = PipeTest.readFrame child |> PipeTest.response 3u
-                Assert.True(childError.IsNone)
+                Assert.True childError.IsNone
 
                 Assert.Single(PipeTest.field "nodes" page |> RpcValue.requireArray "nodes")
                 |> ignore
 
                 match PipeTest.readFrame child with
                 | Notification("workspace/delta", parameters) ->
-                    Assert.Equal(0L, PipeTest.field "baseRevision" parameters |> RpcValue.requireInteger "revision")
-                    Assert.Equal(1L, PipeTest.field "newRevision" parameters |> RpcValue.requireInteger "revision")
+                    Assert.Equal(
+                        0L,
+                        PipeTest.field "baseRevision" parameters
+                        |> RpcValue.requireInteger "revision"
+                    )
+
+                    Assert.Equal(
+                        1L,
+                        PipeTest.field "newRevision" parameters
+                        |> RpcValue.requireInteger "revision"
+                    )
                 | frame -> failwithf "Expected hydration delta, got %A" frame
 
                 let token = PipeTest.field "nextToken" page |> RpcValue.requireString "nextToken"
 
                 let forged =
                     token[.. token.Length - 2]
-                    + (if token.EndsWith("A", StringComparison.Ordinal) then
-                           "B"
-                       else
-                           "A")
+                    + if token.EndsWith("A", StringComparison.Ordinal) then
+                          "B"
+                      else
+                          "A"
 
                 let invalidPage =
                     PipeTest.map
@@ -1279,17 +1412,33 @@ type WorkspaceAppHostTests() =
 
                 File.WriteAllText(
                     project,
-                    "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework><WatchedValue>changed</WatchedValue></PropertyGroup></Project>"
+                    "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup>"
+                    + "<TargetFramework>net10.0</TargetFramework>"
+                    + "<WatchedValue>changed</WatchedValue>"
+                    + "</PropertyGroup></Project>"
                 )
 
                 let watching = Task.Run(fun () -> PipeTest.readFrame child)
-                Assert.True(watching.Wait(TimeSpan.FromSeconds 10.0), "The watcher did not publish a transition.")
+
+                Assert.True(
+                    watching.Wait(TimeSpan.FromSeconds 10.0),
+                    "The watcher did not publish a transition."
+                )
+
                 let mutable watchedRevision = 1L
 
                 match watching.Result with
                 | Notification("workspace/delta", parameters) ->
-                    Assert.Equal(1L, PipeTest.field "baseRevision" parameters |> RpcValue.requireInteger "revision")
-                    watchedRevision <- PipeTest.field "newRevision" parameters |> RpcValue.requireInteger "revision"
+                    Assert.Equal(
+                        1L,
+                        PipeTest.field "baseRevision" parameters
+                        |> RpcValue.requireInteger "revision"
+                    )
+
+                    watchedRevision <-
+                        PipeTest.field "newRevision" parameters
+                        |> RpcValue.requireInteger "revision"
+
                     Assert.True(watchedRevision > 1L)
                 | frame -> failwithf "Expected watcher delta, got %A" frame
 
@@ -1303,16 +1452,20 @@ type WorkspaceAppHostTests() =
                         [ "parentId", RpcValue.String projectId; "pageSize", RpcValue.Integer 100L ]
                         |> fun fields ->
                             continuation
-                            |> Option.map (fun token -> ("continuationToken", RpcValue.String token) :: fields)
+                            |> Option.map (fun token ->
+                                ("continuationToken", RpcValue.String token) :: fields)
                             |> Option.defaultValue fields
                         |> PipeTest.map
 
-                    PipeTest.send child false (PipeTest.request requestId "workspace/children" freshChildren)
+                    PipeTest.send
+                        child
+                        false
+                        (PipeTest.request requestId "workspace/children" freshChildren)
 
                     let projectError, projectPage =
                         PipeTest.readFrame child |> PipeTest.response requestId
 
-                    Assert.True(projectError.IsNone)
+                    Assert.True projectError.IsNone
 
                     Assert.Equal(
                         watchedRevision,
@@ -1324,7 +1477,8 @@ type WorkspaceAppHostTests() =
                         |> RpcValue.requireArray "nodes"
                         |> Seq.exists (fun node ->
                             PipeTest.field "kind" node = RpcValue.String "projectItem"
-                            && PipeTest.field "name" node = RpcValue.String "Evaluated WatchedValue = changed")
+                            && PipeTest.field "name" node = RpcValue.String
+                                "Evaluated WatchedValue = changed")
 
                     continuation <-
                         match PipeTest.field "nextToken" projectPage with
@@ -1335,11 +1489,18 @@ type WorkspaceAppHostTests() =
                     hasMore <- continuation.IsSome
                     requestId <- requestId + 1u
 
-                Assert.True(watchedValueFound, "Fresh project paging did not expose Evaluated WatchedValue = changed.")
+                Assert.True(
+                    watchedValueFound,
+                    "Fresh project paging did not expose Evaluated WatchedValue = changed."
+                )
 
                 File.Copy(PipeTest.globalJson, Path.Combine(directory, "global.json"))
                 let selection = Task.Run(fun () -> PipeTest.readFrame child)
-                Assert.True(selection.Wait(TimeSpan.FromSeconds 10.0), "global.json creation was not observed.")
+
+                Assert.True(
+                    selection.Wait(TimeSpan.FromSeconds 10.0),
+                    "global.json creation was not observed."
+                )
 
                 match selection.Result with
                 | Notification("workspace/reset", parameters) ->
@@ -1348,9 +1509,13 @@ type WorkspaceAppHostTests() =
 
                     Assert.True(resetRevision > watchedRevision)
 
-                    PipeTest.send child false (PipeTest.request 100u "workspace/root" RpcValue.emptyMap)
+                    PipeTest.send
+                        child
+                        false
+                        (PipeTest.request 100u "workspace/root" RpcValue.emptyMap)
+
                     let freshError, freshRoot = PipeTest.readFrame child |> PipeTest.response 100u
-                    Assert.True(freshError.IsNone)
+                    Assert.True freshError.IsNone
 
                     Assert.Equal(
                         resetRevision,
@@ -1360,11 +1525,12 @@ type WorkspaceAppHostTests() =
                     let workspaceTarget = PipeTest.map [ "targetId", RpcValue.String workspaceId ]
                     PipeTest.send child false (PipeTest.request 101u "command/list" workspaceTarget)
                     let commandError, commands = PipeTest.readFrame child |> PipeTest.response 101u
-                    Assert.True(commandError.IsNone)
+                    Assert.True commandError.IsNone
 
                     PipeTest.field "commands" commands
                     |> RpcValue.requireArray "commands"
-                    |> Seq.exists (fun command -> PipeTest.field "id" command = RpcValue.String "solution.project.add")
+                    |> Seq.exists (fun command ->
+                        PipeTest.field "id" command = RpcValue.String "solution.project.add")
                     |> Assert.True
                 | frame -> failwithf "Expected a toolset reset, got %A" frame
 
@@ -1376,7 +1542,9 @@ type WorkspaceAppHostTests() =
                 Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``should reset the built apphost when a child hydration delta exceeds its frame limit``() =
+    member _.``should reset the built apphost when a child hydration delta exceeds its frame limit``
+        ()
+        =
         let directory = PipeTest.temporaryDirectory "pipe-children-delta-pressure"
 
         try
@@ -1392,7 +1560,8 @@ type WorkspaceAppHostTests() =
 
             let initialize maximumFrameBytes =
                 PipeTest.map
-                    [ "protocolVersion", PipeTest.map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 0L ]
+                    [ "protocolVersion",
+                      PipeTest.map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 0L ]
                       "clientInfo", PipeTest.map [ "name", RpcValue.String "child-pressure-test" ]
                       "capabilities",
                       RpcValue.array
@@ -1419,7 +1588,7 @@ type WorkspaceAppHostTests() =
                 PipeTest.readFrame probe |> PipeTest.response 1u |> ignore
                 PipeTest.send probe false (PipeTest.request 2u "workspace/root" RpcValue.emptyMap)
                 let probeRootError, probeRoot = PipeTest.readFrame probe |> PipeTest.response 2u
-                Assert.True(probeRootError.IsNone)
+                Assert.True probeRootError.IsNone
 
                 let probeProjectIds = projectIds probeRoot
                 Assert.Equal(2, probeProjectIds.Length)
@@ -1438,12 +1607,16 @@ type WorkspaceAppHostTests() =
                     let probeChildrenError, _ =
                         PipeTest.readFrame probe |> PipeTest.response (uint32 (3 + index))
 
-                    Assert.True(probeChildrenError.IsNone)
+                    Assert.True probeChildrenError.IsNone
 
                     match PipeTest.readFrame probe with
                     | Notification("workspace/delta", _) as delta when index = 1 ->
                         let deltaSize = (RpcCodec.encodeFrame delta).Length
-                        Assert.True(deltaSize > 1024, $"Expected a delta above 1024 bytes, got {deltaSize}.")
+
+                        Assert.True(
+                            deltaSize > 1024,
+                            $"Expected a delta above 1024 bytes, got {deltaSize}."
+                        )
                     | Notification("workspace/delta", _) -> ()
                     | frame -> failwithf "Expected child-hydration delta, got %A" frame
 
@@ -1464,7 +1637,11 @@ type WorkspaceAppHostTests() =
                 Assert.True(rootSize <= 1024)
                 let rootError, root = PipeTest.response 11u rootFrame
                 Assert.True(rootError.IsNone, $"Expected bounded root, got {rootError}.")
-                Assert.Equal(0L, PipeTest.field "revision" root |> RpcValue.requireInteger "revision")
+
+                Assert.Equal(
+                    0L,
+                    PipeTest.field "revision" root |> RpcValue.requireInteger "revision"
+                )
 
                 let childProjectIds = projectIds root
                 Assert.Equal(2, childProjectIds.Length)
@@ -1482,8 +1659,12 @@ type WorkspaceAppHostTests() =
                 let firstFrame, firstSize = PipeTest.readFrameWithSize child
                 Assert.True(firstSize <= 1024)
                 let firstError, firstPage = PipeTest.response 12u firstFrame
-                Assert.True(firstError.IsNone)
-                Assert.Equal(1L, PipeTest.field "revision" firstPage |> RpcValue.requireInteger "revision")
+                Assert.True firstError.IsNone
+
+                Assert.Equal(
+                    1L,
+                    PipeTest.field "revision" firstPage |> RpcValue.requireInteger "revision"
+                )
 
                 let firstDelta, firstDeltaSize = PipeTest.readFrameWithSize child
                 Assert.True(firstDeltaSize <= 1024)
@@ -1496,7 +1677,11 @@ type WorkspaceAppHostTests() =
                         |> RpcValue.requireInteger "baseRevision"
                     )
 
-                    Assert.Equal(1L, PipeTest.field "newRevision" parameters |> RpcValue.requireInteger "newRevision")
+                    Assert.Equal(
+                        1L,
+                        PipeTest.field "newRevision" parameters
+                        |> RpcValue.requireInteger "newRevision"
+                    )
                 | frame -> failwithf "Expected in-limit child-hydration delta, got %A" frame
 
                 PipeTest.send
@@ -1512,30 +1697,45 @@ type WorkspaceAppHostTests() =
                 let childrenFrame, childrenSize = PipeTest.readFrameWithSize child
                 Assert.True(childrenSize <= 1024)
                 let childrenError, page = PipeTest.response 13u childrenFrame
-                Assert.True(childrenError.IsNone)
-                Assert.Equal(2L, PipeTest.field "revision" page |> RpcValue.requireInteger "revision")
+                Assert.True childrenError.IsNone
+
+                Assert.Equal(
+                    2L,
+                    PipeTest.field "revision" page |> RpcValue.requireInteger "revision"
+                )
 
                 let resetFrame, resetSize = PipeTest.readFrameWithSize child
                 Assert.True(resetSize <= 1024)
 
                 match resetFrame with
                 | Notification("workspace/reset", parameters) ->
-                    Assert.Equal(3L, PipeTest.field "revision" parameters |> RpcValue.requireInteger "revision")
+                    Assert.Equal(
+                        3L,
+                        PipeTest.field "revision" parameters |> RpcValue.requireInteger "revision"
+                    )
 
                     let diagnostic =
                         PipeTest.field "diagnostics" parameters
                         |> RpcValue.requireArray "diagnostics"
                         |> Seq.exactlyOne
 
-                    Assert.Equal(RpcValue.String "workspace.delta_pressure", PipeTest.field "code" diagnostic)
+                    Assert.Equal(
+                        RpcValue.String "workspace.delta_pressure",
+                        PipeTest.field "code" diagnostic
+                    )
                 | frame -> failwithf "Expected bounded child-hydration reset, got %A" frame
 
                 PipeTest.send child false (PipeTest.request 14u "workspace/root" RpcValue.emptyMap)
                 let freshFrame, freshSize = PipeTest.readFrameWithSize child
                 Assert.True(freshSize <= 1024)
                 let freshError, freshRoot = PipeTest.response 14u freshFrame
-                Assert.True(freshError.IsNone)
-                Assert.Equal(3L, PipeTest.field "revision" freshRoot |> RpcValue.requireInteger "revision")
+                Assert.True freshError.IsNone
+
+                Assert.Equal(
+                    3L,
+                    PipeTest.field "revision" freshRoot |> RpcValue.requireInteger "revision"
+                )
+
                 PipeTest.shutdown child 15u
             finally
                 PipeTest.disposeProcess child
@@ -1544,7 +1744,7 @@ type WorkspaceAppHostTests() =
                 Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``should apply the global negotiated frame limit to responses errors and export notifications``() =
+    member _.``should apply negotiated frame limits to all outbound frames``() =
         let directory = PipeTest.temporaryDirectory "pipe-global-limit"
 
         try
@@ -1583,7 +1783,7 @@ type WorkspaceAppHostTests() =
                 let exportFrame, exportSize = PipeTest.readFrameWithSize child
                 Assert.True(exportSize <= 1024)
                 let exportError, exportResult = PipeTest.response 4u exportFrame
-                Assert.True(exportError.IsNone)
+                Assert.True exportError.IsNone
 
                 let operationId =
                     PipeTest.field "operationId" exportResult
@@ -1597,8 +1797,16 @@ type WorkspaceAppHostTests() =
 
                     match frame with
                     | Notification("operation/completed", parameters) ->
-                        Assert.Equal(RpcValue.String operationId, PipeTest.field "operationId" parameters)
-                        Assert.Equal(RpcValue.String "succeeded", PipeTest.field "outcome" parameters)
+                        Assert.Equal(
+                            RpcValue.String operationId,
+                            PipeTest.field "operationId" parameters
+                        )
+
+                        Assert.Equal(
+                            RpcValue.String "succeeded",
+                            PipeTest.field "outcome" parameters
+                        )
+
                         completed <- true
                     | Notification("workspace/exportChunk", _) -> ()
                     | value -> failwithf "Unexpected globally bounded frame: %A" value
@@ -1615,7 +1823,7 @@ type WorkspaceAppHostTests() =
         let missing = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.slnx")
         use startup = PipeTest.startPipe "solution" missing
         startup.StandardInput.Close()
-        Assert.True(startup.WaitForExit(5000))
+        Assert.True(startup.WaitForExit 5000)
         Assert.Equal(64, startup.ExitCode)
         Assert.Empty(PipeTest.readRemaining startup.StandardOutput.BaseStream)
         Assert.Contains("startup failure", startup.StandardError.ReadToEnd())
@@ -1626,9 +1834,9 @@ type WorkspaceAppHostTests() =
             let solution = Path.Combine(directory, "Demo.slnx")
             PipeTest.save solution (SolutionModel())
             use fatal = PipeTest.startPipe "solution" solution
-            fatal.StandardInput.BaseStream.Write([| 0xd4uy; 0uy; 0uy |])
+            fatal.StandardInput.BaseStream.Write [| 0xd4uy; 0uy; 0uy |]
             fatal.StandardInput.Close()
-            Assert.True(fatal.WaitForExit(5000))
+            Assert.True(fatal.WaitForExit 5000)
             Assert.Equal(65, fatal.ExitCode)
             Assert.Empty(PipeTest.readRemaining fatal.StandardOutput.BaseStream)
             Assert.Contains("protocol failure", fatal.StandardError.ReadToEnd())
@@ -1639,7 +1847,12 @@ type WorkspaceAppHostTests() =
             PipeTest.send orderlyEof false (PipeTest.request 2u "workspace/root" RpcValue.emptyMap)
             PipeTest.readFrame orderlyEof |> PipeTest.response 2u |> ignore
             orderlyEof.StandardInput.Close()
-            Assert.True(orderlyEof.WaitForExit(5000), "The watched pipe did not exit after stdin closed.")
+
+            Assert.True(
+                orderlyEof.WaitForExit 5000,
+                "The watched pipe did not exit after stdin closed."
+            )
+
             Assert.Equal(0, orderlyEof.ExitCode)
             Assert.Equal(String.Empty, orderlyEof.StandardError.ReadToEnd())
         finally
@@ -1652,28 +1865,32 @@ type WorkspaceAppHostTests() =
             let solution = Path.Combine(invalidDirectory, "Demo.slnx")
             PipeTest.save solution (SolutionModel())
             use invalidInitialize = PipeTest.startPipe "solution" solution
-            PipeTest.send invalidInitialize false (PipeTest.request 1u "initialize" RpcValue.emptyMap)
+
+            PipeTest.send
+                invalidInitialize
+                false
+                (PipeTest.request 1u "initialize" RpcValue.emptyMap)
 
             let initializeError, _ =
                 PipeTest.readFrame invalidInitialize |> PipeTest.response 1u
 
             Assert.Equal("invalid_params", initializeError.Value.Code)
             invalidInitialize.StandardInput.Close()
-            Assert.True(invalidInitialize.WaitForExit(5000))
+            Assert.True(invalidInitialize.WaitForExit 5000)
             Assert.Equal(0, invalidInitialize.ExitCode)
             Assert.Equal(String.Empty, invalidInitialize.StandardError.ReadToEnd())
         finally
             if Directory.Exists invalidDirectory then
                 Directory.Delete(invalidDirectory, true)
 
-        let start = ProcessStartInfo(PipeTest.apphost)
+        let start = ProcessStartInfo PipeTest.apphost
         start.ArgumentList.Add "--json"
         start.UseShellExecute <- false
         start.RedirectStandardOutput <- true
         start.RedirectStandardError <- true
         use direct = Process.Start start
         Assert.NotNull direct
-        Assert.True(direct.WaitForExit(5000))
+        Assert.True(direct.WaitForExit 5000)
         Assert.NotEqual(0, direct.ExitCode)
         Assert.StartsWith("{", direct.StandardOutput.ReadToEnd().TrimStart())
 
@@ -1694,7 +1911,9 @@ type WorkspaceAppHostTests() =
             try
                 let initialize =
                     PipeTest.map
-                        [ "protocolVersion", PipeTest.map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 4L ]
+                        [ "protocolVersion",
+                          PipeTest.map
+                              [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 4L ]
                           "clientInfo", PipeTest.map [ "name", RpcValue.String "command-test" ]
                           "capabilities",
                           RpcValue.array
@@ -1714,7 +1933,7 @@ type WorkspaceAppHostTests() =
                 let initializeError, initializeResult =
                     PipeTest.readFrame child |> PipeTest.response 1u
 
-                Assert.True(initializeError.IsNone)
+                Assert.True initializeError.IsNone
 
                 let workspaceId =
                     PipeTest.field "workspace" initializeResult
@@ -1727,45 +1946,58 @@ type WorkspaceAppHostTests() =
                 let workspaceListError, workspaceList =
                     PipeTest.readFrame child |> PipeTest.response 30u
 
-                Assert.True(workspaceListError.IsNone)
+                Assert.True workspaceListError.IsNone
 
                 PipeTest.field "commands" workspaceList
                 |> RpcValue.requireArray "commands"
-                |> Seq.exists (fun command -> PipeTest.field "id" command = RpcValue.String "solution.project.add")
+                |> Seq.exists (fun command ->
+                    PipeTest.field "id" command = RpcValue.String "solution.project.add")
                 |> Assert.True
 
                 PipeTest.send child false (PipeTest.request 2u "workspace/root" RpcValue.emptyMap)
                 let rootError, rootResult = PipeTest.readFrame child |> PipeTest.response 2u
-                Assert.True(rootError.IsNone)
+                Assert.True rootError.IsNone
 
                 let projectId =
                     PipeTest.field "nodes" rootResult
                     |> RpcValue.requireArray "nodes"
-                    |> Seq.filter (fun node -> PipeTest.field "kind" node = RpcValue.String "project")
+                    |> Seq.filter (fun node ->
+                        PipeTest.field "kind" node = RpcValue.String "project")
                     |> Seq.map (PipeTest.field "id" >> RpcValue.requireString "id")
                     |> Seq.exactlyOne
 
                 let children =
-                    PipeTest.map [ "parentId", RpcValue.String projectId; "pageSize", RpcValue.Integer 50L ]
+                    PipeTest.map
+                        [ "parentId", RpcValue.String projectId; "pageSize", RpcValue.Integer 50L ]
 
                 PipeTest.send child false (PipeTest.request 3u "workspace/children" children)
                 let hydrationError, _ = PipeTest.readFrame child |> PipeTest.response 3u
-                Assert.True(hydrationError.IsNone)
+                Assert.True hydrationError.IsNone
 
                 match PipeTest.readFrame child with
                 | Notification("workspace/delta", parameters) ->
-                    Assert.Equal(0L, PipeTest.field "baseRevision" parameters |> RpcValue.requireInteger "revision")
-                    Assert.Equal(1L, PipeTest.field "newRevision" parameters |> RpcValue.requireInteger "revision")
+                    Assert.Equal(
+                        0L,
+                        PipeTest.field "baseRevision" parameters
+                        |> RpcValue.requireInteger "revision"
+                    )
+
+                    Assert.Equal(
+                        1L,
+                        PipeTest.field "newRevision" parameters
+                        |> RpcValue.requireInteger "revision"
+                    )
                 | frame -> failwithf "Expected the hydration delta, got %A" frame
 
                 let target = PipeTest.map [ "targetId", RpcValue.String projectId ]
                 PipeTest.send child false (PipeTest.request 4u "command/list" target)
                 let listError, listResult = PipeTest.readFrame child |> PipeTest.response 4u
-                Assert.True(listError.IsNone)
+                Assert.True listError.IsNone
 
                 PipeTest.field "commands" listResult
                 |> RpcValue.requireArray "commands"
-                |> Seq.exists (fun command -> PipeTest.field "id" command = RpcValue.String "solution.project.rename")
+                |> Seq.exists (fun command ->
+                    PipeTest.field "id" command = RpcValue.String "solution.project.rename")
                 |> Assert.True
 
                 let arguments = PipeTest.map [ "name", RpcValue.String "Renamed" ]
@@ -1802,7 +2034,7 @@ type WorkspaceAppHostTests() =
 
                 PipeTest.send child false (PipeTest.request 5u "command/preview" preview)
                 let previewError, previewResult = PipeTest.readFrame child |> PipeTest.response 5u
-                Assert.True(previewError.IsNone)
+                Assert.True previewError.IsNone
 
                 let previewId =
                     PipeTest.field "previewId" previewResult |> RpcValue.requireString "previewId"
@@ -1817,8 +2049,12 @@ type WorkspaceAppHostTests() =
 
                 PipeTest.send child false (PipeTest.request 6u "command/execute" execute)
                 let executeError, executeResult = PipeTest.readFrame child |> PipeTest.response 6u
-                Assert.True(executeError.IsNone)
-                Assert.Equal(2L, PipeTest.field "revision" executeResult |> RpcValue.requireInteger "revision")
+                Assert.True executeError.IsNone
+
+                Assert.Equal(
+                    2L,
+                    PipeTest.field "revision" executeResult |> RpcValue.requireInteger "revision"
+                )
 
                 match PipeTest.readFrame child with
                 | Notification("workspace/delta", parameters) ->
@@ -1828,8 +2064,15 @@ type WorkspaceAppHostTests() =
                         |> RpcValue.requireInteger "baseRevision"
                     )
 
-                    Assert.Equal(2L, PipeTest.field "newRevision" parameters |> RpcValue.requireInteger "newRevision")
-                | frame -> failwithf "Expected the transaction delta after the execute response, got %A" frame
+                    Assert.Equal(
+                        2L,
+                        PipeTest.field "newRevision" parameters
+                        |> RpcValue.requireInteger "newRevision"
+                    )
+                | frame ->
+                    failwithf
+                        "Expected the transaction delta after the execute response, got %A"
+                        frame
 
                 Assert.False(File.Exists source)
                 Assert.True(File.Exists destination)
@@ -1860,7 +2103,9 @@ type WorkspaceAppHostTests() =
                 Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``should expose no write commands and refuse mutation requests for a solution filter``() =
+    member _.``should expose only read commands and refuse mutation requests for a solution filter``
+        ()
+        =
         let directory = PipeTest.temporaryDirectory "pipe-command-slnf"
 
         try
@@ -1876,14 +2121,19 @@ type WorkspaceAppHostTests() =
                 PipeTest.readFrame child |> PipeTest.response 1u |> ignore
                 PipeTest.send child false (PipeTest.request 2u "command/list" RpcValue.emptyMap)
                 let listError, listResult = PipeTest.readFrame child |> PipeTest.response 2u
-                Assert.True(listError.IsNone)
-                Assert.Empty(PipeTest.field "commands" listResult |> RpcValue.requireArray "commands")
+                Assert.True listError.IsNone
+
+                PipeTest.field "commands" listResult
+                |> RpcValue.requireArray "commands"
+                |> Seq.map (PipeTest.field "id" >> RpcValue.requireString "id")
+                |> Seq.toArray
+                |> should equal [| "template.list"; "template.show" |]
 
                 let describe = PipeTest.map [ "commandId", RpcValue.String "solution.folder.add" ]
 
                 PipeTest.send child false (PipeTest.request 3u "command/describe" describe)
                 let describeError, _ = PipeTest.readFrame child |> PipeTest.response 3u
-                Assert.Equal("unsupported_capability", describeError.Value.Code)
+                Assert.Equal("not_found", describeError.Value.Code)
 
                 let arguments = PipeTest.map [ "name", RpcValue.String "src" ]
 

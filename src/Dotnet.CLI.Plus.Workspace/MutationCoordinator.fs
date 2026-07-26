@@ -53,7 +53,7 @@ module internal MutationFiles =
     let canonicalNoFollow allowTerminalLink path =
         let full = Path.GetFullPath path
 
-        match Path.GetPathRoot(full) |> Option.ofObj with
+        match Path.GetPathRoot full |> Option.ofObj with
         | None -> Error "The path has no filesystem root."
         | Some root ->
             let mutable current = root
@@ -79,27 +79,28 @@ module internal MutationFiles =
         let relative = Path.GetRelativePath(root, path)
 
         relative <> ".."
-        && not (relative.StartsWith($"..{Path.DirectorySeparatorChar}"))
+        && not (relative.StartsWith $"..{Path.DirectorySeparatorChar}")
         && not (Path.IsPathRooted relative)
 
     let rec private fingerprintAt allowLink path =
         if isLink path then
             if allowLink then
                 let target = linkTarget path |> Option.defaultValue String.Empty
-                Ok($"l:{SHA256.HashData(Encoding.UTF8.GetBytes target) |> Convert.ToHexString}")
+                Ok $"l:{SHA256.HashData(Encoding.UTF8.GetBytes target) |> Convert.ToHexString}"
             else
                 Error "A symbolic link within a directory cannot be fingerprinted."
         elif File.Exists path then
             use stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read)
-            Ok($"f:{(FileInfo path).Length}:{SHA256.HashData(stream) |> Convert.ToHexString}")
+            Ok $"f:{(FileInfo path).Length}:{SHA256.HashData stream |> Convert.ToHexString}"
         elif Directory.Exists path then
             let children =
-                Directory.EnumerateFileSystemEntries(path)
+                Directory.EnumerateFileSystemEntries path
                 |> Seq.sortWith (fun left right -> StringComparer.Ordinal.Compare(left, right))
                 |> Seq.map (fun child ->
                     fingerprintAt false child
                     |> Result.map (fun value ->
-                        Path.GetFileName(child) |> Option.ofObj |> Option.defaultValue String.Empty, value))
+                        Path.GetFileName child |> Option.ofObj |> Option.defaultValue String.Empty,
+                        value))
                 |> Seq.toArray
 
             match
@@ -119,7 +120,7 @@ module internal MutationFiles =
                     CanonicalBinary.writeValue writer value
 
                 writer.Flush()
-                Ok($"d:{SHA256.HashData(stream.ToArray()) |> Convert.ToHexString}")
+                Ok $"d:{SHA256.HashData(stream.ToArray()) |> Convert.ToHexString}"
         else
             Ok "missing"
 
@@ -131,13 +132,13 @@ module internal MutationFiles =
         elif File.Exists source then
             File.Copy(source, destination)
         elif Directory.Exists source then
-            Directory.CreateDirectory(destination) |> ignore
+            Directory.CreateDirectory destination |> ignore
 
             for child in
-                Directory.EnumerateFileSystemEntries(source)
+                Directory.EnumerateFileSystemEntries source
                 |> Seq.sortWith (fun left right -> StringComparer.Ordinal.Compare(left, right)) do
                 let name =
-                    Path.GetFileName(child) |> Option.ofObj |> Option.defaultValue String.Empty
+                    Path.GetFileName child |> Option.ofObj |> Option.defaultValue String.Empty
 
                 copyNoFollow child (Path.Combine(destination, name))
         else
@@ -164,16 +165,18 @@ module internal MutationFiles =
     let nonEmptyDirectory path =
         Directory.Exists path
         && not (isLink path)
-        && Directory.EnumerateFileSystemEntries(path) |> Seq.isEmpty |> not
+        && Directory.EnumerateFileSystemEntries path |> Seq.isEmpty |> not
 
     let isCaseOnlyRename source destination =
         try
             let sourcePath = Path.GetFullPath source
             let destinationPath = Path.GetFullPath destination
 
+            let caseSemantics = HostFileSystemCaseDetector.DetectFromExistingPath sourcePath
+
             not (String.Equals(sourcePath, destinationPath, StringComparison.Ordinal))
             && String.Equals(sourcePath, destinationPath, StringComparison.OrdinalIgnoreCase)
-            && HostFileSystemCaseDetector.DetectFromExistingPath(sourcePath) = HostFileSystemCaseSemantics.Insensitive
+            && caseSemantics = HostFileSystemCaseSemantics.Insensitive
         with _ ->
             false
 
@@ -184,7 +187,7 @@ module internal MutationFiles =
             if File.Exists candidate || Directory.Exists candidate then
                 candidate
             else
-                match Path.GetDirectoryName(candidate) |> Option.ofObj with
+                match Path.GetDirectoryName candidate |> Option.ofObj with
                 | Some parent when parent <> candidate -> nearestExisting parent
                 | _ -> candidate
 
@@ -194,15 +197,15 @@ module internal MutationFiles =
 
     let temporaryBeside (path: string) (kind: string) =
         let directory =
-            Path.GetDirectoryName(path) |> Option.ofObj |> Option.defaultValue "."
+            Path.GetDirectoryName path |> Option.ofObj |> Option.defaultValue "."
 
-        let name = Path.GetFileName(path) |> Option.ofObj |> Option.defaultValue "artifact"
+        let name = Path.GetFileName path |> Option.ofObj |> Option.defaultValue "artifact"
         Path.Combine(directory, $".{name}.dotnet-plus-{kind}-{Guid.NewGuid():N}")
 
 module internal NativeTrash =
     type Freedesktop(dataHome: string) =
         interface TrashBackend with
-            member _.MoveToTrash(path) =
+            member _.MoveToTrash path =
                 try
                     let root = Path.Combine(dataHome, "Trash")
                     let files = Directory.CreateDirectory(Path.Combine(root, "files")).FullName
@@ -210,12 +213,16 @@ module internal NativeTrash =
 
                     if not (OperatingSystem.IsWindows()) then
                         let mode =
-                            UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute
+                            UnixFileMode.UserRead
+                            ||| UnixFileMode.UserWrite
+                            ||| UnixFileMode.UserExecute
 
                         [ root; files; info ]
                         |> List.iter (fun path -> File.SetUnixFileMode(path, mode))
 
-                    let baseName = Path.GetFileName(path) |> Option.ofObj |> Option.defaultValue "item"
+                    let baseName =
+                        Path.GetFileName path |> Option.ofObj |> Option.defaultValue "item"
+
                     let mutable name = baseName
                     let mutable suffix = 1
 
@@ -227,17 +234,19 @@ module internal NativeTrash =
                     let metadata = Path.Combine(info, $"{name}.trashinfo")
 
                     let escaped =
-                        Uri.EscapeDataString(Path.GetFullPath path).Replace("%2F", "/", StringComparison.Ordinal)
+                        Uri
+                            .EscapeDataString(Path.GetFullPath path)
+                            .Replace("%2F", "/", StringComparison.Ordinal)
 
-                    let deleted = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss")
+                    let deleted = DateTime.Now.ToString "yyyy-MM-ddTHH:mm:ss"
 
                     use stream =
                         File.Open(metadata, FileMode.CreateNew, FileAccess.Write, FileShare.None)
 
-                    use writer = new StreamWriter(stream, UTF8Encoding(false), leaveOpen = true)
-                    writer.Write($"[Trash Info]\nPath={escaped}\nDeletionDate={deleted}\n")
+                    use writer = new StreamWriter(stream, UTF8Encoding false, leaveOpen = true)
+                    writer.Write $"[Trash Info]\nPath={escaped}\nDeletionDate={deleted}\n"
                     writer.Flush()
-                    stream.Flush(true)
+                    stream.Flush true
 
                     try
                         MutationFiles.move path (Path.Combine(files, name))
@@ -250,7 +259,7 @@ module internal NativeTrash =
 
     type Windows() =
         interface TrashBackend with
-            member _.MoveToTrash(path) =
+            member _.MoveToTrash path =
                 try
                     if File.Exists path then
                         FileSystem.DeleteFile(
@@ -275,22 +284,32 @@ module internal NativeTrash =
 
     module private Mac =
         [<DllImport("/usr/lib/libobjc.A.dylib")>]
-        extern IntPtr objc_getClass(string name)
+        extern IntPtr objc_getClass(string _name)
 
         [<DllImport("/usr/lib/libobjc.A.dylib")>]
-        extern IntPtr sel_registerName(string name)
+        extern IntPtr sel_registerName(string _name)
 
         [<DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_msgSend")>]
-        extern IntPtr send0(IntPtr receiver, IntPtr selector)
+        extern IntPtr send0(IntPtr _receiver, IntPtr _selector)
 
         [<DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_msgSend")>]
-        extern IntPtr sendUtf8(IntPtr receiver, IntPtr selector, [<MarshalAs(UnmanagedType.LPUTF8Str)>] string value)
+        extern IntPtr sendUtf8(
+            IntPtr _receiver,
+            IntPtr _selector,
+            [<MarshalAs(UnmanagedType.LPUTF8Str)>] string _value
+        )
 
         [<DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_msgSend")>]
-        extern IntPtr sendPointer(IntPtr receiver, IntPtr selector, IntPtr value)
+        extern IntPtr sendPointer(IntPtr _receiver, IntPtr _selector, IntPtr _value)
 
         [<DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_msgSend")>]
-        extern byte sendTrash(IntPtr receiver, IntPtr selector, IntPtr url, IntPtr result, IntPtr error)
+        extern byte sendTrash(
+            IntPtr _receiver,
+            IntPtr _selector,
+            IntPtr _url,
+            IntPtr _result,
+            IntPtr _error
+        )
 
         let selector value = sel_registerName value
 
@@ -302,12 +321,18 @@ module internal NativeTrash =
 
             let url = sendPointer (objc_getClass "NSURL", selector "fileURLWithPath:", text)
 
-            sendTrash (manager, selector "trashItemAtURL:resultingItemURL:error:", url, IntPtr.Zero, IntPtr.Zero)
+            sendTrash (
+                manager,
+                selector "trashItemAtURL:resultingItemURL:error:",
+                url,
+                IntPtr.Zero,
+                IntPtr.Zero
+            )
             <> 0uy
 
     type MacOS() =
         interface TrashBackend with
-            member _.MoveToTrash(path) =
+            member _.MoveToTrash path =
                 try
                     if Mac.trash path then
                         Ok()
@@ -330,7 +355,7 @@ module internal NativeTrash =
                 | "" -> Path.Combine(home, ".local", "share")
                 | value -> value
 
-            Freedesktop(data)
+            Freedesktop data
 
 type MutationTrash private () =
     static member CreateForCurrentUser() : TrashBackend = NativeTrash.current ()
@@ -348,7 +373,7 @@ type MutationCoordinator
         trash: TrashBackend
     ) =
     let gate = obj ()
-    let previews = Dictionary<string, BoundPreview>(StringComparer.Ordinal)
+    let previews = Dictionary<string, BoundPreview> StringComparer.Ordinal
 
     let diagnostic code message =
         WorkspaceDiagnostic.CreateSimple(
@@ -363,7 +388,10 @@ type MutationCoordinator
         Failure(InvalidInput("mutation", diagnostic "invalid_input" message))
 
     let unsupported message =
-        UnsupportedCapability(WorkspaceCapabilityId.Write, diagnostic "unsupported_capability" message)
+        UnsupportedCapability(
+            WorkspaceCapabilityId.Write,
+            diagnostic "unsupported_capability" message
+        )
 
     let conflict expected actual message =
         Failure(Conflict(expected, actual, diagnostic "workspace_conflict" message))
@@ -380,8 +408,15 @@ type MutationCoordinator
         | Node value -> $"node:{value.Value}"
         | Choice value -> $"choice:{value.Value}"
         | TextArray values ->
-            let joined = String.concat "\u001f" values
-            $"texts:{joined}"
+            use stream = new MemoryStream()
+            use writer = new BinaryWriter(stream, Encoding.UTF8, true)
+            CanonicalBinary.writeSection writer "texts" values.Length
+
+            for value in values do
+                CanonicalBinary.writeValue writer value
+
+            writer.Flush()
+            $"texts:{Convert.ToHexString(stream.ToArray())}"
 
     let actionPaths =
         function
@@ -437,13 +472,15 @@ type MutationCoordinator
                     Error "Every target requires an explicit authorization root."
                 elif
                     canonicalTargets
-                    |> Array.exists (fun path -> not (MutationFiles.isUnder canonicalWorkspaceRoot path))
+                    |> Array.exists (fun path ->
+                        not (MutationFiles.isUnder canonicalWorkspaceRoot path))
                     && not (request.Intents.Contains MutationIntent.AccessExternalPath)
                 then
                     Error "External paths require explicit external-path intent."
                 elif
                     canonicalPlanPaths
-                    |> Array.exists (fun path -> not (authorized path && Array.contains path canonicalTargets))
+                    |> Array.exists (fun path ->
+                        not (authorized path && Array.contains path canonicalTargets))
                 then
                     Error "Every action path must be an explicitly authorized target."
                 else
@@ -467,7 +504,9 @@ type MutationCoordinator
                         canonicalTargets |> Array.iter (CanonicalBinary.writeValue writer)
 
                         let arguments =
-                            request.Arguments.Values |> Seq.sortBy _.ParameterId.Value |> Seq.toArray
+                            request.Arguments.Values
+                            |> Seq.sortBy _.ParameterId.Value
+                            |> Seq.toArray
 
                         CanonicalBinary.writeSection writer "arguments" arguments.Length
 
@@ -491,25 +530,27 @@ type MutationCoordinator
 
                         for action in actions do
                             match action with
-                            | MutationAction.ReplaceFile(path, contents) ->
+                            | MutationAction.ReplaceFile(_path, contents) ->
                                 CanonicalBinary.writeValue writer "replace"
                                 CanonicalBinary.writeValue writer (nextPath ())
 
-                                CanonicalBinary.writeValue writer (SHA256.HashData(contents) |> Convert.ToHexString)
-                            | MutationAction.Rename(source, destination) ->
+                                CanonicalBinary.writeValue
+                                    writer
+                                    (SHA256.HashData contents |> Convert.ToHexString)
+                            | MutationAction.Rename(_source, _destination) ->
                                 CanonicalBinary.writeValue writer "rename"
                                 CanonicalBinary.writeValue writer (nextPath ())
                                 CanonicalBinary.writeValue writer (nextPath ())
-                            | MutationAction.Move(source, destination) ->
+                            | MutationAction.Move(_source, _destination) ->
                                 CanonicalBinary.writeValue writer "move"
                                 CanonicalBinary.writeValue writer (nextPath ())
                                 CanonicalBinary.writeValue writer (nextPath ())
-                            | MutationAction.Delete(path, permanent, recursive) ->
+                            | MutationAction.Delete(_path, permanent, recursive) ->
                                 CanonicalBinary.writeValue writer "delete"
                                 CanonicalBinary.writeValue writer (nextPath ())
                                 writer.Write permanent
                                 writer.Write recursive
-                            | MutationAction.Trash path ->
+                            | MutationAction.Trash _path ->
                                 CanonicalBinary.writeValue writer "trash"
                                 CanonicalBinary.writeValue writer (nextPath ())
 
@@ -522,7 +563,7 @@ type MutationCoordinator
                         )
 
     let validate (intents: ImmutableHashSet<MutationIntent>) (actions: MutationAction array) =
-        let destinations = HashSet<string>(StringComparer.Ordinal)
+        let destinations = HashSet<string> StringComparer.Ordinal
 
         let repeatedDestination path =
             destinations.Add(MutationFiles.identity path) |> not
@@ -571,7 +612,7 @@ type MutationCoordinator
             try
                 reverse ()
             with ex ->
-                remaining.Add($"{description}: {ex.Message}")
+                remaining.Add $"{description}: {ex.Message}"
 
         remaining |> Seq.toList
 
@@ -583,9 +624,9 @@ type MutationCoordinator
                 MutationFiles.remove path
 
                 if MutationFiles.exists path then
-                    remaining.Add($"remove temporary artifact: {path}")
+                    remaining.Add $"remove temporary artifact: {path}"
             with ex ->
-                remaining.Add($"remove temporary artifact {path}: {ex.Message}")
+                remaining.Add $"remove temporary artifact {path}: {ex.Message}"
 
         remaining |> Seq.toList
 
@@ -593,7 +634,10 @@ type MutationCoordinator
         let detail = String.concat "; " remaining
 
         Failure(
-            PartialRecoveryRequired(detail, diagnostic "partial_recovery_required" $"Compensation incomplete: {detail}")
+            PartialRecoveryRequired(
+                detail,
+                diagnostic "partial_recovery_required" $"Compensation incomplete: {detail}"
+            )
         )
 
     member _.Prepare(request: MutationPreviewRequest, actions: seq<MutationAction>) =
@@ -601,14 +645,18 @@ type MutationCoordinator
             let actual = currentRevision ()
 
             if actual.Value <> request.ExpectedRevision.Value then
-                conflict request.ExpectedRevision actual "The workspace revision changed before preview."
+                conflict
+                    request.ExpectedRevision
+                    actual
+                    "The workspace revision changed before preview."
             else
                 let plan = actions |> Seq.toArray
 
                 match bind request plan with
                 | Error error -> invalid error
-                | Ok(digest, _, fingerprints) when not (validate request.Intents plan) ->
-                    invalid "The action plan lacks a required intent or valid irreversible ordering."
+                | Ok(_digest, _, _fingerprints) when not (validate request.Intents plan) ->
+                    invalid
+                        "The action plan lacks a required intent or valid irreversible ordering."
                 | Ok(digest, _, fingerprints) ->
                     let token = Convert.ToHexString(RandomNumberGenerator.GetBytes 32)
                     let expiry = clock.GetUtcNow().AddMinutes 5.0
@@ -641,14 +689,20 @@ type MutationCoordinator
                 let plan = actions |> Seq.toArray
 
                 if actual.Value <> request.ExpectedRevision.Value then
-                    conflict request.ExpectedRevision actual "The workspace revision changed before execution."
+                    conflict
+                        request.ExpectedRevision
+                        actual
+                        "The workspace revision changed before execution."
                 else
                     match bind request plan with
                     | Error error -> invalid error
                     | Ok(digest, _, _) when digest <> preview.Digest ->
                         invalid "The request or executable action plan changed after preview."
                     | Ok(_, _, fingerprints) when fingerprints <> preview.Fingerprints ->
-                        conflict request.ExpectedRevision actual "An artifact changed after preview."
+                        conflict
+                            request.ExpectedRevision
+                            actual
+                            "An artifact changed after preview."
                     | Ok _ ->
                         let reversals = ResizeArray<string * (unit -> unit)>()
                         let cleanup = ResizeArray<string>()
@@ -681,7 +735,9 @@ type MutationCoordinator
                                     then
                                         File.Replace(backup, destination, null, true)
                                     else
-                                        let displaced = MutationFiles.temporaryBeside destination "displaced"
+                                        let displaced =
+                                            MutationFiles.temporaryBeside destination "displaced"
+
                                         cleanup.Add displaced
 
                                         if MutationFiles.exists destination then
@@ -695,7 +751,10 @@ type MutationCoordinator
 
                                             reraise ()
 
-                                if File.Exists destination && not (MutationFiles.isLink destination) then
+                                if
+                                    File.Exists destination
+                                    && not (MutationFiles.isLink destination)
+                                then
                                     File.Replace(stage, destination, backup, true)
                                 else
                                     MutationFiles.move destination backup
@@ -728,10 +787,17 @@ type MutationCoordinator
                                     File.WriteAllBytes(stage, contents)
                                     let expected = fingerprint stage
                                     reversals.Insert(0, commitStaged stage destination)
-                                    verifyFingerprint expected destination "The replaced artifact did not verify."
+
+                                    verifyFingerprint
+                                        expected
+                                        destination
+                                        "The replaced artifact did not verify."
                                 | MutationAction.Rename(source, destination) ->
                                     let expected = fingerprint source
-                                    let caseOnly = MutationFiles.isCaseOnlyRename source destination
+
+                                    let caseOnly =
+                                        MutationFiles.isCaseOnlyRename source destination
+
                                     let temporary = MutationFiles.temporaryBeside source "rename"
                                     cleanup.Add temporary
                                     MutationFiles.move source temporary
@@ -753,7 +819,10 @@ type MutationCoordinator
                                                  restoreDestination ())
                                     )
 
-                                    verifyFingerprint expected destination "The renamed artifact did not verify."
+                                    verifyFingerprint
+                                        expected
+                                        destination
+                                        "The renamed artifact did not verify."
 
                                     if MutationFiles.exists source && not caseOnly then
                                         invalidOp "The renamed source artifact still exists."
@@ -768,7 +837,10 @@ type MutationCoordinator
                                     with :? IOException ->
                                         MutationFiles.copyNoFollow source stage
 
-                                        if MutationFiles.fingerprint source <> MutationFiles.fingerprint stage then
+                                        if
+                                            MutationFiles.fingerprint source
+                                            <> MutationFiles.fingerprint stage
+                                        then
                                             invalidOp "The staged move did not verify."
 
                                     let _, restoreDestination =
@@ -793,14 +865,16 @@ type MutationCoordinator
                                             MutationFiles.remove source
                                         with ex ->
                                             irreversible.Add(
-                                                $"remove incomplete source {source}; verified destination retained at {destination}"
+                                                $"remove incomplete source {source}; "
+                                                + $"verified destination retained at {destination}"
                                             )
 
                                             raise ex
 
                                         reversals.Insert(
                                             0,
-                                            ($"restore cross-volume move from {destination} to {source}",
+                                            ($"restore cross-volume move from {destination} "
+                                             + $"to {source}",
                                              fun () ->
                                                  MutationFiles.remove source
                                                  MutationFiles.copyNoFollow destination source
@@ -809,19 +883,26 @@ type MutationCoordinator
                                 | MutationAction.Delete(path, false, _)
                                 | MutationAction.Trash path ->
                                     match trash.MoveToTrash path with
-                                    | Ok() -> irreversible.Add($"moved to trash: {path}")
+                                    | Ok() -> irreversible.Add $"moved to trash: {path}"
                                     | Error error ->
-                                        raise (MutationFailed(unsupported $"Trash refused: {error.Message}"))
+                                        raise (
+                                            MutationFailed(
+                                                unsupported $"Trash refused: {error.Message}"
+                                            )
+                                        )
                                 | MutationAction.Delete(path, true, recursive) ->
                                     MutationFiles.deletePermanent path recursive
-                                    irreversible.Add($"permanently deleted: {path}")
+                                    irreversible.Add $"permanently deleted: {path}"
 
                                 cancellationToken.ThrowIfCancellationRequested()
                         with
                         | :? OperationCanceledException ->
                             failure <-
                                 Some(
-                                    Cancelled(OperationId.New(), diagnostic "cancelled" "The mutation was cancelled.")
+                                    Cancelled(
+                                        OperationId.New(),
+                                        diagnostic "cancelled" "The mutation was cancelled."
+                                    )
                                 )
                         | MutationFailed typed -> failure <- Some typed
                         | ex -> failure <- Some(internalFailure ex.Message)
@@ -833,12 +914,21 @@ type MutationCoordinator
                             | remaining -> partial remaining
                         | Some original ->
                             let remaining =
-                                reverseAll reversals @ (irreversible |> Seq.toList) @ cleanAll cleanup
+                                reverseAll reversals
+                                @ (irreversible |> Seq.toList)
+                                @ cleanAll cleanup
 
                             if remaining.IsEmpty then
                                 Success(RolledBack original)
                             else
                                 partial remaining)
 
-    static member CreateProduction(workspaceRoot: WorkspaceArtifactPath, currentRevision: unit -> WorkspaceRevision) =
-        MutationCoordinator(workspaceRoot, TimeProvider.System, currentRevision, MutationTrash.CreateForCurrentUser())
+    static member CreateProduction
+        (workspaceRoot: WorkspaceArtifactPath, currentRevision: unit -> WorkspaceRevision)
+        =
+        MutationCoordinator(
+            workspaceRoot,
+            TimeProvider.System,
+            currentRevision,
+            MutationTrash.CreateForCurrentUser()
+        )

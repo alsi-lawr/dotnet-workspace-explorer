@@ -49,7 +49,7 @@ module private Test =
         |> Option.defaultWith (fun () -> failwith "Could not locate the repository root.")
 
     let configuration =
-        let baseDirectory = DirectoryInfo(AppContext.BaseDirectory)
+        let baseDirectory = DirectoryInfo AppContext.BaseDirectory
 
         match baseDirectory.Parent with
         | null -> failwith "Could not determine the build configuration."
@@ -81,7 +81,9 @@ module private Test =
         write
             project
             """
-<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+</Project>
 """
 
         project
@@ -89,7 +91,9 @@ module private Test =
     let writeGlobalJson directory version =
         write
             (Path.Combine(directory, "global.json"))
-            (sprintf """{"sdk":{"version":"%s","rollForward":"disable","allowPrerelease":false}}""" version)
+            (sprintf
+                """{"sdk":{"version":"%s","rollForward":"disable","allowPrerelease":false}}"""
+                version)
 
     let writeSolution directory (projects: seq<string>) =
         let solution = Path.Combine(directory, "Demo.slnx")
@@ -97,13 +101,14 @@ module private Test =
         projects
         |> Seq.map (fun project -> $"  <Project Path=\"{Path.GetFileName project}\" />")
         |> String.concat Environment.NewLine
-        |> fun entries -> $"<Solution>{Environment.NewLine}{entries}{Environment.NewLine}</Solution>"
+        |> fun entries ->
+            $"<Solution>{Environment.NewLine}{entries}{Environment.NewLine}</Solution>"
         |> write solution
 
         solution
 
     let runDotnet workingDirectory argument =
-        let start = ProcessStartInfo("dotnet")
+        let start = ProcessStartInfo "dotnet"
         start.WorkingDirectory <- workingDirectory
         start.ArgumentList.Add argument
         start.RedirectStandardOutput <- true
@@ -133,10 +138,11 @@ module private Test =
                 Some(line.Substring(prefix.Length).Trim() |> Path.TrimEndingDirectorySeparator)
             else
                 None)
-        |> Option.defaultWith (fun () -> failwith "dotnet --info did not report the selected SDK base path.")
+        |> Option.defaultWith (fun () ->
+            failwith "dotnet --info did not report the selected SDK base path.")
 
     let start arguments =
-        let start = ProcessStartInfo(apphost)
+        let start = ProcessStartInfo apphost
 
         for argument in arguments do
             start.ArgumentList.Add argument
@@ -159,7 +165,7 @@ module private Test =
 
     let disposeProcess (child: Process) =
         if not child.HasExited then
-            child.Kill(true)
+            child.Kill true
             child.WaitForExit()
 
         pendingFrames.Remove child.Id |> ignore
@@ -261,15 +267,23 @@ module private Test =
     let readMatchingWorkspaceReset expectedRevision child =
         match readFrame child with
         | Notification("workspace/reset", parameters) ->
-            Assert.Equal(expectedRevision, field "revision" parameters |> RpcValue.requireInteger "revision")
+            Assert.Equal(
+                expectedRevision,
+                field "revision" parameters |> RpcValue.requireInteger "revision"
+            )
+
             parameters
         | frame -> failwithf "Expected matching workspace reset, got %A" frame
 
-    let workerInitialize frameLimit =
+    let workerInitializeVersion major minor frameLimit =
         RpcValue.map
             [ "profile", RpcValue.String "dotnet-cli-plus/msbuild"
-              "protocolVersion", RpcValue.map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 0L ]
+              "protocolVersion",
+              RpcValue.map [ "major", RpcValue.Integer major; "minor", RpcValue.Integer minor ]
               "limits", RpcValue.map [ "maxFrameBytes", RpcValue.Integer(int64 frameLimit) ] ]
+
+    let workerInitialize frameLimit =
+        workerInitializeVersion 2L 0L frameLimit
 
     let initializeWorker child id =
         send child id "initialize" (workerInitialize RpcCodec.secureLimits.MaximumValueBytes)
@@ -277,7 +291,8 @@ module private Test =
 
     let pipeInitialize =
         RpcValue.map
-            [ "protocolVersion", RpcValue.map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 0L ]
+            [ "protocolVersion",
+              RpcValue.map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 0L ]
               "clientInfo", RpcValue.map [ "name", RpcValue.String "msbuild-contract-tests" ]
               "capabilities",
               RpcValue.array
@@ -359,7 +374,8 @@ module private Test =
                 [ "parentId", RpcValue.String projectId; "pageSize", RpcValue.Integer 100L ]
                 |> fun fields ->
                     continuation
-                    |> Option.map (fun token -> ("continuationToken", RpcValue.String token) :: fields)
+                    |> Option.map (fun token ->
+                        ("continuationToken", RpcValue.String token) :: fields)
                     |> Option.defaultValue fields
                 |> RpcValue.map
 
@@ -396,12 +412,72 @@ module private Test =
             hasMore <- continuation.IsSome
             requestId <- requestId + 1u
 
-        Assert.True(targetFrameworkFound, "Fresh project paging did not expose Evaluated TargetFramework = net8.0.")
+        Assert.True(
+            targetFrameworkFound,
+            "Fresh project paging did not expose Evaluated TargetFramework = net8.0."
+        )
 
         hydratedRevision
         |> Option.defaultWith (fun () -> failwith "The hydration delta was not observed.")
 
 type MsBuildHostTests() =
+    [<Fact>]
+    member _.``should retain CPM owner paths and exact item-group conditions``() =
+        let directory = Test.temporaryDirectory "package-ownership"
+
+        try
+            let root = Path.Combine(directory, "Directory.Packages.props")
+            let project = Path.Combine(directory, "App.csproj")
+
+            Test.write
+                root
+                """
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+  <ItemGroup Condition=" '$(TargetFramework)' == 'net8.0' ">
+    <PackageVersion Include="Example" Version="1.2.3" />
+  </ItemGroup>
+</Project>
+"""
+
+            Test.write
+                project
+                """
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+  <ItemGroup Condition=" '$(TargetFramework)' == 'net8.0' ">
+    <PackageReference Include="Example" />
+  </ItemGroup>
+</Project>
+"""
+
+            Test.withWorker directory (fun worker ->
+                let error, snapshot = Test.evaluate worker 2u project
+                error.IsNone |> should equal true
+
+                let dimension =
+                    Test.values "dimensions" snapshot
+                    |> Seq.find (fun value ->
+                        Test.field "targetFramework" value = RpcValue.String "net8.0")
+
+                let membership = Test.values "packageMemberships" dimension |> Seq.exactlyOne
+                let owner = Test.values "packageVersions" dimension |> Seq.exactlyOne
+                Test.stringField "declaringPath" membership |> should equal project
+                Test.stringField "declaringPath" owner |> should equal root
+
+                Test.stringField "condition" membership
+                |> should equal " '$(TargetFramework)' == 'net8.0' "
+
+                Test.stringField "condition" owner
+                |> should equal " '$(TargetFramework)' == 'net8.0' "
+
+                3u)
+        finally
+            if Directory.Exists directory then
+                Directory.Delete(directory, true)
+
     [<Fact>]
     member _.``should project dimensions and invalidate imports and globs in the real worker``() =
         let directory = Test.temporaryDirectory "projection"
@@ -414,13 +490,14 @@ type MsBuildHostTests() =
 
             Test.withWorker directory (fun worker ->
                 let error, snapshot = Test.evaluate worker 2u project
-                Assert.True(error.IsNone)
+                Assert.True error.IsNone
                 let dimensions = Test.values "dimensions" snapshot
                 Assert.Equal(3, dimensions.Length)
 
                 let dimension framework =
                     dimensions
-                    |> Seq.find (fun value -> Test.field "targetFramework" value = RpcValue.String framework)
+                    |> Seq.find (fun value ->
+                        Test.field "targetFramework" value = RpcValue.String framework)
 
                 let includes value =
                     Test.values "items" value |> Seq.map (Test.stringField "include")
@@ -452,12 +529,16 @@ type MsBuildHostTests() =
                     |> Seq.collect (Test.values "items")
                     |> Seq.map (Test.stringField "include"),
                     fun itemInclude ->
-                        itemInclude.Replace('\\', '/').EndsWith("Generated/New.cs", StringComparison.Ordinal)
+                        itemInclude
+                            .Replace('\\', '/')
+                            .EndsWith("Generated/New.cs", StringComparison.Ordinal)
                 )
 
                 Test.write
                     props
-                    "<Project><PropertyGroup><ImportedProperty>after</ImportedProperty></PropertyGroup></Project>"
+                    ("<Project><PropertyGroup>"
+                     + "<ImportedProperty>after</ImportedProperty>"
+                     + "</PropertyGroup></Project>")
 
                 let importInvalidation = Test.invalidate worker 5u [ props ]
                 Assert.Contains(project, Test.strings "invalidatedProjects" importInvalidation)
@@ -489,7 +570,7 @@ type MsBuildHostTests() =
             Test.withWorker directory (fun worker ->
                 for index, (project, expectedProfile, expectedWrite) in Seq.indexed projects do
                     let error, snapshot = Test.evaluate worker (uint32 index + 2u) project
-                    Assert.True(error.IsNone)
+                    Assert.True error.IsNone
                     Assert.Equal(expectedProfile, Test.stringField "capabilityProfile" snapshot)
                     let capabilities = Test.strings "capabilities" snapshot |> Seq.toArray
                     Assert.Contains("workspace.read", capabilities)
@@ -500,7 +581,7 @@ type MsBuildHostTests() =
             Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``should enforce initialization and shut down the private worker cleanly``() =
+    member _.``should reject incompatible private worker versions and shut down cleanly``() =
         let directory = Test.temporaryDirectory "protocol"
 
         try
@@ -519,8 +600,20 @@ type MsBuildHostTests() =
                 let rejected, _ = Test.readFrame worker |> Test.response 1u
                 Assert.Equal("invalid_params", rejected.Value.Code)
 
-                Test.send worker 2u "initialize" (Test.workerInitialize 4096)
-                let initialized = Test.requireSuccess 2u worker
+                Test.send worker 2u "initialize" (Test.workerInitializeVersion 1L 0L 4096)
+                let incompatible, _ = Test.readFrame worker |> Test.response 2u
+                Assert.Equal("invalid_params", incompatible.Value.Code)
+
+                Test.send worker 3u "initialize" (Test.workerInitialize 4096)
+                let initialized = Test.requireSuccess 3u worker
+
+                Assert.Equal(
+                    2L,
+                    initialized
+                    |> Test.field "protocolVersion"
+                    |> Test.field "major"
+                    |> RpcValue.requireInteger "major"
+                )
 
                 Assert.Equal(
                     4096L,
@@ -530,7 +623,7 @@ type MsBuildHostTests() =
                     |> RpcValue.requireInteger "maxFrameBytes"
                 )
 
-                Test.shutdown worker 3u
+                Test.shutdown worker 4u
             finally
                 Test.disposeProcess worker
         finally
@@ -566,7 +659,8 @@ type MsBuildHostTests() =
 
                 Assert.Contains(
                     Test.values "diagnostics" reset,
-                    fun diagnostic -> Test.stringField "code" diagnostic = "workspace.refresh_unverified"
+                    fun diagnostic ->
+                        Test.stringField "code" diagnostic = "workspace.refresh_unverified"
                 )
 
                 Test.writeGlobalJson directory version
@@ -590,7 +684,9 @@ type MsBuildHostTests() =
             Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``should keep stable failure mappings for missing malformed and incompatible inputs``() =
+    member _.``should keep stable failure mappings for missing malformed and incompatible inputs``
+        ()
+        =
         let directory = Test.temporaryDirectory "failures"
 
         try
@@ -598,7 +694,9 @@ type MsBuildHostTests() =
             Test.write malformed "<Project><PropertyGroup>"
 
             Test.withWorker directory (fun worker ->
-                let missing, _ = Test.evaluate worker 2u (Path.Combine(directory, "Missing.csproj"))
+                let missing, _ =
+                    Test.evaluate worker 2u (Path.Combine(directory, "Missing.csproj"))
+
                 Assert.Equal("msbuild.project_not_found", missing.Value.Code)
                 let malformedFailure, _ = Test.evaluate worker 3u malformed
                 Assert.Equal("msbuild.project_malformed", malformedFailure.Value.Code)
@@ -641,15 +739,17 @@ type MsBuildHostTests() =
 
                 Test.write
                     brokenImport
-                    "<Project><PropertyGroup><RepairMarker>repaired</RepairMarker></PropertyGroup></Project>"
+                    ("<Project><PropertyGroup><RepairMarker>repaired</RepairMarker>"
+                     + "</PropertyGroup></Project>")
 
                 let repairedError, repaired = Test.evaluate worker 3u project
-                Assert.True(repairedError.IsNone)
+                Assert.True repairedError.IsNone
                 Assert.Equal(3, (Test.values "dimensions" repaired).Length)
 
                 let net9 =
                     Test.values "dimensions" repaired
-                    |> Seq.find (fun value -> Test.field "targetFramework" value = RpcValue.String "net9.0")
+                    |> Seq.find (fun value ->
+                        Test.field "targetFramework" value = RpcValue.String "net9.0")
 
                 Assert.Contains(
                     Test.values "properties" net9,
@@ -677,7 +777,11 @@ type MsBuildHostTests() =
                 let export = Test.requireSuccess 2u app
                 let operationId = Test.stringField "operationId" export
 
-                Test.send app 3u "operation/cancel" (RpcValue.map [ "operationId", RpcValue.String operationId ])
+                Test.send
+                    app
+                    3u
+                    "operation/cancel"
+                    (RpcValue.map [ "operationId", RpcValue.String operationId ])
 
                 let mutable cancelAccepted = false
                 let mutable completions = 0
@@ -686,7 +790,7 @@ type MsBuildHostTests() =
                     match Test.readFrame app with
                     | Notification("workspace/exportChunk", _) -> ()
                     | Response(3u, error, result) ->
-                        Assert.True(error.IsNone)
+                        Assert.True error.IsNone
                         Assert.Equal(RpcValue.Boolean true, Test.field "accepted" result)
                         cancelAccepted <- true
                     | Notification("operation/completed", parameters) ->
@@ -695,7 +799,7 @@ type MsBuildHostTests() =
                         completions <- completions + 1
                     | frame -> failwithf "Unexpected cancellation frame: %A" frame
 
-                Assert.True(cancelAccepted)
+                Assert.True cancelAccepted
                 Assert.Equal(1, completions)
                 4u)
         finally

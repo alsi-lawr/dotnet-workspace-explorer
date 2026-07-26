@@ -264,6 +264,28 @@ internal sealed class WorkerEvaluator : IDisposable
             .OrderBy(package => package.Id, StringComparer.Ordinal)
             .ThenBy(package => package.Version, StringComparer.Ordinal)
             .ToImmutableArray();
+        var packageMemberships = project
+            .GetItems("PackageReference")
+            .Select(item => new EvaluatedPackageMembership(
+                item.EvaluatedInclude,
+                EmptyToNull(item.GetMetadataValue("Version")),
+                WorkspaceArtifactPath.Create(item.Xml.ContainingProject.FullPath),
+                item.Xml.Parent?.Condition ?? string.Empty
+            ))
+            .OrderBy(item => item.Id, StringComparer.Ordinal)
+            .ThenBy(item => item.Condition, StringComparer.Ordinal)
+            .ToImmutableArray();
+        var packageVersions = project
+            .GetItems("PackageVersion")
+            .Select(item => new EvaluatedPackageVersion(
+                item.EvaluatedInclude,
+                EmptyToNull(item.GetMetadataValue("Version")),
+                WorkspaceArtifactPath.Create(item.Xml.ContainingProject.FullPath),
+                item.Xml.Parent?.Condition ?? string.Empty
+            ))
+            .OrderBy(item => item.Id, StringComparer.Ordinal)
+            .ThenBy(item => item.Condition, StringComparer.Ordinal)
+            .ToImmutableArray();
         var analyzers = project
             .GetItems("Analyzer")
             .Select(item => Resolve(projectPath.Value, item.EvaluatedInclude))
@@ -281,7 +303,11 @@ internal sealed class WorkerEvaluator : IDisposable
             References(projectPath.Value, project, "Reference"),
             packages,
             analyzers
-        );
+        )
+        {
+            PackageMemberships = packageMemberships,
+            PackageVersions = packageVersions,
+        };
     }
 
     private static EvaluatedItem MaterializeItem(string projectPath, ProjectItem item) =>

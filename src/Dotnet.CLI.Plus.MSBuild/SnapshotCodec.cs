@@ -87,6 +87,14 @@ internal static class SnapshotCodec
                         )
                 )
             ),
+            (
+                "packageMemberships",
+                WorkerProtocol.Array(dimension.PackageMemberships, EncodePackageMembership)
+            ),
+            (
+                "packageVersions",
+                WorkerProtocol.Array(dimension.PackageVersions, EncodePackageVersion)
+            ),
             ("analyzers", Paths(dimension.Analyzers))
         );
 
@@ -102,6 +110,8 @@ internal static class SnapshotCodec
                 "projectReferences",
                 "references",
                 "packages",
+                "packageMemberships",
+                "packageVersions",
                 "analyzers",
             ]
         );
@@ -114,7 +124,11 @@ internal static class SnapshotCodec
             Values(fields, "references", DecodeReference),
             Values(fields, "packages", DecodePackage),
             Paths(fields, "analyzers")
-        );
+        )
+        {
+            PackageMemberships = Values(fields, "packageMemberships", DecodePackageMembership),
+            PackageVersions = Values(fields, "packageVersions", DecodePackageVersion),
+        };
     }
 
     private static RpcValue EncodeItem(EvaluatedItem item) =>
@@ -189,6 +203,52 @@ internal static class SnapshotCodec
         return new EvaluatedPackage(
             WorkerProtocol.String(fields, "id"),
             OptionalString(fields, "version")
+        );
+    }
+
+    private static RpcValue EncodePackageMembership(EvaluatedPackageMembership value) =>
+        WorkerProtocol.Map(
+            ("id", RpcValue.NewString(value.Id)),
+            ("version", OptionalString(value.Version)),
+            ("declaringPath", RpcValue.NewString(value.DeclaringPath.Value)),
+            ("condition", RpcValue.NewString(value.Condition))
+        );
+
+    private static EvaluatedPackageMembership DecodePackageMembership(RpcValue value)
+    {
+        var fields = WorkerProtocol.ExactMap(
+            "packageMembership",
+            value,
+            ["id", "version", "declaringPath", "condition"]
+        );
+        return new EvaluatedPackageMembership(
+            WorkerProtocol.String(fields, "id"),
+            OptionalString(fields, "version"),
+            WorkspaceArtifactPath.Create(WorkerProtocol.String(fields, "declaringPath")),
+            WorkerProtocol.String(fields, "condition")
+        );
+    }
+
+    private static RpcValue EncodePackageVersion(EvaluatedPackageVersion value) =>
+        WorkerProtocol.Map(
+            ("id", RpcValue.NewString(value.Id)),
+            ("version", OptionalString(value.Version)),
+            ("declaringPath", RpcValue.NewString(value.DeclaringPath.Value)),
+            ("condition", RpcValue.NewString(value.Condition))
+        );
+
+    private static EvaluatedPackageVersion DecodePackageVersion(RpcValue value)
+    {
+        var fields = WorkerProtocol.ExactMap(
+            "packageVersion",
+            value,
+            ["id", "version", "declaringPath", "condition"]
+        );
+        return new EvaluatedPackageVersion(
+            WorkerProtocol.String(fields, "id"),
+            OptionalString(fields, "version"),
+            WorkspaceArtifactPath.Create(WorkerProtocol.String(fields, "declaringPath")),
+            WorkerProtocol.String(fields, "condition")
         );
     }
 
