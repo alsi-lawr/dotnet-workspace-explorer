@@ -402,7 +402,11 @@ type WorkspaceAppHostTests() =
 
             let names = PipeTest.readAllProjectChildNames session 7u 2L
             Assert.Contains(names, fun name -> name.StartsWith("None: appsettings.json", StringComparison.Ordinal))
-            Assert.False(names |> Array.exists (fun name -> name.StartsWith("Content: appsettings.json", StringComparison.Ordinal)))
+
+            Assert.False(
+                names
+                |> Array.exists (fun name -> name.StartsWith("Content: appsettings.json", StringComparison.Ordinal))
+            )
         finally
             PipeTest.closeProject session
 
@@ -448,7 +452,11 @@ type WorkspaceAppHostTests() =
 
             let names = PipeTest.readAllProjectChildNames session 7u 2L
             Assert.Contains(names, fun name -> name.StartsWith("None: wwwroot/site.css", StringComparison.Ordinal))
-            Assert.False(names |> Array.exists (fun name -> name.StartsWith("Content: wwwroot/site.css", StringComparison.Ordinal)))
+
+            Assert.False(
+                names
+                |> Array.exists (fun name -> name.StartsWith("Content: wwwroot/site.css", StringComparison.Ordinal))
+            )
         finally
             PipeTest.closeProject session
 

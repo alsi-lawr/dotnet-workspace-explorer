@@ -443,8 +443,7 @@ module internal ProjectMutations =
 
             let excluded (names: Set<string>) (dimension: EvaluationDimensionSnapshot) =
                 dimension.Properties
-                |> Seq.filter (fun property ->
-                    names.Contains property.Name)
+                |> Seq.filter (fun property -> names.Contains property.Name)
                 |> Seq.groupBy _.Name
                 |> Seq.collect (fun (_, properties) ->
                     properties
@@ -787,7 +786,10 @@ module internal ProjectMutations =
                                     )
                                 )
 
-                            (if not declared then [ file ] else [ file; updatedDocument () ]),
+                            (if not declared then
+                                 [ file ]
+                             else
+                                 [ file; updatedDocument () ]),
                             (if not declared then
                                  [ destination ]
                              else
