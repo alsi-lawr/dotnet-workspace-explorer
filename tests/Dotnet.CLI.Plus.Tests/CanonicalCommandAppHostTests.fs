@@ -14,7 +14,7 @@ open Microsoft.VisualStudio.SolutionPersistence.Model
 open Microsoft.VisualStudio.SolutionPersistence.Serializer
 open Xunit
 
-module private CanonicalAppHost =
+module internal CanonicalAppHost =
     type Session =
         { Directory: string
           Solution: string

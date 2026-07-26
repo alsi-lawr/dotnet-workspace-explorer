@@ -17,6 +17,7 @@
         <Compile Include="CommandParsing.fs" />
         <Compile Include="PostconditionVerification.fs" />
         <Compile Include="ProcessExecution.fs" />
+        <Compile Include="LaunchProfileCommands.fs" />
         <Compile Include="Broker.fs" />
     </ItemGroup>
 </Project>

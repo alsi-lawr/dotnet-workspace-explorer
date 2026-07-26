@@ -10,12 +10,14 @@ open Dotnet.CLI.Plus.Core
 open Dotnet.CLI.Plus.Transport
 open CanonicalMutationPlanning
 
-type internal ProjectRelocationOperation =
+type internal PlannedMutationOperation =
     static member Start
         (
             context: CanonicalCommandOperationContext,
             plan: PlannedMutation,
             previewId: string,
+            progress: string,
+            verify: unit -> Result<unit, string>,
             requestCancellationToken: CancellationToken
         ) : Task<Result<RpcDispatchResult, RpcError>> =
         task {
@@ -80,7 +82,7 @@ type internal ProjectRelocationOperation =
                                         operationId
                                         (nextSequence ())
                                         context.State.Revision
-                                        "Starting project relocation."
+                                        progress
                                 )
 
                             let execution =
@@ -102,51 +104,57 @@ type internal ProjectRelocationOperation =
                             | Failure failure -> outcome <- operationFailure failure
                             | Success(RolledBack failure) -> outcome <- operationFailure failure
                             | Success Applied ->
-                                let! invalidated =
-                                    context.State.InvalidateFromTransactionAsync(
-                                        plannedPaths plan,
-                                        CancellationToken.None
-                                    )
+                                match verify () with
+                                | Error message ->
+                                    outcome <-
+                                        PublicOperationOutcome.Failed("invalid_input", message)
+                                | Ok() ->
+                                    let! invalidated =
+                                        context.State.InvalidateFromTransactionAsync(
+                                            plannedPaths plan,
+                                            CancellationToken.None
+                                        )
 
-                                let notifications = context.MutationNotifications invalidated
+                                    let notifications = context.MutationNotifications invalidated
 
-                                let reset =
-                                    notifications
-                                    |> List.exists (fun notification ->
-                                        RpcCodec.encodeFrame notification
-                                        |> fun frame -> frame.Length > context.MaximumFrameBytes())
+                                    let reset =
+                                        notifications
+                                        |> List.exists (fun notification ->
+                                            RpcCodec.encodeFrame notification
+                                            |> fun frame ->
+                                                frame.Length > context.MaximumFrameBytes())
 
-                                let! effectiveInvalidation =
-                                    if reset then
-                                        task {
-                                            let! value =
-                                                PipeWorkspaceRequests.resetForFramePressure
-                                                    context.State
-                                                    CancellationToken.None
+                                    let! effectiveInvalidation =
+                                        if reset then
+                                            task {
+                                                let! value =
+                                                    PipeWorkspaceRequests.resetForFramePressure
+                                                        context.State
+                                                        CancellationToken.None
 
-                                            return WorkspaceInvalidationResult.Reset value
-                                        }
-                                    else
-                                        Task.FromResult invalidated
+                                                return WorkspaceInvalidationResult.Reset value
+                                            }
+                                        else
+                                            Task.FromResult invalidated
 
-                                let requiresWatcherReset =
-                                    match effectiveInvalidation with
-                                    | WorkspaceInvalidationResult.Reset _ -> true
-                                    | _ -> false
+                                    let requiresWatcherReset =
+                                        match effectiveInvalidation with
+                                        | WorkspaceInvalidationResult.Reset _ -> true
+                                        | _ -> false
 
-                                if requiresWatcherReset then
-                                    context.Watcher.Pause()
-
-                                let! watcherNotifications =
                                     if requiresWatcherReset then
-                                        Task.FromResult []
-                                    else
-                                        context.RebuildWatcher CancellationToken.None
+                                        context.Watcher.Pause()
 
-                                for notification in
-                                    context.MutationNotifications effectiveInvalidation
-                                    @ watcherNotifications do
-                                    do! sink.WriteAsync notification
+                                    let! watcherNotifications =
+                                        if requiresWatcherReset then
+                                            Task.FromResult []
+                                        else
+                                            context.RebuildWatcher CancellationToken.None
+
+                                    for notification in
+                                        context.MutationNotifications effectiveInvalidation
+                                        @ watcherNotifications do
+                                        do! sink.WriteAsync notification
 
                         with
                         | :? OperationCanceledException ->

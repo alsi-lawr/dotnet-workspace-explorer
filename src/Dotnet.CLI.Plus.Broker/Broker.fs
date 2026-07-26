@@ -245,16 +245,41 @@ module internal Broker =
             | _ -> return None
         }
 
+    let private launchProfile parsed mode cancellationToken =
+        task {
+            match parsed with
+            | Ok(LaunchProfile(target, operation, name, projects, false)) ->
+                let! completed =
+                    DirectLaunchProfileCommands.execute
+                        target
+                        operation
+                        name
+                        projects
+                        cancellationToken
+
+                match completed with
+                | Error failure -> return Some(failed "solution.launch" failure None [] "" "")
+                | Ok(output, revision) ->
+                    match mode with
+                    | Human(writer, _, _, _) -> writer.Write output
+                    | Json -> ()
+
+                    return Some(result "solution.launch" true revision [] (Some 0) [] output "")
+            | _ -> return None
+        }
+
     let private executeCore arguments host mode cancellationToken =
         task {
             let _, raw, parsed = Grammar.parse arguments
 
+            let! profile = launchProfile parsed mode cancellationToken
             let! legacy = legacyDirectoryAdd raw cancellationToken
 
-            match legacy, parsed with
-            | Some result, _ -> return result
-            | None, Error failure -> return failed "" failure None [] "" ""
-            | None, Ok command ->
+            match profile, legacy, parsed with
+            | Some result, _, _ -> return result
+            | None, Some result, _ -> return result
+            | None, None, Error failure -> return failed "" failure None [] "" ""
+            | None, None, Ok command ->
                 let commandId = Grammar.commandId command
 
                 let child =

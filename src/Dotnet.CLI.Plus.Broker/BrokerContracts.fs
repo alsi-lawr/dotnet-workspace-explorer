@@ -38,13 +38,18 @@ module internal CompatibilityTable =
           { PlusGrammar = "[--json] restore|build|test|run [options]"
             ChildArguments = "same command and arguments"
             PassThroughOptions = "All child argv is preserved exactly."
-            UnsupportedCases = "Lifecycle policy and orchestration (T-011)." } ]
+            UnsupportedCases = "The installed SDK owns option validation and execution semantics." } ]
 
 type internal SolutionOperation =
     | Add
     | List
     | Remove
     | Migrate
+
+type internal LaunchProfileOperation =
+    | LaunchList
+    | LaunchSet
+    | LaunchRemove
 
 type internal PackageOperation =
     | PackageAdd
@@ -97,6 +102,12 @@ type internal ParsedCommand =
         operands: string list *
         help: bool
     | Lifecycle of command: string * help: bool
+    | LaunchProfile of
+        target: string *
+        operation: LaunchProfileOperation *
+        name: string option *
+        projects: string list *
+        help: bool
 
 type internal BrokerHost =
     { FileName: string

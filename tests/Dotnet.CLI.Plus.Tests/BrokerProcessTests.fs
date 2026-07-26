@@ -18,13 +18,6 @@ module internal BrokerProcess =
           StandardOutput: string
           StandardError: string }
 
-    let temporaryDirectory name =
-        let path =
-            Path.Combine(Path.GetTempPath(), $"dotnet-cli-plus-{name}-{Guid.NewGuid():N}")
-
-        Directory.CreateDirectory path |> ignore
-        path
-
     let rec repositoryRoot directory =
         if File.Exists(Path.Combine(directory, "Directory.Packages.props")) then
             directory
@@ -33,6 +26,18 @@ module internal BrokerProcess =
 
     let configuration = DirectoryInfo(AppContext.BaseDirectory).Parent.Name
     let root = repositoryRoot AppContext.BaseDirectory
+
+    let temporaryDirectory name =
+        let path =
+            Path.Combine(
+                root,
+                ".agent-workspace",
+                "mtp",
+                $"dotnet-cli-plus-{name}-{Guid.NewGuid():N}"
+            )
+
+        Directory.CreateDirectory path |> ignore
+        path
 
     let executable project =
         let name =
@@ -163,6 +168,25 @@ type BrokerProcessTests() =
             let result = BrokerProcess.run directory "capture" ("--json" :: arguments) []
             BrokerProcess.success result |> should equal true
             BrokerProcess.childArguments result |> should equal (List.toArray arguments)
+        finally
+            BrokerProcess.delete directory
+
+    [<Fact>]
+    member _.``should delegate lifecycle arguments to one ordinary dotnet child``() =
+        let directory = BrokerProcess.temporaryDirectory "broker-lifecycle-arguments"
+
+        try
+            let result =
+                BrokerProcess.run
+                    directory
+                    "capture"
+                    [ "--json"; "build"; "--no-restore"; "--verbosity"; "quiet" ]
+                    []
+
+            BrokerProcess.success result |> should equal true
+
+            BrokerProcess.childArguments result
+            |> should equal [| "build"; "--no-restore"; "--verbosity"; "quiet" |]
         finally
             BrokerProcess.delete directory
 

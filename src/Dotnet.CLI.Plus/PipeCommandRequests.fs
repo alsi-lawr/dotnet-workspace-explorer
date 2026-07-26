@@ -11,17 +11,6 @@ open Dotnet.CLI.Plus.Transport
 open CanonicalMutationPlanning
 open PipeCommandProtocol
 
-type internal CommandRequestContext =
-    { State: WorkspaceState
-      Watcher: WorkspaceWatcher
-      Coordinator: MutationCoordinator
-      PublicationGate: SemaphoreSlim
-      ActiveOperations: ConcurrentDictionary<string, ExportOperationState>
-      WorkspaceRoot: string
-      MaximumFrameBytes: unit -> int
-      RebuildWatcher: CancellationToken -> Task<RpcFrame list>
-      MutationNotifications: WorkspaceInvalidationResult -> RpcFrame list }
-
 module internal PipeCommandRequests =
     let private isCanonicalPlan =
         function
@@ -33,6 +22,8 @@ module internal PipeCommandRequests =
             (SolutionPersistenceMutator.Discover(workspace, target))
             (ProjectMutations.discover workspace target)
         |> Seq.append (CanonicalCommands.discover workspace target)
+        |> Seq.append (LifecycleCommands.discover workspace target)
+        |> Seq.append (LaunchProfileCommandPlanning.discover workspace target)
 
     let private dispatchResolved
         (context: CommandRequestContext)
@@ -128,23 +119,135 @@ module internal PipeCommandRequests =
                                            arguments,
                                            expectedRevision,
                                            previewId) ->
-                match commandTarget workspace targetId, commandDescriptor commandId, previewId with
-                | Error rpcError, _, _ -> return Error rpcError
-                | _, None, _ ->
-                    return Error(RpcErrors.create "not_found" "The command was not found." None)
-                | _, Some descriptor, _ when
-                    context.State.Descriptor.IsReadOnly
-                    && descriptor.CommandAccess = CommandAccess.Write
-                    ->
-                    return Error(RpcErrors.unsupported "The selected .slnf workspace is read-only.")
-                | Ok target, Some descriptor, previewId when
-                    CanonicalCommands.tryDescribe descriptor.CommandId |> Option.isSome
-                    && (not (CanonicalCommands.isMutation descriptor.CommandId.Value)
-                        || previewId.IsSome)
-                    ->
-                    if context.State.Revision <> expectedRevision then
-                        return Error(PublicProtocol.workspaceConflict context.State.Revision)
-                    else
+                let! lifecycle =
+                    match commandTarget workspace targetId, commandDescriptor commandId with
+                    | Ok target, Some descriptor ->
+                        PipeLifecycleRequests.tryExecute
+                            context
+                            workspace
+                            target
+                            descriptor
+                            arguments
+                            expectedRevision
+                            previewId
+                            requestCancellationToken
+                    | _ -> Task.FromResult None
+
+                match lifecycle with
+                | Some result -> return result
+                | None ->
+                    match
+                        commandTarget workspace targetId, commandDescriptor commandId, previewId
+                    with
+                    | Error rpcError, _, _ -> return Error rpcError
+                    | _, None, _ ->
+                        return Error(RpcErrors.create "not_found" "The command was not found." None)
+                    | _, Some descriptor, _ when
+                        context.State.Descriptor.IsReadOnly
+                        && descriptor.CommandAccess = CommandAccess.Write
+                        ->
+                        return
+                            Error(
+                                RpcErrors.unsupported "The selected .slnf workspace is read-only."
+                            )
+                    | Ok target, Some descriptor, previewId when
+                        CanonicalCommands.tryDescribe descriptor.CommandId |> Option.isSome
+                        && (not (CanonicalCommands.isMutation descriptor.CommandId.Value)
+                            && descriptor.CommandAccess <> CommandAccess.Write
+                            || previewId.IsSome)
+                        ->
+                        if context.State.Revision <> expectedRevision then
+                            return Error(PublicProtocol.workspaceConflict context.State.Revision)
+                        else
+                            match commandArguments workspace descriptor arguments with
+                            | Error rpcError -> return Error rpcError
+                            | Ok parsed ->
+                                let mutationRequest =
+                                    { CommandId = descriptor.CommandId
+                                      TargetId = target
+                                      Arguments = parsed
+                                      ExpectedRevision = WorkspaceRevision.Create expectedRevision }
+
+                                let! authorized =
+                                    task {
+                                        if
+                                            CanonicalCommands.isMutation descriptor.CommandId.Value
+                                            || descriptor.CommandAccess = CommandAccess.Write
+                                        then
+                                            let! planned =
+                                                planMutation
+                                                    workspace
+                                                    context.State
+                                                    mutationRequest
+                                                    requestCancellationToken
+
+                                            match planned, previewId with
+                                            | Failure failure, _ ->
+                                                return Error(PublicProtocol.failureError failure)
+                                            | Success plan, Some _ when isCanonicalPlan plan ->
+                                                return Ok(Some plan)
+                                            | Success plan, Some value ->
+                                                let execution =
+                                                    context.Coordinator.Execute(
+                                                        plannedRequest plan,
+                                                        plannedActions plan,
+                                                        MutationConfirmationToken.Create value,
+                                                        requestCancellationToken
+                                                    )
+
+                                                match execution with
+                                                | Failure failure ->
+                                                    return
+                                                        Error(PublicProtocol.failureError failure)
+                                                | Success result ->
+                                                    match result with
+                                                    | RolledBack failure ->
+                                                        return
+                                                            Error(
+                                                                PublicProtocol.failureError failure
+                                                            )
+                                                    | Applied -> return Ok None
+                                            | _, None ->
+                                                return
+                                                    Error(
+                                                        RpcErrors.invalidParams
+                                                            "command/execute requires previewId."
+                                                    )
+                                        else
+                                            return Ok None
+                                    }
+
+                                match authorized with
+                                | Error rpcError -> return Error rpcError
+                                | Ok canonicalPlan ->
+                                    let argv = CanonicalCommands.argv workspace mutationRequest
+
+                                    match argv with
+                                    | Error message -> return Error(RpcErrors.invalidParams message)
+                                    | Ok argv ->
+                                        let mutationNotifications = context.MutationNotifications
+
+                                        return!
+                                            CanonicalCommandOperation.start
+                                                { Workspace = workspace
+                                                  State = context.State
+                                                  Watcher = context.Watcher
+                                                  Coordinator = context.Coordinator
+                                                  PublicationGate = context.PublicationGate
+                                                  ActiveOperations = context.ActiveOperations
+                                                  WorkspaceRoot = context.WorkspaceRoot
+                                                  MaximumFrameBytes = context.MaximumFrameBytes
+                                                  RebuildWatcher = context.RebuildWatcher
+                                                  MutationNotifications = mutationNotifications }
+                                                descriptor
+                                                mutationRequest
+                                                canonicalPlan
+                                                previewId
+                                                argv
+                                                requestCancellationToken
+                    | Ok target, Some descriptor, Some previewId when
+                        descriptor.CommandId.Value = "project.physical-move"
+                        ->
                         match commandArguments workspace descriptor arguments with
                         | Error rpcError -> return Error rpcError
                         | Ok parsed ->
@@ -154,181 +257,103 @@ module internal PipeCommandRequests =
                                   Arguments = parsed
                                   ExpectedRevision = WorkspaceRevision.Create expectedRevision }
 
-                            let! authorized =
-                                task {
-                                    if CanonicalCommands.isMutation descriptor.CommandId.Value then
-                                        let! planned =
-                                            planMutation
-                                                workspace
-                                                context.State
-                                                mutationRequest
-                                                requestCancellationToken
-
-                                        match planned, previewId with
-                                        | Failure failure, _ ->
-                                            return Error(PublicProtocol.failureError failure)
-                                        | Success plan, Some _ when isCanonicalPlan plan ->
-                                            return Ok(Some plan)
-                                        | Success plan, Some value ->
-                                            let execution =
-                                                context.Coordinator.Execute(
-                                                    plannedRequest plan,
-                                                    plannedActions plan,
-                                                    MutationConfirmationToken.Create value,
-                                                    requestCancellationToken
-                                                )
-
-                                            match execution with
-                                            | Failure failure ->
-                                                return Error(PublicProtocol.failureError failure)
-                                            | Success result ->
-                                                match result with
-                                                | RolledBack failure ->
-                                                    return
-                                                        Error(PublicProtocol.failureError failure)
-                                                | Applied -> return Ok None
-                                        | _, None ->
-                                            return
-                                                Error(
-                                                    RpcErrors.invalidParams
-                                                        "command/execute requires previewId."
-                                                )
-                                    else
-                                        return Ok None
-                                }
-
-                            match authorized with
-                            | Error rpcError -> return Error rpcError
-                            | Ok canonicalPlan ->
-                                match CanonicalCommands.argv workspace mutationRequest with
-                                | Error message -> return Error(RpcErrors.invalidParams message)
-                                | Ok argv ->
-                                    let mutationNotifications = context.MutationNotifications
-
-                                    return!
-                                        CanonicalCommandOperation.start
-                                            { Workspace = workspace
-                                              State = context.State
-                                              Watcher = context.Watcher
-                                              Coordinator = context.Coordinator
-                                              PublicationGate = context.PublicationGate
-                                              ActiveOperations = context.ActiveOperations
-                                              WorkspaceRoot = context.WorkspaceRoot
-                                              MaximumFrameBytes = context.MaximumFrameBytes
-                                              RebuildWatcher = context.RebuildWatcher
-                                              MutationNotifications = mutationNotifications }
-                                            descriptor
-                                            mutationRequest
-                                            canonicalPlan
-                                            previewId
-                                            argv
-                                            requestCancellationToken
-                | Ok target, Some descriptor, Some previewId when
-                    descriptor.CommandId.Value = "project.physical-move"
-                    ->
-                    match commandArguments workspace descriptor arguments with
-                    | Error rpcError -> return Error rpcError
-                    | Ok parsed ->
-                        let mutationRequest =
-                            { CommandId = descriptor.CommandId
-                              TargetId = target
-                              Arguments = parsed
-                              ExpectedRevision = WorkspaceRevision.Create expectedRevision }
-
-                        let! planned =
-                            planMutation
-                                workspace
-                                context.State
-                                mutationRequest
-                                requestCancellationToken
-
-                        match planned with
-                        | Failure failure -> return Error(PublicProtocol.failureError failure)
-                        | Success(CompositePlan plan) ->
-                            return!
-                                ProjectRelocationOperation.Start(
-                                    { Workspace = workspace
-                                      State = context.State
-                                      Watcher = context.Watcher
-                                      Coordinator = context.Coordinator
-                                      PublicationGate = context.PublicationGate
-                                      ActiveOperations = context.ActiveOperations
-                                      WorkspaceRoot = context.WorkspaceRoot
-                                      MaximumFrameBytes = context.MaximumFrameBytes
-                                      RebuildWatcher = context.RebuildWatcher
-                                      MutationNotifications = context.MutationNotifications },
-                                    CompositePlan plan,
-                                    previewId,
+                            let! planned =
+                                planMutation
+                                    workspace
+                                    context.State
+                                    mutationRequest
                                     requestCancellationToken
-                                )
-                        | Success _ -> return Error RpcErrors.internalError
-                | _, _, None ->
-                    return Error(RpcErrors.invalidParams "command/execute requires previewId.")
-                | Ok target, Some descriptor, Some previewId ->
-                    match commandArguments workspace descriptor arguments with
-                    | Error rpcError -> return Error rpcError
-                    | Ok parsed ->
-                        let mutationRequest =
-                            { CommandId = descriptor.CommandId
-                              TargetId = target
-                              Arguments = parsed
-                              ExpectedRevision = WorkspaceRevision.Create expectedRevision }
 
-                        let! planned =
-                            planMutation
-                                workspace
-                                context.State
-                                mutationRequest
-                                requestCancellationToken
-
-                        match planned with
-                        | Failure failure -> return Error(PublicProtocol.failureError failure)
-                        | Success plan ->
-                            let token = MutationConfirmationToken.Create previewId
-
-                            match
-                                context.Coordinator.Execute(
-                                    plannedRequest plan,
-                                    plannedActions plan,
-                                    token,
-                                    requestCancellationToken
-                                )
-                            with
+                            match planned with
                             | Failure failure -> return Error(PublicProtocol.failureError failure)
-                            | Success(RolledBack failure) ->
-                                return Error(PublicProtocol.failureError failure)
-                            | Success Applied ->
-                                let! invalidated =
-                                    context.State.InvalidateFromTransactionAsync(
-                                        plannedPaths plan,
-                                        CancellationToken.None
+                            | Success(CompositePlan plan) ->
+                                return!
+                                    PlannedMutationOperation.Start(
+                                        { Workspace = workspace
+                                          State = context.State
+                                          Watcher = context.Watcher
+                                          Coordinator = context.Coordinator
+                                          PublicationGate = context.PublicationGate
+                                          ActiveOperations = context.ActiveOperations
+                                          WorkspaceRoot = context.WorkspaceRoot
+                                          MaximumFrameBytes = context.MaximumFrameBytes
+                                          RebuildWatcher = context.RebuildWatcher
+                                          MutationNotifications = context.MutationNotifications },
+                                        CompositePlan plan,
+                                        previewId,
+                                        "Starting project relocation.",
+                                        (fun () -> Ok()),
+                                        requestCancellationToken
                                     )
+                            | Success _ -> return Error RpcErrors.internalError
+                    | _, _, None ->
+                        return Error(RpcErrors.invalidParams "command/execute requires previewId.")
+                    | Ok target, Some descriptor, Some previewId ->
+                        match commandArguments workspace descriptor arguments with
+                        | Error rpcError -> return Error rpcError
+                        | Ok parsed ->
+                            let mutationRequest =
+                                { CommandId = descriptor.CommandId
+                                  TargetId = target
+                                  Arguments = parsed
+                                  ExpectedRevision = WorkspaceRevision.Create expectedRevision }
 
-                                let reset =
-                                    match invalidated with
-                                    | WorkspaceInvalidationResult.Reset _ -> true
-                                    | _ -> false
+                            let! planned =
+                                planMutation
+                                    workspace
+                                    context.State
+                                    mutationRequest
+                                    requestCancellationToken
 
-                                if reset then
-                                    context.Watcher.Pause()
+                            match planned with
+                            | Failure failure -> return Error(PublicProtocol.failureError failure)
+                            | Success plan ->
+                                let token = MutationConfirmationToken.Create previewId
 
-                                let! watcherNotifications =
+                                match
+                                    context.Coordinator.Execute(
+                                        plannedRequest plan,
+                                        plannedActions plan,
+                                        token,
+                                        requestCancellationToken
+                                    )
+                                with
+                                | Failure failure ->
+                                    return Error(PublicProtocol.failureError failure)
+                                | Success(RolledBack failure) ->
+                                    return Error(PublicProtocol.failureError failure)
+                                | Success Applied ->
+                                    let! invalidated =
+                                        context.State.InvalidateFromTransactionAsync(
+                                            plannedPaths plan,
+                                            CancellationToken.None
+                                        )
+
+                                    let reset =
+                                        match invalidated with
+                                        | WorkspaceInvalidationResult.Reset _ -> true
+                                        | _ -> false
+
                                     if reset then
-                                        Task.FromResult []
-                                    else
-                                        context.RebuildWatcher CancellationToken.None
+                                        context.Watcher.Pause()
 
-                                return
-                                    Ok
-                                        { Result =
-                                            PublicProtocol.commandExecuteResult
-                                                context.State.Revision
-                                          Notifications =
-                                            context.MutationNotifications invalidated
-                                            @ watcherNotifications
-                                          BackgroundWork = None
-                                          AfterResponse = None
-                                          StopAfterResponse = false }
+                                    let! watcherNotifications =
+                                        if reset then
+                                            Task.FromResult []
+                                        else
+                                            context.RebuildWatcher CancellationToken.None
+
+                                    return
+                                        Ok
+                                            { Result =
+                                                PublicProtocol.commandExecuteResult
+                                                    context.State.Revision
+                                              Notifications =
+                                                context.MutationNotifications invalidated
+                                                @ watcherNotifications
+                                              BackgroundWork = None
+                                              AfterResponse = None
+                                              StopAfterResponse = false }
             | _ -> return invalidArg "request" "A command request is required."
         }
 

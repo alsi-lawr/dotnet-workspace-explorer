@@ -129,41 +129,58 @@ module internal Grammar =
                 | "sln" ->
                     let _, positions, unknown = scanSolution beforeSentinel.Tail
 
-                    let operationIndex =
-                        positions
-                        |> List.tryFindIndex (fun value ->
-                            [ "add"; "list"; "remove"; "migrate" ] |> List.contains value)
-
-                    let target, operation, operands =
-                        match operationIndex with
-                        | Some index ->
-                            let before = positions |> List.take index
-                            let after = positions |> List.skip (index + 1)
-                            let target = if before.Length = 1 then Some before.Head else None
-
-                            let operation =
-                                [ Add; List; Remove; Migrate ][positions[index]
-                                                               |> function
-                                                                   | "add" -> 0
-                                                                   | "list" -> 1
-                                                                   | "remove" -> 2
-                                                                   | _ -> 3]
-
-                            target, Some operation, after @ sentinelOperands
-                        | None ->
-                            match positions with
-                            | [ target ] -> Some target, None, []
-                            | _ -> None, None, []
-
-                    if
-                        not (List.isEmpty unknown)
-                        && operation |> Option.exists (fun value -> value <> List)
-                    then
-                        Error(
-                            BrokerFailure.invalid "Unknown solution option prevents verification."
+                    match positions, unknown, sentinelOperands with
+                    | target :: "launch" :: "list" :: [], [], [] ->
+                        Ok(LaunchProfile(target, LaunchList, None, [], help beforeSentinel))
+                    | target :: "launch" :: "set" :: name :: projects, [], [] ->
+                        Ok(
+                            LaunchProfile(
+                                target,
+                                LaunchSet,
+                                Some name,
+                                projects,
+                                help beforeSentinel
+                            )
                         )
-                    else
-                        Ok(Solution(target, operation, operands, help beforeSentinel))
+                    | target :: "launch" :: "remove" :: name :: [], [], [] ->
+                        Ok(LaunchProfile(target, LaunchRemove, Some name, [], help beforeSentinel))
+                    | _ ->
+                        let operationIndex =
+                            positions
+                            |> List.tryFindIndex (fun value ->
+                                [ "add"; "list"; "remove"; "migrate" ] |> List.contains value)
+
+                        let target, operation, operands =
+                            match operationIndex with
+                            | Some index ->
+                                let before = positions |> List.take index
+                                let after = positions |> List.skip (index + 1)
+                                let target = if before.Length = 1 then Some before.Head else None
+
+                                let operation =
+                                    [ Add; List; Remove; Migrate ][positions[index]
+                                                                   |> function
+                                                                       | "add" -> 0
+                                                                       | "list" -> 1
+                                                                       | "remove" -> 2
+                                                                       | _ -> 3]
+
+                                target, Some operation, after @ sentinelOperands
+                            | None ->
+                                match positions with
+                                | [ target ] -> Some target, None, []
+                                | _ -> None, None, []
+
+                        if
+                            not (List.isEmpty unknown)
+                            && operation |> Option.exists (fun value -> value <> List)
+                        then
+                            Error(
+                                BrokerFailure.invalid
+                                    "Unknown solution option prevents verification."
+                            )
+                        else
+                            Ok(Solution(target, operation, operands, help beforeSentinel))
                 | "package" ->
                     let options, positions, unknown = scanPackage beforeSentinel.Tail
 
@@ -285,6 +302,7 @@ module internal Grammar =
         | Reference _ -> "reference"
         | New _ -> "new"
         | Lifecycle(command, _) -> command
+        | LaunchProfile _ -> "solution.launch"
 
     let mutates =
         function

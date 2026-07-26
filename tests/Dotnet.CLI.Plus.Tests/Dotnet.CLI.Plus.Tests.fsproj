@@ -16,6 +16,8 @@
         <Compile Include="WorkspaceAppHostTests.fs" />
         <Compile Include="ProjectFolderAppHostTests.fs" />
         <Compile Include="CanonicalCommandAppHostTests.fs" />
+        <Compile Include="LaunchProfileAppHostTests.fs" />
+        <Compile Include="LifecycleAppHostTests.fs" />
     </ItemGroup>
 
     <ItemGroup>

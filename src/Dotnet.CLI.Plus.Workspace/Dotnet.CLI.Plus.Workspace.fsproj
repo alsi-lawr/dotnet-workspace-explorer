@@ -32,6 +32,8 @@
         <Compile Include="ProjectMutations.fs" />
         <Compile Include="ProjectRelocationPlanning.fs" />
         <Compile Include="CanonicalCommands.fs" />
+        <Compile Include="LifecycleCommands.fs" />
+        <Compile Include="LaunchProfileCommands.fs" />
         <Compile Include="CentralPackageManagement.fs" />
         <Compile Include="CanonicalMutationPlanning.fs" />
     </ItemGroup>

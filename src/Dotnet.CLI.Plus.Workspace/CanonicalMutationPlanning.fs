@@ -15,6 +15,8 @@ module internal CanonicalMutationPlanning =
             SolutionPersistenceMutator.TryDescribe id
             |> Option.orElseWith (fun () -> ProjectMutations.tryDescribe id)
             |> Option.orElseWith (fun () -> CanonicalCommands.tryDescribe id)
+            |> Option.orElseWith (fun () -> LifecycleCommands.tryDescribe id)
+            |> Option.orElseWith (fun () -> LaunchProfileCommandPlanning.tryDescribe id)
         with :? ArgumentException as error ->
             raise (ArgumentException(error.Message, "commandId"))
 
@@ -23,6 +25,7 @@ module internal CanonicalMutationPlanning =
         | ProjectPlan of ProjectMutationPlan
         | CompositePlan of ProjectMutationPlan
         | CanonicalPlan of MutationPreviewRequest * WorkspaceArtifactPath array
+        | LaunchProfilePlan of MutationPreviewRequest * MutationAction * WorkspaceArtifactPath
 
     let plannedActions =
         function
@@ -38,6 +41,7 @@ module internal CanonicalMutationPlanning =
         | ProjectPlan plan -> plan.Actions :> seq<MutationAction>
         | CompositePlan plan -> plan.Actions :> seq<MutationAction>
         | CanonicalPlan _ -> Seq.empty
+        | LaunchProfilePlan(_, action, _) -> Seq.singleton action
 
     let plannedPaths =
         function
@@ -54,6 +58,7 @@ module internal CanonicalMutationPlanning =
         | ProjectPlan plan -> plan.Paths :> seq<WorkspaceArtifactPath>
         | CompositePlan plan -> plan.Paths :> seq<WorkspaceArtifactPath>
         | CanonicalPlan(_, paths) -> paths :> seq<WorkspaceArtifactPath>
+        | LaunchProfilePlan(_, _, path) -> Seq.singleton path
 
     let plannedRequest =
         function
@@ -61,6 +66,7 @@ module internal CanonicalMutationPlanning =
         | ProjectPlan plan -> plan.Request
         | CompositePlan plan -> plan.Request
         | CanonicalPlan(request, _) -> request
+        | LaunchProfilePlan(request, _, _) -> request
 
     let private projectPaths root (workspace: SolutionWorkspace) targetId =
         targetId
@@ -244,6 +250,11 @@ module internal CanonicalMutationPlanning =
                     match plan with
                     | Success value -> Success(CompositePlan value)
                     | Failure failure -> Failure failure
+            | _ when LaunchProfileCommandPlanning.tryDescribe request.CommandId |> Option.isSome ->
+                return
+                    match LaunchProfileCommandPlanning.plan workspace request with
+                    | Ok(request, action, path) -> Success(LaunchProfilePlan(request, action, path))
+                    | Error failure -> Failure failure
             | _ ->
                 match CanonicalCommands.tryDescribe request.CommandId with
                 | Some _ when CanonicalCommands.isMutation request.CommandId.Value ->
