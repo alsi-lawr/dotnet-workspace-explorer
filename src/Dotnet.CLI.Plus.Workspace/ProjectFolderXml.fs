@@ -127,12 +127,14 @@ module internal ProjectFolderXml =
             |> Option.defaultValue (Ok())
 
     let private rewritePrefix source destination (value: string) =
-        if hasMacro value then
+        let normalized = normalizeRelativePath value
+
+        if hasMacro normalized then
             Error "Folder declaration rewrites cannot contain MSBuild macros."
-        elif value.Equals(source, StringComparison.OrdinalIgnoreCase) then
+        elif normalized.Equals(source, StringComparison.OrdinalIgnoreCase) then
             Ok destination
-        elif value.StartsWith($"{source}/", StringComparison.OrdinalIgnoreCase) then
-            Ok(destination + value[source.Length ..])
+        elif normalized.StartsWith($"{source}/", StringComparison.OrdinalIgnoreCase) then
+            Ok(destination + normalized[source.Length ..])
         else
             Ok value
 

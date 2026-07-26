@@ -111,7 +111,7 @@ type ProjectFolderAppHostTests() =
                     Directory.CreateDirectory folder |> ignore
                     File.WriteAllText(Path.Combine(folder, "Source.txt"), "source"))
                 ("<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>"
-                 + "<ItemGroup><Content Include=\"Old/Source.txt\"><Link>Old/Source.txt</Link></Content></ItemGroup></Project>")
+                 + "<ItemGroup><Content Include=\"Old\\Source.txt\"><Link>Old/Source.txt</Link></Content></ItemGroup></Project>")
 
         try
             let source = Path.Combine(session.Directory, "Old")
