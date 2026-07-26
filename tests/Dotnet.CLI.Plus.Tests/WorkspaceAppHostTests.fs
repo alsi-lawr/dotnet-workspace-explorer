@@ -364,6 +364,95 @@ module private PipeTest =
 
 type WorkspaceAppHostTests() =
     [<Fact>]
+    member _.``should honor Worker default Content items without redundant declarations``() =
+        let session =
+            PipeTest.openProjectWithSetup
+                "worker-content-default-scenario"
+                (fun directory -> File.WriteAllText(Path.Combine(directory, "appsettings.json"), "{}"))
+                "<Project Sdk=\"Microsoft.NET.Sdk.Worker\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"
+
+        try
+            let settings = Path.Combine(session.Directory, "appsettings.json")
+            let before = File.ReadAllBytes session.Project
+
+            PipeTest.previewAndExecute
+                session.Child
+                3u
+                "project.item.add"
+                session.ProjectId
+                (PipeTest.map [ "path", RpcValue.String settings; "itemType", RpcValue.String "Content" ])
+                0L
+                true
+
+            Assert.Equal<byte>(before, File.ReadAllBytes session.Project)
+
+            PipeTest.previewAndExecute
+                session.Child
+                5u
+                "project.item.add"
+                session.ProjectId
+                (PipeTest.map [ "path", RpcValue.String settings; "itemType", RpcValue.String "None" ])
+                1L
+                true
+
+            let project = File.ReadAllText session.Project
+            Assert.Contains("<Content Remove=\"appsettings.json\"", project)
+            Assert.Contains("<None Include=\"appsettings.json\"", project)
+            Assert.DoesNotContain("<Content Include=\"appsettings.json\"", project)
+
+            let names = PipeTest.readAllProjectChildNames session 7u 2L
+            Assert.Contains(names, fun name -> name.StartsWith("None: appsettings.json", StringComparison.Ordinal))
+            Assert.False(names |> Array.exists (fun name -> name.StartsWith("Content: appsettings.json", StringComparison.Ordinal)))
+        finally
+            PipeTest.closeProject session
+
+    [<Fact>]
+    member _.``should honor Web wwwroot Content defaults and changing build action``() =
+        let session =
+            PipeTest.openProjectWithSetup
+                "web-content-default-scenario"
+                (fun directory ->
+                    let wwwroot = Path.Combine(directory, "wwwroot")
+                    Directory.CreateDirectory(wwwroot) |> ignore
+                    File.WriteAllText(Path.Combine(wwwroot, "site.css"), "body {}"))
+                "<Project Sdk=\"Microsoft.NET.Sdk.Web\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"
+
+        try
+            let site = Path.Combine(session.Directory, "wwwroot", "site.css")
+            let before = File.ReadAllBytes session.Project
+
+            PipeTest.previewAndExecute
+                session.Child
+                3u
+                "project.item.add"
+                session.ProjectId
+                (PipeTest.map [ "path", RpcValue.String site; "itemType", RpcValue.String "Content" ])
+                0L
+                true
+
+            Assert.Equal<byte>(before, File.ReadAllBytes session.Project)
+
+            PipeTest.previewAndExecute
+                session.Child
+                5u
+                "project.item.set-build-action"
+                session.ProjectId
+                (PipeTest.map [ "path", RpcValue.String site; "itemType", RpcValue.String "None" ])
+                1L
+                true
+
+            let project = File.ReadAllText session.Project
+            Assert.Contains("<Content Remove=\"wwwroot/site.css\"", project)
+            Assert.Contains("<None Include=\"wwwroot/site.css\"", project)
+            Assert.DoesNotContain("<Content Include=\"wwwroot/site.css\"", project)
+
+            let names = PipeTest.readAllProjectChildNames session 7u 2L
+            Assert.Contains(names, fun name -> name.StartsWith("None: wwwroot/site.css", StringComparison.Ordinal))
+            Assert.False(names |> Array.exists (fun name -> name.StartsWith("Content: wwwroot/site.css", StringComparison.Ordinal)))
+        finally
+            PipeTest.closeProject session
+
+    [<Fact>]
     member _.``should keep excluded and existing directory item additions explicit only when needed``() =
         let session =
             PipeTest.openProjectWithSetup
@@ -627,7 +716,8 @@ type WorkspaceAppHostTests() =
                 true
 
             Assert.True(File.Exists moved)
-            Assert.DoesNotContain("Moved.txt\"", File.ReadAllText session.Project)
+            Assert.Contains("<None Remove=\"Moved.txt\"", File.ReadAllText session.Project)
+            Assert.DoesNotContain("<None Include=\"Moved.txt\"", File.ReadAllText session.Project)
         finally
             PipeTest.closeProject session
 

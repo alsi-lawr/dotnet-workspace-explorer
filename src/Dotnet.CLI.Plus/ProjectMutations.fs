@@ -414,14 +414,14 @@ module internal ProjectMutations =
 
             Regex.IsMatch(normalize value, $"^{source}$", RegexOptions.IgnoreCase ||| RegexOptions.CultureInvariant)
 
-    let private defaultItemPolicy (snapshot: EvaluationSnapshot) (itemType: string) (path: string) =
+    let private defaultItemType (snapshot: EvaluationSnapshot) (path: string) =
         let projectDirectory =
             Path.GetDirectoryName snapshot.ProjectPath.Value
             |> Option.ofObj
             |> Option.defaultValue (Directory.GetCurrentDirectory())
 
         if external projectDirectory path then
-            false
+            None
         else
             let relative = relativePath projectDirectory (WorkspaceArtifactPath.Create path)
             let absolute = Path.GetFullPath(path).Replace('\\', '/')
@@ -435,12 +435,16 @@ module internal ProjectMutations =
                     not (String.Equals(property.Value, "false", StringComparison.OrdinalIgnoreCase)))
                 |> Option.defaultValue true
 
-            let excluded (dimension: EvaluationDimensionSnapshot) =
+            let uses (dimension: EvaluationDimensionSnapshot) name =
+                dimension.Properties
+                |> Seq.exists (fun property ->
+                    property.Name = name
+                    && String.Equals(property.Value, "true", StringComparison.OrdinalIgnoreCase))
+
+            let excluded (names: Set<string>) (dimension: EvaluationDimensionSnapshot) =
                 dimension.Properties
                 |> Seq.filter (fun property ->
-                    property.Name = "DefaultItemExcludes"
-                    || property.Name = "DefaultItemExcludesInProjectFolder"
-                    || property.Name = "DefaultExcludesInProjectFolder")
+                    names.Contains property.Name)
                 |> Seq.groupBy _.Name
                 |> Seq.collect (fun (_, properties) ->
                     properties
@@ -454,36 +458,97 @@ module internal ProjectMutations =
                     else
                         globMatches pattern relative)
 
+            let ordinaryExcludes =
+                Set.ofList
+                    [ "DefaultItemExcludes"
+                      "DefaultItemExcludesInProjectFolder"
+                      "DefaultExcludesInProjectFolder" ]
+
+            let defaultItemExcludes = Set.singleton "DefaultItemExcludes"
+
+            let webContentExcludes =
+                Set.union ordinaryExcludes (Set.singleton "DefaultWebContentItemExcludes")
+
+            let inDirectory directory =
+                relative.Equals(directory, StringComparison.OrdinalIgnoreCase)
+                || relative.StartsWith($"{directory}/", StringComparison.OrdinalIgnoreCase)
+
+            let contentExtension = Set.contains extension (Set.ofList [ ".json"; ".config" ])
+
             let included (dimension: EvaluationDimensionSnapshot) =
                 let defaultItems = enabled dimension "EnableDefaultItems"
                 let compileItems = enabled dimension "EnableDefaultCompileItems"
                 let embeddedResourceItems = enabled dimension "EnableDefaultEmbeddedResourceItems"
                 let noneItems = enabled dimension "EnableDefaultNoneItems"
+                let contentItems = enabled dimension "EnableDefaultContentItems"
 
-                defaultItems
-                && not (excluded dimension)
-                && match itemType with
-                   | "Compile" -> compileItems && Set.contains extension (Set.ofList [ ".cs"; ".fs"; ".vb" ])
-                   | "EmbeddedResource" ->
-                       embeddedResourceItems
-                       && Set.contains extension (Set.ofList [ ".resx"; ".resw" ])
-                   | "None" ->
-                       noneItems
-                       && not (
-                           (Set.contains extension (Set.ofList [ ".cs"; ".fs"; ".vb" ]) && compileItems)
-                           || (Set.contains extension (Set.ofList [ ".resx"; ".resw" ])
-                               && embeddedResourceItems)
-                       )
-                   | _ -> false
+                let contentDefault =
+                    if uses dimension "UsingMicrosoftNETSdkWorker" && contentExtension then
+                        not (excluded ordinaryExcludes dimension)
+                    elif uses dimension "UsingMicrosoftNETSdkWeb" then
+                        if inDirectory "wwwroot/.well-known" then
+                            not (excluded defaultItemExcludes dimension)
+                        elif inDirectory "wwwroot" then
+                            not (excluded ordinaryExcludes dimension)
+                        elif contentExtension then
+                            not (excluded webContentExcludes dimension)
+                        else
+                            false
+                    elif
+                        uses dimension "UsingMicrosoftNETSdkRazor"
+                        && Set.contains extension (Set.ofList [ ".cshtml"; ".razor" ])
+                    then
+                        not (excluded webContentExcludes dimension)
+                    else
+                        false
+
+                let hasContentDefault =
+                    (uses dimension "UsingMicrosoftNETSdkWorker" && contentExtension)
+                    || (uses dimension "UsingMicrosoftNETSdkWeb"
+                        && (inDirectory "wwwroot" || contentExtension))
+                    || (uses dimension "UsingMicrosoftNETSdkRazor"
+                        && Set.contains extension (Set.ofList [ ".cshtml"; ".razor" ]))
+
+                if not defaultItems then
+                    None
+                elif contentItems && hasContentDefault then
+                    if contentDefault then Some "Content" else None
+                elif excluded ordinaryExcludes dimension then
+                    None
+                elif compileItems && Set.contains extension (Set.ofList [ ".cs"; ".fs"; ".vb" ]) then
+                    Some "Compile"
+                elif
+                    embeddedResourceItems
+                    && Set.contains extension (Set.ofList [ ".resx"; ".resw" ])
+                then
+                    Some "EmbeddedResource"
+                elif noneItems then
+                    Some "None"
+                else
+                    None
 
             snapshot.Dimensions
             |> Seq.map included
             |> Seq.distinct
             |> Seq.toArray
             |> function
-                | [||] -> false
+                | [||] -> None
                 | [| value |] -> value
                 | _ -> raise (ArgumentException "The default item policy conflicts across evaluation dimensions.")
+
+    let private defaultItemPolicy snapshot itemType path =
+        defaultItemType snapshot path = Some itemType
+
+    let private appendRequestedItem document snapshot itemType path includeValue =
+        match defaultItemType snapshot path with
+        | Some defaultType when defaultType = itemType -> false
+        | Some defaultType ->
+            appendRemove document defaultType includeValue
+            appendItem document itemType includeValue []
+            true
+        | None ->
+            appendItem document itemType includeValue []
+            true
 
     let private generated (directory: string) (path: string) =
         let relative = Path.GetRelativePath(directory, path).Replace('\\', '/')
@@ -661,21 +726,20 @@ module internal ProjectMutations =
                                 if File.Exists destination || Directory.Exists destination then
                                     raise (ArgumentException "The destination item already exists.")
 
-                                let globbed = defaultItemPolicy snapshot kind destination
-
-                                if not globbed then
-                                    appendItem
+                                let declared =
+                                    appendRequestedItem
                                         document
+                                        snapshot
                                         kind
+                                        destination
                                         (relativePath directory (WorkspaceArtifactPath.Create destination))
-                                        []
 
-                                (if globbed then
+                                (if not declared then
                                      [ MutationAction.ReplaceFile(destination, File.ReadAllBytes source) ]
                                  else
                                      [ MutationAction.ReplaceFile(destination, File.ReadAllBytes source)
                                        updatedDocument () ]),
-                                (if globbed then
+                                (if not declared then
                                      [ destination; source ]
                                  else
                                      [ destination; projectPath; source ]),
@@ -686,9 +750,11 @@ module internal ProjectMutations =
 
                                 if not (evaluatedAs snapshot kind source) || link then
                                     let includeValue = relativePath directory (WorkspaceArtifactPath.Create source)
-                                    let metadata = if link then [ "Link", Path.GetFileName source ] else []
 
-                                    appendItem document kind includeValue metadata
+                                    if link then
+                                        appendItem document kind includeValue [ "Link", Path.GetFileName source ]
+                                    else
+                                        appendRequestedItem document snapshot kind source includeValue |> ignore
 
                                 if evaluatedAs snapshot kind source && not link then
                                     [], [], []
@@ -705,14 +771,13 @@ module internal ProjectMutations =
                                 raise (ArgumentException "The destination item already exists.")
 
 
-                            let globbed = defaultItemPolicy snapshot kind destination
-
-                            if not globbed then
-                                appendItem
+                            let declared =
+                                appendRequestedItem
                                     document
+                                    snapshot
                                     kind
+                                    destination
                                     (relativePath directory (WorkspaceArtifactPath.Create destination))
-                                    []
 
                             let file =
                                 MutationAction.ReplaceFile(
@@ -724,8 +789,8 @@ module internal ProjectMutations =
                                     )
                                 )
 
-                            (if globbed then [ file ] else [ file; updatedDocument () ]),
-                            (if globbed then
+                            (if not declared then [ file ] else [ file; updatedDocument () ]),
+                            (if not declared then
                                  [ destination ]
                              else
                                  [ destination; projectPath ]),
@@ -743,21 +808,20 @@ module internal ProjectMutations =
                             if File.Exists destination || Directory.Exists destination then
                                 raise (ArgumentException "The destination item already exists.")
 
-                            let globbed = defaultItemPolicy snapshot kind destination
-
-                            if not globbed then
-                                appendItem
+                            let declared =
+                                appendRequestedItem
                                     document
+                                    snapshot
                                     kind
+                                    destination
                                     (relativePath directory (WorkspaceArtifactPath.Create destination))
-                                    []
 
-                            (if globbed then
+                            (if not declared then
                                  [ MutationAction.ReplaceFile(destination, File.ReadAllBytes source) ]
                              else
                                  [ MutationAction.ReplaceFile(destination, File.ReadAllBytes source)
                                    updatedDocument () ]),
-                            (if globbed then
+                            (if not declared then
                                  [ destination; source ]
                              else
                                  [ destination; projectPath; source ]),
@@ -847,9 +911,13 @@ module internal ProjectMutations =
                                 let itemType = element.Name.LocalName
                                 removeItem element
 
-                                if defaultItemPolicy snapshot itemType path then
-                                    appendRemove document itemType includeValue
-                            | None -> appendRemove document (effectiveItemType snapshot includeValue path) includeValue
+                                defaultItemType snapshot path
+                                |> Option.defaultValue itemType
+                                |> fun defaultType -> appendRemove document defaultType includeValue
+                            | None ->
+                                defaultItemType snapshot path
+                                |> Option.defaultWith (fun () -> effectiveItemType snapshot includeValue path)
+                                |> fun defaultType -> appendRemove document defaultType includeValue
 
                             if command.CommandId.Value = "project.item.delete" then
                                 if not (File.Exists path) then
@@ -878,8 +946,9 @@ module internal ProjectMutations =
                                 |> Option.defaultWith (fun () -> effectiveItemType snapshot includeValue path)
 
                             if sourceType <> kind then
-                                if defaultItemPolicy snapshot sourceType path then
-                                    appendRemove document sourceType includeValue
+                                defaultItemType snapshot path
+                                |> Option.filter ((<>) kind)
+                                |> Option.iter (fun defaultType -> appendRemove document defaultType includeValue)
 
                                 match existing with
                                 | Some element ->
