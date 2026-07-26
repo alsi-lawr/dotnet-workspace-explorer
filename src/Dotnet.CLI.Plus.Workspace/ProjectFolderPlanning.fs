@@ -221,7 +221,7 @@ module internal ProjectFolderPlanning =
 
                     let destination =
                         Path.Combine(
-                            Path.GetDirectoryName(source)
+                            Path.GetDirectoryName source
                             |> Option.ofObj
                             |> Option.defaultWith (fun () -> projectDirectory),
                             name

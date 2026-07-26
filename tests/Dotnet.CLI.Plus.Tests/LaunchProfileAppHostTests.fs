@@ -45,9 +45,8 @@ type LaunchProfileAppHostTests() =
                 BrokerProcess.childArguments set |> should equal [||]
 
                 let profile = Path.ChangeExtension(solution, ".slnLaunch")
-                let contents: string = File.ReadAllText profile
-                use document = JsonDocument.Parse contents
-                let projects = document.RootElement[0].GetProperty("Projects")
+                use document = JsonDocument.Parse(File.ReadAllText profile)
+                let projects = document.RootElement[0].GetProperty "Projects"
                 projects[0].GetProperty("Path").GetString() |> should equal "Second.fsproj"
                 projects[1].GetProperty("Path").GetString() |> should equal "First.fsproj"
 
@@ -94,13 +93,12 @@ type LaunchProfileAppHostTests() =
                     [ "solution"; solution; "launch"; "set"; "Start"; project ]
 
             BrokerProcess.success updated |> should equal true
-            let contents: string = File.ReadAllText profile
-            use document = JsonDocument.Parse contents
+            use document = JsonDocument.Parse(File.ReadAllText profile)
 
             document.RootElement[0].GetProperty("Unknown").GetProperty("nested").GetBoolean()
             |> should equal true
 
-            let projects = document.RootElement[0].GetProperty("Projects")
+            let projects = document.RootElement[0].GetProperty "Projects"
             projects[0].GetProperty("Keep").GetString() |> should equal "yes"
         finally
             BrokerProcess.delete directory
