@@ -379,6 +379,9 @@ type MutationCoordinator
         | Integer value -> $"int:{value}"
         | Node value -> $"node:{value.Value}"
         | Choice value -> $"choice:{value.Value}"
+        | TextArray values ->
+            let joined = String.concat "\u001f" values
+            $"texts:{joined}"
 
     let actionPaths =
         function

@@ -56,7 +56,10 @@ module PublicProtocol =
               "command.describe"
               "command.preview"
               "command.execute"
-              "operation.cancel" ]
+              "operation.cancel"
+              "operation.progress"
+              "operation.output"
+              "operation.completed" ]
         )
 
     let private format =
@@ -111,6 +114,7 @@ module PublicProtocol =
         | CommandParameterType.Integer -> "integer"
         | CommandParameterType.NodeId -> "nodeId"
         | CommandParameterType.Choice -> "choice"
+        | CommandParameterType.TextArray -> "textArray"
         | _ -> "unknown"
 
     let commandDescriptor (value: CommandDescriptor) =
@@ -146,6 +150,28 @@ module PublicProtocol =
 
     let commandExecuteResult revision =
         map [ "applied", boolean true; "revision", integer revision ]
+
+    let commandOperationResult operationId revision =
+        map [ "operationId", text operationId; "revision", integer revision ]
+
+    let operationProgress (descriptor: WorkspaceDescriptor) operationId sequence revision message =
+        map
+            [ "workspaceId", text descriptor.WorkspaceId.Value
+              "operationId", text operationId
+              "sequence", integer (int64 sequence)
+              "revision", integer revision
+              "message", text message ]
+        |> fun parameters -> Notification("operation/progress", parameters)
+
+    let operationOutput (descriptor: WorkspaceDescriptor) operationId sequence revision stream value =
+        map
+            [ "workspaceId", text descriptor.WorkspaceId.Value
+              "operationId", text operationId
+              "sequence", integer (int64 sequence)
+              "revision", integer revision
+              "stream", text stream
+              "text", text value ]
+        |> fun parameters -> Notification("operation/output", parameters)
 
     let node (workspaceId: WorkspaceId) revision (value: WorkspaceNode) =
         map
@@ -575,7 +601,11 @@ module PublicProtocol =
             | PublicOperationOutcome.Succeeded -> RpcValue.array []
             | PublicOperationOutcome.Cancelled ->
                 RpcValue.array
-                    [ simpleDiagnostic descriptor.WorkspaceId revision "cancelled" "The workspace export was cancelled." ]
+                    [ simpleDiagnostic
+                          descriptor.WorkspaceId
+                          revision
+                          "cancelled"
+                          "The workspace operation was cancelled." ]
             | PublicOperationOutcome.Failed(code, message) ->
                 RpcValue.array [ simpleDiagnostic descriptor.WorkspaceId revision code message ]
 

@@ -23,6 +23,7 @@
     <ItemGroup>
         <Compile Include="MutationCoordinator.fs" />
         <Compile Include="Compatibility.fs" />
+        <Compile Include="CanonicalCommands.fs" />
         <Compile Include="WorkspaceState.fs" />
         <Compile Include="WorkspaceWatcher.fs" />
         <Compile Include="ProjectMutations.fs" />

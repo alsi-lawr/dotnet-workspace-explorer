@@ -42,6 +42,7 @@ type CommandParameterType =
     | Integer = 3
     | NodeId = 4
     | Choice = 5
+    | TextArray = 6
 
 type CommandAccess =
     | Read = 0
@@ -146,6 +147,7 @@ type CommandParameterValue =
     | Integer of value: int64
     | Node of value: NodeId
     | Choice of value: CommandChoiceId
+    | TextArray of values: ImmutableArray<string>
 
 type CommandArgument =
     { ParameterId: CommandParameterId

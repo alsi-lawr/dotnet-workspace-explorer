@@ -4,7 +4,9 @@ namespace Dotnet.CLI.Plus
 
 open System
 open System.Collections.Concurrent
+open System.Collections.Immutable
 open System.IO
+open System.Text
 open System.Threading
 open System.Threading.Tasks
 open Dotnet.CLI.Plus.Core
@@ -46,6 +48,14 @@ type internal ExportOperationState(sessionToken: CancellationToken) =
     member _.Complete() =
         Volatile.Write(&state, 3)
         cancellation.Dispose()
+
+type private OperationNotificationWriter(publish: string -> unit) =
+    inherit TextWriter()
+    override _.Encoding = Encoding.UTF8
+
+    override _.Write(value: string) =
+        if not (String.IsNullOrEmpty value) then
+            publish value
 
 module internal Pipe =
     let private openWorkspace target cancellationToken =
@@ -163,6 +173,12 @@ module internal Pipe =
                                 CommandParameterValue.Choice(
                                     RpcValue.requireString parameter.ParameterId.Value raw |> CommandChoiceId.Create
                                 )
+                            | CommandParameterType.TextArray ->
+                                CommandParameterValue.TextArray(
+                                    RpcValue.requireArray parameter.ParameterId.Value raw
+                                    |> Seq.map (RpcValue.requireString parameter.ParameterId.Value)
+                                    |> ImmutableArray.CreateRange
+                                )
                             | _ -> invalidArg parameter.ParameterId.Value "Unsupported command parameter type."
 
                         Some
@@ -180,12 +196,14 @@ module internal Pipe =
 
             SolutionPersistenceMutator.TryDescribe id
             |> Option.orElseWith (fun () -> ProjectMutations.tryDescribe id)
+            |> Option.orElseWith (fun () -> CanonicalCommands.tryDescribe id)
         with :? ArgumentException as error ->
             raise (ArgumentException(error.Message, "commandId"))
 
     type private PlannedMutation =
         | SolutionPlan of SolutionMutationPlan
         | ProjectPlan of ProjectMutationPlan
+        | CanonicalPlan of MutationPreviewRequest * WorkspaceArtifactPath array
 
     let private plannedActions =
         function
@@ -198,6 +216,7 @@ module internal Pipe =
                 yield MutationAction.ReplaceFile(plan.BackingPath.Value, plan.Contents)
             }
         | ProjectPlan plan -> plan.Actions :> seq<MutationAction>
+        | CanonicalPlan _ -> Seq.empty
 
     let private plannedPaths =
         function
@@ -212,11 +231,13 @@ module internal Pipe =
                 | None -> ()
             }
         | ProjectPlan plan -> plan.Paths :> seq<WorkspaceArtifactPath>
+        | CanonicalPlan(_, paths) -> paths :> seq<WorkspaceArtifactPath>
 
     let private plannedRequest =
         function
         | SolutionPlan plan -> plan.Request
         | ProjectPlan plan -> plan.Request
+        | CanonicalPlan(request, _) -> request
 
     let private planMutation
         (workspace: SolutionWorkspace)
@@ -225,40 +246,69 @@ module internal Pipe =
         cancellationToken
         =
         task {
-            match SolutionPersistenceMutator.TryDescribe request.CommandId with
-            | Some _ ->
-                let! plan = SolutionPersistenceMutator.PlanAsync(workspace, request, cancellationToken)
+            match CanonicalCommands.tryDescribe request.CommandId with
+            | Some _ when CanonicalCommands.isMutation request.CommandId.Value ->
+                let root =
+                    Path.GetDirectoryName workspace.BackingPath.Value
+                    |> Option.ofObj
+                    |> Option.defaultValue (Directory.GetCurrentDirectory())
+
+                let paths =
+                    request.TargetId
+                    |> Option.bind (fun target ->
+                        workspace.RootProjection.Projects
+                        |> Seq.tryFind (fun project -> project.Node.NodeId = target)
+                        |> Option.map (fun project -> WorkspaceArtifactPath.Create project.Path.AbsolutePath.Value))
+                    |> Option.map Array.singleton
+                    |> Option.defaultValue [| WorkspaceArtifactPath.Create root |]
 
                 return
-                    plan
-                    |> function
-                        | Success value -> Success(SolutionPlan value)
-                        | Failure failure -> Failure failure
-            | None ->
-                match request.TargetId with
-                | None ->
+                    Success(
+                        CanonicalPlan(
+                            { CommandId = request.CommandId
+                              Targets = ImmutableArray.CreateRange paths
+                              Arguments = request.Arguments
+                              ExpectedRevision = request.ExpectedRevision
+                              Intents = ImmutableHashSet<MutationIntent>.Empty
+                              AuthorizedRoots = ImmutableArray.Create(WorkspaceArtifactPath.Create root) },
+                            paths
+                        )
+                    )
+            | _ ->
+                match SolutionPersistenceMutator.TryDescribe request.CommandId with
+                | Some _ ->
+                    let! plan = SolutionPersistenceMutator.PlanAsync(workspace, request, cancellationToken)
+
                     return
-                        Failure(
-                            NotFound(
-                                "targetId",
-                                WorkspaceDiagnostic.CreateSimple(
-                                    WorkspaceDiagnosticSeverity.Error,
-                                    WorkspaceDiagnosticCode.Create "not_found",
-                                    "A project target is required.",
-                                    false,
-                                    CorrelationId.New()
+                        plan
+                        |> function
+                            | Success value -> Success(SolutionPlan value)
+                            | Failure failure -> Failure failure
+                | None ->
+                    match request.TargetId with
+                    | None ->
+                        return
+                            Failure(
+                                NotFound(
+                                    "targetId",
+                                    WorkspaceDiagnostic.CreateSimple(
+                                        WorkspaceDiagnosticSeverity.Error,
+                                        WorkspaceDiagnosticCode.Create "not_found",
+                                        "A project target is required.",
+                                        false,
+                                        CorrelationId.New()
+                                    )
                                 )
                             )
-                        )
-                | Some target ->
-                    let! project = state.ProjectAsync(target, cancellationToken)
+                    | Some target ->
+                        let! project = state.ProjectAsync(target, cancellationToken)
 
-                    match project with
-                    | Failure failure -> return Failure failure
-                    | Success(projectWorkspace, project, snapshot) ->
-                        match ProjectMutations.plan projectWorkspace project snapshot request cancellationToken with
-                        | Success value -> return Success(ProjectPlan value)
+                        match project with
                         | Failure failure -> return Failure failure
+                        | Success(projectWorkspace, project, snapshot) ->
+                            match ProjectMutations.plan projectWorkspace project snapshot request cancellationToken with
+                            | Success value -> return Success(ProjectPlan value)
+                            | Failure failure -> return Failure failure
         }
 
     let private mutationNotifications =
@@ -340,7 +390,7 @@ module internal Pipe =
                         return notifications |> Seq.toList
                     }
 
-                let activeExports =
+                let activeOperations =
                     ConcurrentDictionary<string, ExportOperationState>(StringComparer.Ordinal)
 
                 let startWatcher active =
@@ -532,7 +582,7 @@ module internal Pipe =
                                 let operationId = Guid.NewGuid().ToString("N")
                                 let operation = ExportOperationState(requestCancellationToken)
 
-                                if not (activeExports.TryAdd(operationId, operation)) then
+                                if not (activeOperations.TryAdd(operationId, operation)) then
                                     operation.Complete()
                                     return Error RpcErrors.internalError
                                 else
@@ -646,7 +696,7 @@ module internal Pipe =
                                                             outcome
                                                     )
                                             finally
-                                                activeExports.TryRemove operationId |> ignore
+                                                activeOperations.TryRemove operationId |> ignore
                                                 operation.Complete()
                                         }
 
@@ -659,7 +709,7 @@ module internal Pipe =
                                               StopAfterResponse = false }
                             | PublicRequest.Cancel operationId ->
                                 let accepted, afterResponse =
-                                    match activeExports.TryGetValue operationId with
+                                    match activeOperations.TryGetValue operationId with
                                     | true, operation when operation.TryReserveCancellation() ->
                                         true, Some operation.CommitCancellationAfterResponse
                                     | _ -> false, None
@@ -672,7 +722,7 @@ module internal Pipe =
                                           AfterResponse = afterResponse
                                           StopAfterResponse = false }
                             | PublicRequest.Shutdown ->
-                                for operation in activeExports.Values do
+                                for operation in activeOperations.Values do
                                     operation.CancelForShutdown()
 
                                 return
@@ -697,6 +747,7 @@ module internal Pipe =
                                                 Seq.append
                                                     (SolutionPersistenceMutator.Discover(commandWorkspace.Value, target))
                                                     (ProjectMutations.discover commandWorkspace.Value target)
+                                                |> Seq.append (CanonicalCommands.discover commandWorkspace.Value target)
                                                 |> PublicProtocol.commandListResult
                                               Notifications = []
                                               BackgroundWork = None
@@ -716,6 +767,7 @@ module internal Pipe =
                                         (Seq.append
                                             (SolutionPersistenceMutator.Discover(commandWorkspace.Value, target))
                                             (ProjectMutations.discover commandWorkspace.Value target)
+                                         |> Seq.append (CanonicalCommands.discover commandWorkspace.Value target)
                                          |> Seq.exists (fun candidate -> candidate.CommandId = descriptor.CommandId))
                                         ->
                                         return
@@ -787,6 +839,294 @@ module internal Pipe =
                                     | Error rpcError, _, _ -> return Error rpcError
                                     | _, None, _ ->
                                         return Error(RpcErrors.create "not_found" "The command was not found." None)
+                                    | Ok target, Some descriptor, previewId when
+                                        CanonicalCommands.tryDescribe descriptor.CommandId |> Option.isSome
+                                        && (not (CanonicalCommands.isMutation descriptor.CommandId.Value)
+                                            || previewId.IsSome)
+                                        ->
+                                        if state.Revision <> expectedRevision then
+                                            return Error(PublicProtocol.workspaceConflict state.Revision)
+                                        else
+                                            match commandArguments commandWorkspace.Value descriptor arguments with
+                                            | Error rpcError -> return Error rpcError
+                                            | Ok parsed ->
+                                                let request =
+                                                    { CommandId = descriptor.CommandId
+                                                      TargetId = target
+                                                      Arguments = parsed
+                                                      ExpectedRevision = WorkspaceRevision.Create expectedRevision }
+
+                                                let! authorized =
+                                                    task {
+                                                        if CanonicalCommands.isMutation descriptor.CommandId.Value then
+                                                            let! planned =
+                                                                planMutation
+                                                                    commandWorkspace.Value
+                                                                    state
+                                                                    request
+                                                                    requestCancellationToken
+
+                                                            match planned, previewId with
+                                                            | WorkspaceOutcome.Failure failure, _ ->
+                                                                return Error(PublicProtocol.failureError failure)
+                                                            | WorkspaceOutcome.Success plan, Some value ->
+                                                                match
+                                                                    coordinator.Execute(
+                                                                        plannedRequest plan,
+                                                                        plannedActions plan,
+                                                                        MutationConfirmationToken.Create value,
+                                                                        requestCancellationToken
+                                                                    )
+                                                                with
+                                                                | WorkspaceOutcome.Failure failure ->
+                                                                    return Error(PublicProtocol.failureError failure)
+                                                                | WorkspaceOutcome.Success(MutationApplyResult.RolledBack failure) ->
+                                                                    return Error(PublicProtocol.failureError failure)
+                                                                | WorkspaceOutcome.Success MutationApplyResult.Applied ->
+                                                                    return Ok()
+                                                            | _, None ->
+                                                                return
+                                                                    Error(
+                                                                        RpcErrors.invalidParams
+                                                                            "command/execute requires previewId."
+                                                                    )
+                                                        else
+                                                            return Ok()
+                                                    }
+
+                                                match authorized with
+                                                | Error rpcError -> return Error rpcError
+                                                | Ok() ->
+                                                    match CanonicalCommands.argv commandWorkspace.Value request with
+                                                    | Error message -> return Error(RpcErrors.invalidParams message)
+                                                    | Ok argv ->
+                                                        let operationId = Guid.NewGuid().ToString("N")
+                                                        let operation = ExportOperationState(requestCancellationToken)
+
+                                                        if not (activeOperations.TryAdd(operationId, operation)) then
+                                                            operation.Complete()
+                                                            return Error RpcErrors.internalError
+                                                        else
+                                                            let background (sink: RpcNotificationSink) sessionToken =
+                                                                task {
+                                                                    let mutable sequence = 0
+
+                                                                    let outputGate = obj ()
+
+                                                                    let nextSequence () =
+                                                                        Interlocked.Increment(&sequence) - 1
+
+                                                                    let revision = state.Revision
+
+                                                                    let publish stream value =
+                                                                        lock outputGate (fun () ->
+                                                                            sink
+                                                                                .WriteAsync(
+                                                                                    PublicProtocol.operationOutput
+                                                                                        state.Descriptor
+                                                                                        operationId
+                                                                                        (nextSequence ())
+                                                                                        revision
+                                                                                        stream
+                                                                                        value
+                                                                                )
+                                                                                .GetAwaiter()
+                                                                                .GetResult())
+
+                                                                    let mutable outcome =
+                                                                        PublicOperationOutcome.Succeeded
+
+                                                                    try
+                                                                        use linked =
+                                                                            CancellationTokenSource
+                                                                                .CreateLinkedTokenSource(
+                                                                                    operation.Token,
+                                                                                    sessionToken
+                                                                                )
+
+                                                                        do!
+                                                                            sink.WriteAsync(
+                                                                                PublicProtocol.operationProgress
+                                                                                    state.Descriptor
+                                                                                    operationId
+                                                                                    (nextSequence ())
+                                                                                    revision
+                                                                                    "Starting canonical dotnet command."
+                                                                            )
+
+                                                                        use outputWriter =
+                                                                            new OperationNotificationWriter(
+                                                                                publish "stdout"
+                                                                            )
+
+                                                                        use errorWriter =
+                                                                            new OperationNotificationWriter(
+                                                                                publish "stderr"
+                                                                            )
+
+                                                                        let! executed =
+                                                                            Broker.ExecuteAsync(
+                                                                                argv |> List.toArray,
+                                                                                Human(
+                                                                                    outputWriter,
+                                                                                    errorWriter,
+                                                                                    false,
+                                                                                    false
+                                                                                ),
+                                                                                linked.Token
+                                                                            )
+
+                                                                        if operation.IsCancellationReserved then
+                                                                            do!
+                                                                                operation
+                                                                                    .WaitForCancellationResponseAsync()
+
+                                                                            outcome <- PublicOperationOutcome.Cancelled
+                                                                        elif not executed.Success then
+                                                                            let diagnostic =
+                                                                                executed.Diagnostics
+                                                                                |> List.tryHead
+                                                                                |> Option.map _.Message
+                                                                                |> Option.defaultValue
+                                                                                    "The canonical dotnet command failed."
+
+                                                                            outcome <-
+                                                                                PublicOperationOutcome.Failed(
+                                                                                    "external_tool_failed",
+                                                                                    diagnostic
+                                                                                )
+                                                                        else
+                                                                            if
+                                                                                CanonicalCommands.isPackageMutation
+                                                                                    descriptor.CommandId.Value
+                                                                            then
+                                                                                let project =
+                                                                                    argv
+                                                                                    |> List.skipWhile ((<>) "--project")
+                                                                                    |> List.tryItem 1
+
+                                                                                match project with
+                                                                                | Some project ->
+                                                                                    let root =
+                                                                                        Path.GetDirectoryName
+                                                                                            commandWorkspace.Value.BackingPath.Value
+                                                                                        |> Option.ofObj
+                                                                                        |> Option.defaultValue (
+                                                                                            Directory
+                                                                                                .GetCurrentDirectory()
+                                                                                        )
+
+                                                                                    match
+                                                                                        CentralPackageManagement.normalize
+                                                                                            root
+                                                                                            project
+                                                                                    with
+                                                                                    | Error message ->
+                                                                                        outcome <-
+                                                                                            PublicOperationOutcome
+                                                                                                .Failed(
+                                                                                                    "central_package_conflict",
+                                                                                                    message
+                                                                                                )
+                                                                                    | Ok updates ->
+                                                                                        updates
+                                                                                        |> List.iter
+                                                                                            (fun (path, bytes) ->
+                                                                                                File.WriteAllBytes(
+                                                                                                    path,
+                                                                                                    bytes
+                                                                                                ))
+                                                                                | None ->
+                                                                                    outcome <-
+                                                                                        PublicOperationOutcome.Failed(
+                                                                                            "internal_error",
+                                                                                            "The canonical project argument was unavailable."
+                                                                                        )
+
+                                                                            if
+                                                                                outcome = PublicOperationOutcome.Succeeded
+                                                                                && CanonicalCommands.isMutation
+                                                                                    descriptor.CommandId.Value
+                                                                            then
+                                                                                let paths =
+                                                                                    argv
+                                                                                    |> List.skipWhile ((<>) "--project")
+                                                                                    |> List.tryItem 1
+                                                                                    |> Option.map (
+                                                                                        WorkspaceArtifactPath.Create
+                                                                                        >> Array.singleton
+                                                                                    )
+                                                                                    |> Option.defaultValue Array.empty
+
+                                                                                let! invalidated =
+                                                                                    state.InvalidateFromTransactionAsync(
+                                                                                        paths,
+                                                                                        CancellationToken.None
+                                                                                    )
+
+                                                                                for notification in
+                                                                                    mutationNotifications invalidated do
+                                                                                    do! sink.WriteAsync notification
+
+                                                                                ()
+                                                                    with
+                                                                    | :? OperationCanceledException ->
+                                                                        if operation.IsCancellationReserved then
+                                                                            do!
+                                                                                operation
+                                                                                    .WaitForCancellationResponseAsync()
+
+                                                                        outcome <- PublicOperationOutcome.Cancelled
+                                                                    | :? IOException as error ->
+                                                                        outcome <-
+                                                                            PublicOperationOutcome.Failed(
+                                                                                "io_error",
+                                                                                error.Message
+                                                                            )
+                                                                    | error ->
+                                                                        outcome <-
+                                                                            PublicOperationOutcome.Failed(
+                                                                                "operation_failed",
+                                                                                error.Message
+                                                                            )
+
+                                                                    if operation.TryReserveCompletion() then
+                                                                        do!
+                                                                            sink.WriteAsync(
+                                                                                PublicProtocol.operationCompleted
+                                                                                    state.Descriptor
+                                                                                    operationId
+                                                                                    (nextSequence ())
+                                                                                    state.Revision
+                                                                                    outcome
+                                                                            )
+                                                                    else
+                                                                        do! operation.WaitForCancellationResponseAsync()
+
+                                                                        do!
+                                                                            sink.WriteAsync(
+                                                                                PublicProtocol.operationCompleted
+                                                                                    state.Descriptor
+                                                                                    operationId
+                                                                                    (nextSequence ())
+                                                                                    state.Revision
+                                                                                    PublicOperationOutcome.Cancelled
+                                                                            )
+
+                                                                    activeOperations.TryRemove operationId |> ignore
+                                                                    operation.Complete()
+                                                                }
+
+                                                            return
+                                                                Ok
+                                                                    { Result =
+                                                                        PublicProtocol.commandOperationResult
+                                                                            operationId
+                                                                            state.Revision
+                                                                      Notifications = []
+                                                                      BackgroundWork = Some background
+                                                                      AfterResponse = None
+                                                                      StopAfterResponse = false }
                                     | _, _, None ->
                                         return Error(RpcErrors.invalidParams "command/execute requires previewId.")
                                     | Ok target, Some descriptor, Some previewId ->
