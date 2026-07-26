@@ -42,12 +42,14 @@ type SolutionContractTests() =
     [<Theory>]
     [<InlineData(".sln")>]
     [<InlineData(".slnx")>]
-    member _.``should project hierarchy dependencies and external paths for sln formats``(extension: string) =
+    member _.``should project hierarchy dependencies and external paths for sln formats``
+        (extension: string)
+        =
         let path = SolutionContract.fixturePath $"Canonical{extension}"
         let workspace = SolutionContract.openWorkspace path
         let root = workspace.RootProjection
         let externalProject = root.Projects |> Seq.find _.Path.IsExternal
-        let folder = Assert.Single(root.Folders)
+        let folder = Assert.Single root.Folders
 
         let included =
             root.Projects |> Seq.find (fun project -> project.Node.Name = "Included")
@@ -61,21 +63,29 @@ type SolutionContractTests() =
         )
 
         Assert.Equal(
-            Path.GetFullPath(Path.Combine(Path.GetDirectoryName(path), "../external/External.csproj")),
+            Path.GetFullPath(
+                Path.Combine(Path.GetDirectoryName path, "../external/External.csproj")
+            ),
             externalProject.Path.AbsolutePath.Value
         )
 
-        Assert.Equal(Path.Combine("..", "external", "External.csproj"), externalProject.Path.SolutionRelativePath)
+        Assert.Equal(
+            Path.Combine("..", "external", "External.csproj"),
+            externalProject.Path.SolutionRelativePath
+        )
+
         Assert.Equal("/src/", folder.Path)
         Assert.Equal(Some folder.Path, included.ParentFolderPath)
-        Assert.Single(root.Items) |> ignore
+        Assert.Single root.Items |> ignore
         Assert.Equal(2, root.Projects.Length)
-        Assert.Single(root.Dependencies) |> ignore
+        Assert.Single root.Dependencies |> ignore
         Assert.Contains(root.BuildTypes, fun node -> node.Name = "Debug")
         Assert.Contains(root.Platforms, fun node -> node.Name = "Any CPU")
 
     [<Fact>]
-    member _.``should resolve slnf against its backing solution with excluded read-only placeholders``() =
+    member _.``should resolve slnf against its backing solution with excluded read-only placeholders``
+        ()
+        =
         let workspace =
             SolutionContract.openWorkspace (SolutionContract.fixturePath "Filters/Canonical.slnf")
 
@@ -85,15 +95,20 @@ type SolutionContractTests() =
 
         let excluded = workspace.RootProjection.Projects |> Seq.find _.IsFilteredOut
         Assert.Equal(WorkspaceFormat.Slnf, workspace.WorkspaceDescriptor.WorkspaceFormat)
-        Assert.True(workspace.WorkspaceDescriptor.IsReadOnly)
+        Assert.True workspace.WorkspaceDescriptor.IsReadOnly
         Assert.Equal(WorkspaceNodeLoadState.Unhydrated, included.Node.NodeLoadState)
         Assert.Equal(WorkspaceNodeKind.Placeholder, excluded.Node.NodeKind)
         Assert.Equal(WorkspaceNodeLoadState.FilteredOut, excluded.Node.NodeLoadState)
 
-        Assert.All(workspace.RootProjection.Nodes, fun node -> Assert.False(node.Supports WorkspaceCapabilityId.Write))
+        Assert.All(
+            workspace.RootProjection.Nodes,
+            fun node -> Assert.False(node.Supports WorkspaceCapabilityId.Write)
+        )
 
     [<Fact>]
-    member _.``should retain distinct classifications for ambiguous targets and invalid filters``() =
+    member _.``should retain distinct classifications for ambiguous targets and invalid filters``
+        ()
+        =
         let directory = SolutionContract.temporaryDirectory ()
 
         try
@@ -112,14 +127,18 @@ type SolutionContractTests() =
                 File.WriteAllText(path, content)
 
                 match name, SolutionStore.OpenAsync(path).Result with
-                | "Missing.slnf", Failure(NotFound(target, _)) -> Assert.EndsWith("Absent.sln", target)
+                | "Missing.slnf", Failure(NotFound(target, _)) ->
+                    Assert.EndsWith("Absent.sln", target)
                 | _, Failure(InvalidInput("filter", _)) -> ()
-                | _, outcome -> failwithf "Expected a typed filter failure for %s, got %A" name outcome
+                | _, outcome ->
+                    failwithf "Expected a typed filter failure for %s, got %A" name outcome
         finally
             SolutionContract.delete directory
 
     [<Fact>]
-    member _.``should govern project and filter identity with detected filesystem case semantics``() =
+    member _.``should govern project and filter identity with detected filesystem case semantics``
+        ()
+        =
         let directory = SolutionContract.temporaryDirectory ()
 
         try
@@ -131,7 +150,8 @@ type SolutionContractTests() =
             let semantics = HostFileSystemCaseDetector.DetectFromExistingPath solution
 
             let identity =
-                (Assert.Single((SolutionContract.openWorkspace solution).RootProjection.Projects)).Node.Identity.Value
+                (Assert.Single((SolutionContract.openWorkspace solution).RootProjection.Projects))
+                    .Node.Identity.Value
 
             Assert.Equal(
                 (if semantics = HostFileSystemCaseSemantics.Sensitive then
@@ -154,6 +174,7 @@ type SolutionContractTests() =
                     |> Seq.filter (fun project -> not project.IsFilteredOut)
                 )
                 |> ignore
-            | _, outcome -> failwithf "Filter membership did not follow host case semantics: %A" outcome
+            | _, outcome ->
+                failwithf "Filter membership did not follow host case semantics: %A" outcome
         finally
             SolutionContract.delete directory

@@ -1,6 +1,5 @@
 namespace Dotnet.CLI.Plus.Tests
 
-open System
 open Dotnet.CLI.Plus.Core
 open Xunit
 
@@ -51,7 +50,11 @@ type CoreContractTests() =
             )
 
         Assert.Equal((node "src\\Demo\\Demo.csproj").NodeId, (node "src/Demo/Demo.csproj").NodeId)
-        Assert.NotEqual((node "src/Demo/Demo.csproj").NodeId, (node "src/Demo/Renamed.csproj").NodeId)
+
+        Assert.NotEqual(
+            (node "src/Demo/Demo.csproj").NodeId,
+            (node "src/Demo/Renamed.csproj").NodeId
+        )
 
     [<Fact>]
     member _.``should not advertise mutation capabilities for read-only or unknown systems``() =
@@ -75,7 +78,7 @@ type CoreContractTests() =
                 WorkspaceCapabilityProfile.UnknownProjectSystem
             )
 
-        Assert.True(filtered.IsReadOnly)
+        Assert.True filtered.IsReadOnly
         Assert.False(filteredProject.Supports WorkspaceCapabilityId.Write)
         Assert.True(unknownProject.Supports WorkspaceCapabilityId.Read)
         Assert.False(unknownProject.Supports WorkspaceCapabilityId.Write)

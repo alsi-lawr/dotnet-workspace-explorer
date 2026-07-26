@@ -19,7 +19,7 @@ type RpcValue =
 module RpcValue =
     let map (values: seq<string * RpcValue>) =
         let builder =
-            ImmutableDictionary.CreateBuilder<string, RpcValue>(StringComparer.Ordinal)
+            ImmutableDictionary.CreateBuilder<string, RpcValue> StringComparer.Ordinal
 
         for key, value in values do
             if String.IsNullOrWhiteSpace key then
@@ -82,7 +82,8 @@ module RpcValue =
     let requireUnsigned32 name value =
         match value with
         | RpcValue.Unsigned number when number <= uint64 UInt32.MaxValue -> uint32 number
-        | RpcValue.Integer number when number >= 0L && number <= int64 UInt32.MaxValue -> uint32 number
+        | RpcValue.Integer number when number >= 0L && number <= int64 UInt32.MaxValue ->
+            uint32 number
         | _ -> invalidArg name "Expected a non-negative uint32-compatible integer."
 
     let requireInteger name value =
@@ -124,7 +125,7 @@ module RpcProfile =
             invalidArg (nameof name) "An RPC profile requires a name and non-negative version."
 
         let descriptors =
-            ImmutableDictionary.CreateBuilder<string, RpcMethodDescriptor>(StringComparer.Ordinal)
+            ImmutableDictionary.CreateBuilder<string, RpcMethodDescriptor> StringComparer.Ordinal
 
         for descriptor in methods do
             if

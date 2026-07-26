@@ -43,7 +43,7 @@ type WorkspaceDiagnosticCode private (value: string) =
 type CorrelationId private (value: Guid) =
     member _.Value = value
     static member New() = CorrelationId(Guid.NewGuid())
-    override _.ToString() = value.ToString("N")
+    override _.ToString() = value.ToString "N"
 
 type WorkspaceDiagnostic =
     private
@@ -97,7 +97,15 @@ type WorkspaceDiagnostic =
             isRetryable: bool,
             correlationId: CorrelationId
         ) =
-        WorkspaceDiagnostic.Create(severity, code, safeMessage, None, None, isRetryable, correlationId)
+        WorkspaceDiagnostic.Create(
+            severity,
+            code,
+            safeMessage,
+            None,
+            None,
+            isRetryable,
+            correlationId
+        )
 
 type WorkspaceErrorCode private (value: string) =
     member _.Value = value

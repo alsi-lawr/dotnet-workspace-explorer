@@ -68,8 +68,11 @@ type SolutionWorkspace =
     member this.RootProjection = this.Root
 
     static member internal Create
-        (descriptor: WorkspaceDescriptor, backingSolutionPath: WorkspaceArtifactPath, root: SolutionRootProjection)
-        =
+        (
+            descriptor: WorkspaceDescriptor,
+            backingSolutionPath: WorkspaceArtifactPath,
+            root: SolutionRootProjection
+        ) =
         { Descriptor = descriptor
           BackingSolutionPath = backingSolutionPath
           Root = root }

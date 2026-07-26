@@ -11,7 +11,7 @@ type CommandId private (value: string) =
 
     override _.ToString() = value
 
-    override _.Equals(other) =
+    override _.Equals other =
         match other with
         | :? CommandId as candidate -> value = candidate.Value
         | _ -> false
@@ -27,7 +27,7 @@ type CommandParameterId private (value: string) =
 
     override _.ToString() = value
 
-    override _.Equals(other) =
+    override _.Equals other =
         match other with
         | :? CommandParameterId as candidate -> value = candidate.Value
         | _ -> false
@@ -56,7 +56,7 @@ type CommandChoiceId private (value: string) =
 
     override _.ToString() = value
 
-    override _.Equals(other) =
+    override _.Equals other =
         match other with
         | :? CommandChoiceId as candidate -> value = candidate.Value
         | _ -> false
@@ -77,8 +77,12 @@ type CommandParameterDescriptor =
     member this.Name = this.DisplayName
 
     static member Create
-        (id: CommandParameterId, parameterType: CommandParameterType, isRequired: bool, displayName: string)
-        =
+        (
+            id: CommandParameterId,
+            parameterType: CommandParameterType,
+            isRequired: bool,
+            displayName: string
+        ) =
         if isNull (box id) then
             nullArg (nameof id)
 
@@ -182,9 +186,9 @@ type CommandMutationRequest =
 type OperationId private (value: Guid) =
     member _.Value = value
     static member New() = OperationId(Guid.NewGuid())
-    override _.ToString() = value.ToString("N")
+    override _.ToString() = value.ToString "N"
 
-    override _.Equals(other) =
+    override _.Equals other =
         match other with
         | :? OperationId as candidate -> value = candidate.Value
         | _ -> false

@@ -20,7 +20,11 @@ type PublicRequest =
     | Refresh of expectedRevision: int64 option
     | CommandList of targetId: string option
     | CommandDescribe of commandId: string * targetId: string option
-    | CommandPreview of commandId: string * targetId: string option * arguments: RpcValue * expectedRevision: int64
+    | CommandPreview of
+        commandId: string *
+        targetId: string option *
+        arguments: RpcValue *
+        expectedRevision: int64
     | CommandExecute of
         commandId: string *
         targetId: string option *
@@ -146,7 +150,7 @@ module PublicProtocol =
     let commandPreviewResult (preview: MutationPreview) =
         map
             [ "previewId", text preview.Confirmation.Value
-              "expiresAtUtc", text (preview.ExpiresAtUtc.ToString("O")) ]
+              "expiresAtUtc", text (preview.ExpiresAtUtc.ToString "O") ]
 
     let commandExecuteResult revision =
         map [ "applied", boolean true; "revision", integer revision ]
@@ -163,7 +167,14 @@ module PublicProtocol =
               "message", text message ]
         |> fun parameters -> Notification("operation/progress", parameters)
 
-    let operationOutput (descriptor: WorkspaceDescriptor) operationId sequence revision stream value =
+    let operationOutput
+        (descriptor: WorkspaceDescriptor)
+        operationId
+        sequence
+        revision
+        stream
+        value
+        =
         map
             [ "workspaceId", text descriptor.WorkspaceId.Value
               "operationId", text operationId
@@ -196,7 +207,7 @@ module PublicProtocol =
 
     let diagnostic (workspaceId: WorkspaceId) revision (value: WorkspaceDiagnostic) =
         let fields =
-            ResizeArray<string * RpcValue>(
+            ResizeArray<string * RpcValue>
                 [ "workspaceId", text workspaceId.Value
                   "revision", integer revision
                   "severity", text (severity value.DiagnosticSeverity)
@@ -204,7 +215,7 @@ module PublicProtocol =
                   "message", text value.Message
                   "retryable", boolean value.Retryable
                   "correlationId", text (value.DiagnosticCorrelationId.ToString()) ]
-            )
+
 
         value.DiagnosticArtifactPath
         |> Option.iter (fun path -> fields.Add("path", text path.Value))
@@ -285,7 +296,11 @@ module PublicProtocol =
     let parseInitialize parameters =
         try
             let fields = RpcValue.requireMap "initialize.params" parameters
-            RpcValue.ensureOnly "initialize.params" [ "protocolVersion"; "clientInfo"; "capabilities"; "limits" ] fields
+
+            RpcValue.ensureOnly
+                "initialize.params"
+                [ "protocolVersion"; "clientInfo"; "capabilities"; "limits" ]
+                fields
 
             let version =
                 fields
@@ -323,8 +338,8 @@ module PublicProtocol =
                 |> RpcValue.requireField "capabilities"
                 |> RpcValue.requireArray "capabilities"
 
-            let capabilityNames = ImmutableArray.CreateBuilder<string>(capabilities.Length)
-            let unique = HashSet<string>(StringComparer.Ordinal)
+            let capabilityNames = ImmutableArray.CreateBuilder<string> capabilities.Length
+            let unique = HashSet<string> StringComparer.Ordinal
 
             for capability in capabilities do
                 let name = RpcValue.requireString "capabilities" capability
@@ -346,7 +361,8 @@ module PublicProtocol =
 
                     let frame =
                         match RpcValue.optionalField "maxFrameBytes" limits with
-                        | Some requested -> positiveInt 1024 Int32.MaxValue "limits.maxFrameBytes" requested
+                        | Some requested ->
+                            positiveInt 1024 Int32.MaxValue "limits.maxFrameBytes" requested
                         | None -> RpcCodec.secureLimits.MaximumValueBytes
 
                     let page =
@@ -386,7 +402,11 @@ module PublicProtocol =
                     )
                 | "workspace/children" ->
                     let fields = RpcValue.requireMap "params" parameters
-                    RpcValue.ensureOnly "params" [ "parentId"; "pageSize"; "continuationToken" ] fields
+
+                    RpcValue.ensureOnly
+                        "params"
+                        [ "parentId"; "pageSize"; "continuationToken" ]
+                        fields
 
                     PublicRequest.Children(
                         requiredString "parentId" fields,
@@ -401,10 +421,18 @@ module PublicProtocol =
                 | "command/describe" ->
                     let fields = RpcValue.requireMap "params" parameters
                     RpcValue.ensureOnly "params" [ "commandId"; "targetId" ] fields
-                    PublicRequest.CommandDescribe(requiredString "commandId" fields, optionalString "targetId" fields)
+
+                    PublicRequest.CommandDescribe(
+                        requiredString "commandId" fields,
+                        optionalString "targetId" fields
+                    )
                 | "command/preview" ->
                     let fields = RpcValue.requireMap "params" parameters
-                    RpcValue.ensureOnly "params" [ "commandId"; "targetId"; "arguments"; "expectedRevision" ] fields
+
+                    RpcValue.ensureOnly
+                        "params"
+                        [ "commandId"; "targetId"; "arguments"; "expectedRevision" ]
+                        fields
 
                     let arguments = fields |> RpcValue.requireField "arguments"
                     RpcValue.requireMap "arguments" arguments |> ignore
@@ -489,11 +517,11 @@ module PublicProtocol =
         (nextToken: ContinuationToken option)
         =
         let values =
-            ResizeArray<string * RpcValue>(
+            ResizeArray<string * RpcValue>
                 [ "revision", integer revision
                   "parentId", text parentId.Value
                   "nodes", nodes |> Seq.map (node descriptor.WorkspaceId revision) |> RpcValue.array ]
-            )
+
 
         nextToken
         |> Option.iter (fun token -> values.Add("nextToken", text token.Value))
@@ -519,25 +547,25 @@ module PublicProtocol =
 
     let private change (workspaceId: WorkspaceId) revision =
         function
-        | WorkspaceChange.Added(nodeValue, parentId, index) ->
+        | Added(nodeValue, parentId, index) ->
             map
                 [ "kind", text "add"
                   "parentId", optionalNodeId parentId
                   "index", integer (int64 index)
                   "node", node workspaceId revision nodeValue ]
-        | WorkspaceChange.Removed(nodeId, parentId, index) ->
+        | Removed(nodeId, parentId, index) ->
             map
                 [ "kind", text "remove"
                   "id", text nodeId.Value
                   "parentId", optionalNodeId parentId
                   "index", integer (int64 index) ]
-        | WorkspaceChange.Updated(nodeValue, parentId, index) ->
+        | Updated(nodeValue, parentId, index) ->
             map
                 [ "kind", text "update"
                   "parentId", optionalNodeId parentId
                   "index", integer (int64 index)
                   "node", node workspaceId revision nodeValue ]
-        | WorkspaceChange.Moved(nodeId, oldParentId, oldIndex, newParentId, newIndex) ->
+        | Moved(nodeId, oldParentId, oldIndex, newParentId, newIndex) ->
             map
                 [ "kind", text "move"
                   "id", text nodeId.Value
@@ -545,7 +573,7 @@ module PublicProtocol =
                   "oldIndex", integer (int64 oldIndex)
                   "newParentId", optionalNodeId newParentId
                   "newIndex", integer (int64 newIndex) ]
-        | WorkspaceChange.Replaced(oldNodeId, newNode, parentId, index) ->
+        | Replaced(oldNodeId, newNode, parentId, index) ->
             map
                 [ "kind", text "replace"
                   "oldId", text oldNodeId.Value
@@ -582,7 +610,14 @@ module PublicProtocol =
                   |> RpcValue.array ]
         )
 
-    let exportChunk (descriptor: WorkspaceDescriptor) operationId sequence revision (nodes: seq<WorkspaceNode>) last =
+    let exportChunk
+        (descriptor: WorkspaceDescriptor)
+        operationId
+        sequence
+        revision
+        (nodes: seq<WorkspaceNode>)
+        last
+        =
         Notification(
             "workspace/exportChunk",
             map

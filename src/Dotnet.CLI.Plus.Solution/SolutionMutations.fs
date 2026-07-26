@@ -46,13 +46,24 @@ module private SolutionMutations =
         Failure(Internal(diagnostic "internal_error" message))
 
     let parameter id parameterType required name =
-        CommandParameterDescriptor.Create(CommandParameterId.Create id, parameterType, required, name)
+        CommandParameterDescriptor.Create(
+            CommandParameterId.Create id,
+            parameterType,
+            required,
+            name
+        )
 
     let command id name parameters targets =
-        CommandDescriptor.Create(CommandId.Create id, name, CommandAccess.Write, parameters, targets)
+        CommandDescriptor.Create(
+            CommandId.Create id,
+            name,
+            CommandAccess.Write,
+            parameters,
+            targets
+        )
 
     let catalog =
-        ImmutableArray.CreateRange(
+        ImmutableArray.CreateRange
             [ command
                   "solution.folder.add"
                   "Add solution folder"
@@ -73,7 +84,11 @@ module private SolutionMutations =
                   "Add solution item"
                   [ parameter "path" CommandParameterType.Path true "Path" ]
                   [ WorkspaceNodeKind.SolutionFolder ]
-              command "solution.item.remove" "Remove solution item" [] [ WorkspaceNodeKind.SolutionItem ]
+              command
+                  "solution.item.remove"
+                  "Remove solution item"
+                  []
+                  [ WorkspaceNodeKind.SolutionItem ]
               command
                   "solution.project.add"
                   "Add project"
@@ -100,7 +115,11 @@ module private SolutionMutations =
                   "Add build type"
                   [ parameter "name" CommandParameterType.Text true "Name" ]
                   [ WorkspaceNodeKind.Workspace ]
-              command "solution.build-type.remove" "Remove build type" [] [ WorkspaceNodeKind.Configuration ]
+              command
+                  "solution.build-type.remove"
+                  "Remove build type"
+                  []
+                  [ WorkspaceNodeKind.Configuration ]
               command
                   "solution.platform.add"
                   "Add platform"
@@ -110,7 +129,11 @@ module private SolutionMutations =
               command
                   "solution.project-configuration.set"
                   "Set project configuration"
-                  [ parameter "solutionBuildType" CommandParameterType.Text true "Solution build type"
+                  [ parameter
+                        "solutionBuildType"
+                        CommandParameterType.Text
+                        true
+                        "Solution build type"
                     parameter "solutionPlatform" CommandParameterType.Text true "Solution platform"
                     parameter "projectBuildType" CommandParameterType.Text true "Project build type"
                     parameter "projectPlatform" CommandParameterType.Text true "Project platform"
@@ -120,7 +143,11 @@ module private SolutionMutations =
               command
                   "solution.project-configuration.remove"
                   "Remove project configuration"
-                  [ parameter "solutionBuildType" CommandParameterType.Text true "Solution build type"
+                  [ parameter
+                        "solutionBuildType"
+                        CommandParameterType.Text
+                        true
+                        "Solution build type"
                     parameter "solutionPlatform" CommandParameterType.Text true "Solution platform" ]
                   [ WorkspaceNodeKind.Project ]
               command
@@ -133,7 +160,7 @@ module private SolutionMutations =
                   "Remove solution dependency"
                   [ parameter "dependency" CommandParameterType.NodeId true "Dependency" ]
                   [ WorkspaceNodeKind.Project ] ]
-        )
+
 
     let descriptor (commandId: CommandId) =
         catalog |> Seq.tryFind (fun candidate -> candidate.CommandId = commandId)
@@ -190,7 +217,8 @@ module private SolutionMutations =
                 | Some expected ->
                     let valid =
                         match expected.ParameterType, value.Value with
-                        | CommandParameterType.Text, Text text -> not (String.IsNullOrWhiteSpace text)
+                        | CommandParameterType.Text, Text text ->
+                            not (String.IsNullOrWhiteSpace text)
                         | CommandParameterType.Path, Path _
                         | CommandParameterType.Boolean, Boolean _
                         | CommandParameterType.Integer, Integer _
@@ -237,7 +265,7 @@ module private SolutionMutations =
     let folderPath (parent: string option) (name: string) =
         if
             String.IsNullOrWhiteSpace name
-            || name.IndexOfAny([| '/'; '\\' |]) >= 0
+            || name.IndexOfAny [| '/'; '\\' |] >= 0
             || name = "."
             || name = ".."
         then
@@ -251,7 +279,8 @@ module private SolutionMutations =
         | HostFileSystemCaseSemantics.Insensitive -> StringComparer.OrdinalIgnoreCase
         | _ -> StringComparer.Ordinal
 
-    let samePath (comparison: StringComparer) (left: string) (right: string) = comparison.Compare(left, right) = 0
+    let samePath (comparison: StringComparer) (left: string) (right: string) =
+        comparison.Compare(left, right) = 0
 
     let findFolder (workspace: SolutionWorkspace) (nodeId: NodeId) =
         workspace.RootProjection.Folders
@@ -276,7 +305,12 @@ module private SolutionMutations =
     let modelFolder (model: SolutionModel) (path: string) = model.FindFolder path |> Option.ofObj
     let modelProject (model: SolutionModel) (path: string) = model.FindProject path |> Option.ofObj
 
-    let saveToMemory (backingPath: string) (serializer: ISolutionSerializer) (model: SolutionModel) cancellationToken =
+    let saveToMemory
+        (backingPath: string)
+        (serializer: ISolutionSerializer)
+        (model: SolutionModel)
+        cancellationToken
+        =
         task {
             use stream = new MemoryStream()
 
@@ -360,7 +394,8 @@ module private SolutionMutations =
 
         let item =
             workspace.RootProjection.Items
-            |> Seq.exists (fun item -> item.FolderPath |> Option.exists (fun parent -> samePath comparison parent path))
+            |> Seq.exists (fun item ->
+                item.FolderPath |> Option.exists (fun parent -> samePath comparison parent path))
 
         not childFolder && not childProject && not item
 
@@ -386,10 +421,30 @@ module private SolutionMutations =
             |> Seq.toList
 
         let rules =
-            [ ConfigurationRule(BuildDimension.BuildType, solutionBuildType, solutionPlatform, projectBuildType)
-              ConfigurationRule(BuildDimension.Platform, solutionBuildType, solutionPlatform, projectPlatform)
-              ConfigurationRule(BuildDimension.Build, solutionBuildType, solutionPlatform, string builds)
-              ConfigurationRule(BuildDimension.Deploy, solutionBuildType, solutionPlatform, string deploys) ]
+            [ ConfigurationRule(
+                  BuildDimension.BuildType,
+                  solutionBuildType,
+                  solutionPlatform,
+                  projectBuildType
+              )
+              ConfigurationRule(
+                  BuildDimension.Platform,
+                  solutionBuildType,
+                  solutionPlatform,
+                  projectPlatform
+              )
+              ConfigurationRule(
+                  BuildDimension.Build,
+                  solutionBuildType,
+                  solutionPlatform,
+                  string builds
+              )
+              ConfigurationRule(
+                  BuildDimension.Deploy,
+                  solutionBuildType,
+                  solutionPlatform,
+                  string deploys
+              ) ]
 
         project.ProjectConfigurationRules <- List<ConfigurationRule>(retained @ rules)
 
@@ -413,7 +468,7 @@ module private SolutionMutations =
         if remaining.Length = originalCount then
             false
         else
-            project.ProjectConfigurationRules <- List<ConfigurationRule>(remaining)
+            project.ProjectConfigurationRules <- List<ConfigurationRule> remaining
             true
 
 [<AbstractClass; Sealed>]
@@ -441,12 +496,16 @@ type SolutionPersistenceMutator private () =
                 |> Option.defaultValue ImmutableArray<CommandDescriptor>.Empty
             | None ->
                 SolutionMutations.catalog
-                |> Seq.filter (fun command -> command.ApplicableTargetKinds.Contains WorkspaceNodeKind.Workspace)
+                |> Seq.filter (fun command ->
+                    command.ApplicableTargetKinds.Contains WorkspaceNodeKind.Workspace)
                 |> ImmutableArray.CreateRange
 
     static member PlanAsync
-        (workspace: SolutionWorkspace, command: CommandMutationRequest, cancellationToken: CancellationToken)
-        : Task<WorkspaceOutcome<SolutionMutationPlan>> =
+        (
+            workspace: SolutionWorkspace,
+            command: CommandMutationRequest,
+            cancellationToken: CancellationToken
+        ) : Task<WorkspaceOutcome<SolutionMutationPlan>> =
         task {
             if workspace.WorkspaceDescriptor.IsReadOnly then
                 return
@@ -460,7 +519,11 @@ type SolutionPersistenceMutator private () =
                     )
             else
                 match SolutionMutations.descriptor command.CommandId with
-                | None -> return SolutionMutations.missing command.CommandId.Value "The command is not available."
+                | None ->
+                    return
+                        SolutionMutations.missing
+                            command.CommandId.Value
+                            "The command is not available."
                 | Some descriptor ->
                     let targetNode =
                         match command.TargetId with
@@ -470,15 +533,23 @@ type SolutionPersistenceMutator private () =
                             |> Seq.tryFind (fun node -> node.NodeId = id)
                             |> Option.map Some
 
-                    match SolutionMutations.validateArguments descriptor command.Arguments, targetNode with
+                    match
+                        SolutionMutations.validateArguments descriptor command.Arguments, targetNode
+                    with
                     | Error message, _ -> return SolutionMutations.invalid "arguments" message
-                    | _, None -> return SolutionMutations.missing "targetId" "The command target was not found."
-                    | Ok(), Some None when not (descriptor.ApplicableTargetKinds.Contains WorkspaceNodeKind.Workspace) ->
+                    | _, None ->
+                        return
+                            SolutionMutations.missing "targetId" "The command target was not found."
+                    | Ok(), Some None when
+                        not (descriptor.ApplicableTargetKinds.Contains WorkspaceNodeKind.Workspace)
+                        ->
                         return
                             SolutionMutations.missing
                                 "targetId"
                                 "The command target was not found or is not applicable."
-                    | Ok(), Some(Some node) when not (descriptor.ApplicableTargetKinds.Contains node.NodeKind) ->
+                    | Ok(), Some(Some node) when
+                        not (descriptor.ApplicableTargetKinds.Contains node.NodeKind)
+                        ->
                         return
                             SolutionMutations.missing
                                 "targetId"
@@ -504,9 +575,15 @@ type SolutionPersistenceMutator private () =
 
                             let comparison = SolutionMutations.comparer workspace
 
-                            match SolutionSerializers.GetSerializerByMoniker backingPath |> Option.ofObj with
+                            match
+                                SolutionSerializers.GetSerializerByMoniker backingPath
+                                |> Option.ofObj
+                            with
                             | None ->
-                                return SolutionMutations.invalid "solution" "Expected a .sln or .slnx solution file."
+                                return
+                                    SolutionMutations.invalid
+                                        "solution"
+                                        "Expected a .sln or .slnx solution file."
                             | Some serializer ->
                                 let! model = serializer.OpenAsync(backingPath, cancellationToken)
                                 let mutable externalPaths = []
@@ -520,10 +597,15 @@ type SolutionPersistenceMutator private () =
                                     | Some target ->
                                         SolutionMutations.findFolder workspace target
                                         |> Option.map (fun folder -> Ok(Some folder.Path))
-                                        |> Option.defaultValue (Error "The target folder was not found.")
+                                        |> Option.defaultValue (
+                                            Error "The target folder was not found."
+                                        )
 
                                 let targetProject () : Result<SolutionProjectProjection, string> =
-                                    match command.TargetId |> Option.bind (SolutionMutations.findProject workspace) with
+                                    match
+                                        command.TargetId
+                                        |> Option.bind (SolutionMutations.findProject workspace)
+                                    with
                                     | Some project -> Ok project
                                     | None -> Error "The target project was not found."
 
@@ -533,15 +615,21 @@ type SolutionPersistenceMutator private () =
                                         | Some path ->
                                             SolutionMutations.modelFolder model path
                                             |> Option.map Ok
-                                            |> Option.defaultValue (Error "The target folder was not found.")
+                                            |> Option.defaultValue (
+                                                Error "The target folder was not found."
+                                            )
                                         | None -> Error "A solution folder target is required.")
 
                                 let targetProjectModel () : Result<SolutionProjectModel, string> =
                                     targetProject ()
                                     |> Result.bind (fun (projection: SolutionProjectProjection) ->
-                                        SolutionMutations.modelProject model projection.Path.SolutionRelativePath
+                                        SolutionMutations.modelProject
+                                            model
+                                            projection.Path.SolutionRelativePath
                                         |> Option.map Ok
-                                        |> Option.defaultValue (Error "The target project was not found."))
+                                        |> Option.defaultValue (
+                                            Error "The target project was not found."
+                                        ))
 
                                 let apply =
                                     match command.CommandId.Value with
@@ -554,9 +642,13 @@ type SolutionPersistenceMutator private () =
                                                 if
                                                     model.SolutionFolders
                                                     |> Seq.exists (fun folder ->
-                                                        SolutionMutations.samePath comparison folder.Path path)
+                                                        SolutionMutations.samePath
+                                                            comparison
+                                                            folder.Path
+                                                            path)
                                                 then
-                                                    Error "A solution folder with that name already exists."
+                                                    Error
+                                                        "A solution folder with that name already exists."
                                                 else
                                                     model.AddFolder path |> ignore
                                                     Ok()))
@@ -564,14 +656,17 @@ type SolutionPersistenceMutator private () =
                                         SolutionMutations.requiredPath "path" command.Arguments
                                         |> Result.bind (fun path ->
                                             let relative, absolute =
-                                                SolutionMutations.relativePath solutionDirectory path
+                                                SolutionMutations.relativePath
+                                                    solutionDirectory
+                                                    path
 
                                             if
                                                 SolutionMutations.external relative
                                                 || relative = "."
                                                 || not (Directory.Exists absolute)
                                             then
-                                                Error "The directory must exist inside the solution directory."
+                                                Error
+                                                    "The directory must exist inside the solution directory."
                                             else
                                                 let segments =
                                                     relative.Split(
@@ -585,19 +680,27 @@ type SolutionPersistenceMutator private () =
                                                 if
                                                     model.SolutionFolders
                                                     |> Seq.exists (fun value ->
-                                                        SolutionMutations.samePath comparison value.Path folder)
+                                                        SolutionMutations.samePath
+                                                            comparison
+                                                            value.Path
+                                                            folder)
                                                 then
-                                                    Error "The imported solution folder already exists."
+                                                    Error
+                                                        "The imported solution folder already exists."
                                                 else
                                                     model.AddFolder folder |> ignore
                                                     Ok())
                                     | "solution.folder.remove" ->
                                         match
-                                            command.TargetId |> Option.bind (SolutionMutations.findFolder workspace)
+                                            command.TargetId
+                                            |> Option.bind (SolutionMutations.findFolder workspace)
                                         with
                                         | None -> Error "The target folder was not found."
                                         | Some folder ->
-                                            SolutionMutations.optionalBoolean "recursive" false command.Arguments
+                                            SolutionMutations.optionalBoolean
+                                                "recursive"
+                                                false
+                                                command.Arguments
                                             |> Result.bind (fun recursive ->
                                                 if
                                                     not recursive
@@ -608,23 +711,29 @@ type SolutionPersistenceMutator private () =
                                                             folder.Path
                                                     )
                                                 then
-                                                    Error "The solution folder is not empty; recursive must be true."
+                                                    Error
+                                                        "The solution folder is not empty; recursive must be true."
                                                 else
                                                     if recursive then
-                                                        additionalIntents <- [ MutationIntent.RecursiveDelete ]
+                                                        additionalIntents <-
+                                                            [ MutationIntent.RecursiveDelete ]
 
                                                     SolutionMutations.modelFolder model folder.Path
                                                     |> Option.map (fun value ->
                                                         model.RemoveFolder value |> ignore
                                                         Ok())
-                                                    |> Option.defaultValue (Error "The target folder was not found."))
+                                                    |> Option.defaultValue (
+                                                        Error "The target folder was not found."
+                                                    ))
                                     | "solution.item.add" ->
                                         targetFolderModel ()
                                         |> Result.bind (fun folder ->
                                             SolutionMutations.requiredPath "path" command.Arguments
                                             |> Result.bind (fun path ->
                                                 let relative, absolute =
-                                                    SolutionMutations.relativePath solutionDirectory path
+                                                    SolutionMutations.relativePath
+                                                        solutionDirectory
+                                                        path
 
                                                 if SolutionMutations.external relative then
                                                     externalPaths <- [ absolute ]
@@ -632,7 +741,10 @@ type SolutionPersistenceMutator private () =
                                                 if
                                                     folder.Files
                                                     |> Seq.exists (fun item ->
-                                                        SolutionMutations.samePath comparison item relative)
+                                                        SolutionMutations.samePath
+                                                            comparison
+                                                            item
+                                                            relative)
                                                 then
                                                     Error "The solution item already exists."
                                                 else
@@ -640,22 +752,28 @@ type SolutionPersistenceMutator private () =
                                                     Ok()))
                                     | "solution.item.remove" ->
                                         match
-                                            command.TargetId |> Option.bind (SolutionMutations.findItem workspace)
+                                            command.TargetId
+                                            |> Option.bind (SolutionMutations.findItem workspace)
                                         with
                                         | None -> Error "The target solution item was not found."
                                         | Some(item: SolutionItemProjection) ->
                                             item.FolderPath
                                             |> Option.bind (SolutionMutations.modelFolder model)
-                                            |> Option.filter (fun folder -> folder.RemoveFile item.RelativePath)
+                                            |> Option.filter (fun folder ->
+                                                folder.RemoveFile item.RelativePath)
                                             |> Option.map (fun _ -> Ok())
-                                            |> Option.defaultValue (Error "The target solution item was not found.")
+                                            |> Option.defaultValue (
+                                                Error "The target solution item was not found."
+                                            )
                                     | "solution.project.add" ->
                                         targetFolder ()
                                         |> Result.bind (fun parent ->
                                             SolutionMutations.requiredPath "path" command.Arguments
                                             |> Result.bind (fun path ->
                                                 let relative, absolute =
-                                                    SolutionMutations.relativePath solutionDirectory path
+                                                    SolutionMutations.relativePath
+                                                        solutionDirectory
+                                                        path
 
                                                 if not (File.Exists absolute) then
                                                     Error "The project file was not found."
@@ -667,7 +785,8 @@ type SolutionPersistenceMutator private () =
                                                             project.FilePath
                                                             relative)
                                                 then
-                                                    Error "The project already exists in the solution."
+                                                    Error
+                                                        "The project already exists in the solution."
                                                 else
                                                     if SolutionMutations.external relative then
                                                         externalPaths <- [ absolute ]
@@ -676,27 +795,37 @@ type SolutionPersistenceMutator private () =
 
                                                     let folder =
                                                         parent
-                                                        |> Option.bind (SolutionMutations.modelFolder model)
+                                                        |> Option.bind (
+                                                            SolutionMutations.modelFolder model
+                                                        )
                                                         |> Option.toObj
 
-                                                    model.AddProject(relative, null, folder) |> ignore
+                                                    model.AddProject(relative, null, folder)
+                                                    |> ignore
+
                                                     Ok()))
                                     | "solution.project.remove" ->
                                         targetProjectModel ()
-                                        |> Result.map (fun project -> model.RemoveProject project |> ignore)
+                                        |> Result.map (fun project ->
+                                            model.RemoveProject project |> ignore)
                                     | "solution.project.rename" ->
                                         targetProject ()
                                         |> Result.bind (fun projection ->
                                             targetProjectModel ()
                                             |> Result.bind (fun project ->
-                                                SolutionMutations.requiredText "name" command.Arguments
+                                                SolutionMutations.requiredText
+                                                    "name"
+                                                    command.Arguments
                                                 |> Result.bind (fun name ->
                                                     if
-                                                        name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0
-                                                        || name.IndexOfAny(
+                                                        name.IndexOfAny(
+                                                            Path.GetInvalidFileNameChars()
+                                                        )
+                                                        >= 0
+                                                        || name.IndexOfAny
                                                             [| Path.DirectorySeparatorChar
                                                                Path.AltDirectorySeparatorChar |]
-                                                           )
+
                                                            >= 0
                                                         || name = "."
                                                         || name = ".."
@@ -704,14 +833,17 @@ type SolutionPersistenceMutator private () =
                                                         Error
                                                             "The project name must be a single non-empty filename stem."
                                                     else
-                                                        let source = projection.Path.AbsolutePath.Value
+                                                        let source =
+                                                            projection.Path.AbsolutePath.Value
+
                                                         let extension = Path.GetExtension source
 
                                                         let destination =
                                                             Path.Combine(
                                                                 Path.GetDirectoryName source
                                                                 |> Option.ofObj
-                                                                |> Option.defaultValue solutionDirectory,
+                                                                |> Option.defaultValue
+                                                                    solutionDirectory,
                                                                 $"{name}{extension}"
                                                             )
 
@@ -732,7 +864,8 @@ type SolutionPersistenceMutator private () =
                                                                 source = HostFileSystemCaseSemantics.Insensitive
 
                                                         if not (File.Exists source) then
-                                                            Error "The project file to rename was not found."
+                                                            Error
+                                                                "The project file to rename was not found."
                                                         elif
                                                             String.Equals(
                                                                 source,
@@ -740,33 +873,50 @@ type SolutionPersistenceMutator private () =
                                                                 StringComparison.Ordinal
                                                             )
                                                         then
-                                                            Error "The project already has that name."
+                                                            Error
+                                                                "The project already has that name."
                                                         elif
-                                                            SolutionMutations.artifactExists destination
+                                                            SolutionMutations.artifactExists
+                                                                destination
                                                             && not caseOnly
                                                         then
-                                                            Error "The project rename destination already exists."
+                                                            Error
+                                                                "The project rename destination already exists."
                                                         else
                                                             let relative =
-                                                                Path.GetRelativePath(solutionDirectory, destination)
+                                                                Path.GetRelativePath(
+                                                                    solutionDirectory,
+                                                                    destination
+                                                                )
 
                                                             project.FilePath <- relative
-                                                            transactionPaths <- [ source; destination ]
 
-                                                            if SolutionMutations.external relative then
-                                                                externalPaths <- [ source; destination ]
+                                                            transactionPaths <-
+                                                                [ source; destination ]
+
+                                                            if
+                                                                SolutionMutations.external
+                                                                    relative
+                                                            then
+                                                                externalPaths <-
+                                                                    [ source; destination ]
 
                                                             fileRename <-
                                                                 Some
-                                                                    { Source = WorkspaceArtifactPath.Create source
+                                                                    { Source =
+                                                                        WorkspaceArtifactPath.Create
+                                                                            source
                                                                       Destination =
-                                                                        WorkspaceArtifactPath.Create destination }
+                                                                        WorkspaceArtifactPath.Create
+                                                                            destination }
 
                                                             Ok())))
                                     | "solution.project.move" ->
                                         targetProjectModel ()
                                         |> Result.bind (fun project ->
-                                            SolutionMutations.optionalNode "folder" command.Arguments
+                                            SolutionMutations.optionalNode
+                                                "folder"
+                                                command.Arguments
                                             |> Result.bind (function
                                                 | None ->
                                                     project.MoveToFolder null
@@ -774,12 +924,15 @@ type SolutionPersistenceMutator private () =
                                                 | Some id ->
                                                     SolutionMutations.findFolder workspace id
                                                     |> Option.bind (fun folder ->
-                                                        SolutionMutations.modelFolder model folder.Path)
+                                                        SolutionMutations.modelFolder
+                                                            model
+                                                            folder.Path)
                                                     |> Option.map (fun folder ->
                                                         project.MoveToFolder folder
                                                         Ok())
                                                     |> Option.defaultValue (
-                                                        Error "The destination folder was not found."
+                                                        Error
+                                                            "The destination folder was not found."
                                                     )))
                                     | "solution.project.update-path" ->
                                         targetProjectModel ()
@@ -787,20 +940,28 @@ type SolutionPersistenceMutator private () =
                                             SolutionMutations.requiredPath "path" command.Arguments
                                             |> Result.bind (fun path ->
                                                 let relative, absolute =
-                                                    SolutionMutations.relativePath solutionDirectory path
+                                                    SolutionMutations.relativePath
+                                                        solutionDirectory
+                                                        path
 
                                                 if not (File.Exists absolute) then
                                                     Error "The project file was not found."
                                                 elif
                                                     model.SolutionProjects
                                                     |> Seq.exists (fun value ->
-                                                        not (Object.ReferenceEquals(value, project))
+                                                        not (
+                                                            Object.ReferenceEquals(
+                                                                value,
+                                                                project
+                                                            )
+                                                        )
                                                         && SolutionMutations.samePath
                                                             comparison
                                                             value.FilePath
                                                             relative)
                                                 then
-                                                    Error "The project path already exists in the solution."
+                                                    Error
+                                                        "The project path already exists in the solution."
                                                 else
                                                     if SolutionMutations.external relative then
                                                         externalPaths <- [ absolute ]
@@ -814,7 +975,10 @@ type SolutionPersistenceMutator private () =
                                             if
                                                 model.BuildTypes
                                                 |> Seq.exists (fun value ->
-                                                    SolutionMutations.samePath comparison value name)
+                                                    SolutionMutations.samePath
+                                                        comparison
+                                                        value
+                                                        name)
                                             then
                                                 Error "The build type already exists."
                                             else
@@ -823,7 +987,9 @@ type SolutionPersistenceMutator private () =
                                     | "solution.build-type.remove" ->
                                         match
                                             command.TargetId
-                                            |> Option.bind (SolutionMutations.findConfiguration workspace)
+                                            |> Option.bind (
+                                                SolutionMutations.findConfiguration workspace
+                                            )
                                         with
                                         | Some node when model.RemoveBuildType node.Name -> Ok()
                                         | _ -> Error "The build type was not found."
@@ -833,7 +999,10 @@ type SolutionPersistenceMutator private () =
                                             if
                                                 model.Platforms
                                                 |> Seq.exists (fun value ->
-                                                    SolutionMutations.samePath comparison value name)
+                                                    SolutionMutations.samePath
+                                                        comparison
+                                                        value
+                                                        name)
                                             then
                                                 Error "The platform already exists."
                                             else
@@ -841,7 +1010,10 @@ type SolutionPersistenceMutator private () =
                                                 Ok())
                                     | "solution.platform.remove" ->
                                         match
-                                            command.TargetId |> Option.bind (SolutionMutations.findPlatform workspace)
+                                            command.TargetId
+                                            |> Option.bind (
+                                                SolutionMutations.findPlatform workspace
+                                            )
                                         with
                                         | Some node when model.RemovePlatform node.Name -> Ok()
                                         | _ -> Error "The platform was not found."
@@ -849,12 +1021,24 @@ type SolutionPersistenceMutator private () =
                                         targetProjectModel ()
                                         |> Result.bind (fun project ->
                                             match
-                                                SolutionMutations.requiredText "solutionBuildType" command.Arguments,
-                                                SolutionMutations.requiredText "solutionPlatform" command.Arguments,
-                                                SolutionMutations.requiredText "projectBuildType" command.Arguments,
-                                                SolutionMutations.requiredText "projectPlatform" command.Arguments,
-                                                SolutionMutations.requiredBoolean "builds" command.Arguments,
-                                                SolutionMutations.requiredBoolean "deploys" command.Arguments
+                                                SolutionMutations.requiredText
+                                                    "solutionBuildType"
+                                                    command.Arguments,
+                                                SolutionMutations.requiredText
+                                                    "solutionPlatform"
+                                                    command.Arguments,
+                                                SolutionMutations.requiredText
+                                                    "projectBuildType"
+                                                    command.Arguments,
+                                                SolutionMutations.requiredText
+                                                    "projectPlatform"
+                                                    command.Arguments,
+                                                SolutionMutations.requiredBoolean
+                                                    "builds"
+                                                    command.Arguments,
+                                                SolutionMutations.requiredBoolean
+                                                    "deploys"
+                                                    command.Arguments
                                             with
                                             | Ok buildType,
                                               Ok platform,
@@ -864,10 +1048,16 @@ type SolutionPersistenceMutator private () =
                                               Ok deploys when
                                                 model.BuildTypes
                                                 |> Seq.exists (fun value ->
-                                                    SolutionMutations.samePath comparison value buildType)
+                                                    SolutionMutations.samePath
+                                                        comparison
+                                                        value
+                                                        buildType)
                                                 && model.Platforms
                                                    |> Seq.exists (fun value ->
-                                                       SolutionMutations.samePath comparison value platform)
+                                                       SolutionMutations.samePath
+                                                           comparison
+                                                           value
+                                                           platform)
                                                 ->
                                                 SolutionMutations.updateRules
                                                     project
@@ -891,56 +1081,91 @@ type SolutionPersistenceMutator private () =
                                         targetProjectModel ()
                                         |> Result.bind (fun project ->
                                             match
-                                                SolutionMutations.requiredText "solutionBuildType" command.Arguments,
-                                                SolutionMutations.requiredText "solutionPlatform" command.Arguments
+                                                SolutionMutations.requiredText
+                                                    "solutionBuildType"
+                                                    command.Arguments,
+                                                SolutionMutations.requiredText
+                                                    "solutionPlatform"
+                                                    command.Arguments
                                             with
                                             | Ok buildType, Ok platform when
                                                 model.BuildTypes
                                                 |> Seq.exists (fun value ->
-                                                    SolutionMutations.samePath comparison value buildType)
+                                                    SolutionMutations.samePath
+                                                        comparison
+                                                        value
+                                                        buildType)
                                                 && model.Platforms
                                                    |> Seq.exists (fun value ->
-                                                       SolutionMutations.samePath comparison value platform)
+                                                       SolutionMutations.samePath
+                                                           comparison
+                                                           value
+                                                           platform)
                                                 ->
-                                                if SolutionMutations.removeRules project buildType platform then
+                                                if
+                                                    SolutionMutations.removeRules
+                                                        project
+                                                        buildType
+                                                        platform
+                                                then
                                                     Ok()
                                                 else
-                                                    Error "The project configuration was not found."
-                                            | Ok _, Ok _ -> Error "The solution configuration does not exist."
+                                                    Error
+                                                        "The project configuration was not found."
+                                            | Ok _, Ok _ ->
+                                                Error "The solution configuration does not exist."
                                             | Error error, _
                                             | _, Error error -> Error error)
                                     | "solution.dependency.add" ->
                                         targetProjectModel ()
                                         |> Result.bind (fun project ->
-                                            SolutionMutations.requiredNode "dependency" command.Arguments
+                                            SolutionMutations.requiredNode
+                                                "dependency"
+                                                command.Arguments
                                             |> Result.bind (fun dependencyId ->
-                                                SolutionMutations.findProject workspace dependencyId
+                                                SolutionMutations.findProject
+                                                    workspace
+                                                    dependencyId
                                                 |> Option.bind (fun dependency ->
                                                     SolutionMutations.modelProject
                                                         model
                                                         dependency.Path.SolutionRelativePath)
                                                 |> Option.map (fun dependency ->
                                                     if
-                                                        Object.ReferenceEquals(project, dependency)
-                                                        || (project.Dependencies
-                                                            |> Option.ofObj
-                                                            |> Option.map (fun values ->
-                                                                values :> seq<SolutionProjectModel>)
-                                                            |> Option.defaultValue Seq.empty
-                                                            |> Seq.exists (fun value ->
-                                                                Object.ReferenceEquals(value, dependency)))
+                                                        Object.ReferenceEquals(
+                                                            project,
+                                                            dependency
+                                                        )
+                                                        || project.Dependencies
+                                                           |> Option.ofObj
+                                                           |> Option.map (fun values ->
+                                                               values
+                                                               :> seq<SolutionProjectModel>)
+                                                           |> Option.defaultValue Seq.empty
+                                                           |> Seq.exists (fun value ->
+                                                               Object.ReferenceEquals(
+                                                                   value,
+                                                                   dependency
+                                                               ))
                                                     then
-                                                        Error "The solution dependency already exists."
+                                                        Error
+                                                            "The solution dependency already exists."
                                                     else
                                                         project.AddDependency dependency
                                                         Ok())
-                                                |> Option.defaultValue (Error "The dependency project was not found.")))
+                                                |> Option.defaultValue (
+                                                    Error "The dependency project was not found."
+                                                )))
                                     | "solution.dependency.remove" ->
                                         targetProjectModel ()
                                         |> Result.bind (fun project ->
-                                            SolutionMutations.requiredNode "dependency" command.Arguments
+                                            SolutionMutations.requiredNode
+                                                "dependency"
+                                                command.Arguments
                                             |> Result.bind (fun dependencyId ->
-                                                SolutionMutations.findProject workspace dependencyId
+                                                SolutionMutations.findProject
+                                                    workspace
+                                                    dependencyId
                                                 |> Option.bind (fun dependency ->
                                                     SolutionMutations.modelProject
                                                         model
@@ -949,15 +1174,23 @@ type SolutionPersistenceMutator private () =
                                                     if project.RemoveDependency dependency then
                                                         Ok()
                                                     else
-                                                        Error "The solution dependency was not found.")
-                                                |> Option.defaultValue (Error "The dependency project was not found.")))
+                                                        Error
+                                                            "The solution dependency was not found.")
+                                                |> Option.defaultValue (
+                                                    Error "The dependency project was not found."
+                                                )))
                                     | _ -> Error "The command is not available."
 
                                 match apply with
-                                | Error message -> return SolutionMutations.invalid "command" message
+                                | Error message ->
+                                    return SolutionMutations.invalid "command" message
                                 | Ok() ->
                                     let! contents =
-                                        SolutionMutations.saveToMemory backingPath serializer model cancellationToken
+                                        SolutionMutations.saveToMemory
+                                            backingPath
+                                            serializer
+                                            model
+                                            cancellationToken
 
                                     return
                                         Success
@@ -978,14 +1211,24 @@ type SolutionPersistenceMutator private () =
                                 Failure(
                                     Cancelled(
                                         OperationId.New(),
-                                        SolutionMutations.diagnostic "cancelled" "The solution operation was cancelled."
+                                        SolutionMutations.diagnostic
+                                            "cancelled"
+                                            "The solution operation was cancelled."
                                     )
                                 )
                         | :? SolutionException ->
-                            return SolutionMutations.invalid "solution" "The solution file is malformed."
+                            return
+                                SolutionMutations.invalid
+                                    "solution"
+                                    "The solution file is malformed."
                         | :? IOException ->
-                            return SolutionMutations.internalFailure "The solution could not be read or serialized."
+                            return
+                                SolutionMutations.internalFailure
+                                    "The solution could not be read or serialized."
                         | :? UnauthorizedAccessException ->
-                            return SolutionMutations.internalFailure "The solution could not be read or serialized."
-                        | :? ArgumentException as error -> return SolutionMutations.invalid "command" error.Message
+                            return
+                                SolutionMutations.internalFailure
+                                    "The solution could not be read or serialized."
+                        | :? ArgumentException as error ->
+                            return SolutionMutations.invalid "command" error.Message
         }

@@ -33,14 +33,16 @@ module RpcCodec =
     let private security limits =
         MessagePackSecurity.UntrustedData
             .WithMaximumObjectGraphDepth(limits.MaximumDepth)
-            .WithMaximumDecompressedSize(limits.MaximumValueBytes)
+            .WithMaximumDecompressedSize
+            limits.MaximumValueBytes
 
     let private invalid message = Error(RpcDecodeError.Invalid message)
 
     let private safeMessage (error: exn) =
         match error with
         | :? DecoderFallbackException -> "MessagePack strings must contain valid UTF-8."
-        | :? InsufficientExecutionStackException -> "MessagePack nesting exceeds the configured limit."
+        | :? InsufficientExecutionStackException ->
+            "MessagePack nesting exceeds the configured limit."
         | :? OverflowException -> "MessagePack numeric value is outside the supported range."
         | :? MessagePackSerializationException -> "The MessagePack value is malformed."
         | :? ArgumentException when not (String.IsNullOrWhiteSpace error.Message) -> error.Message
@@ -101,7 +103,7 @@ module RpcCodec =
                 if count > min 1000000 limits.MaximumValueBytes then
                     invalidArg "value" "MessagePack arrays exceed the configured item limit."
 
-                let values = ImmutableArray.CreateBuilder<RpcValue>(count)
+                let values = ImmutableArray.CreateBuilder<RpcValue> count
 
                 for _ in 1..count do
                     values.Add(readValue limits configuredSecurity &reader)
@@ -140,12 +142,13 @@ module RpcCodec =
                 RpcValue.Map(fields.ToImmutable())
             finally
                 reader.Depth <- reader.Depth - 1
-        | MessagePackType.Extension -> invalidArg "value" "MessagePack extension values are not allowed."
+        | MessagePackType.Extension ->
+            invalidArg "value" "MessagePack extension values are not allowed."
         | _ -> invalidArg "value" "Unsupported MessagePack value type."
 
     let tryReadValueLength limits (bytes: byte array) =
         try
-            let mutable reader = MessagePackReader(ReadOnlyMemory<byte>(bytes))
+            let mutable reader = MessagePackReader(ReadOnlyMemory<byte> bytes)
 
             reader.Skip()
 
@@ -180,7 +183,8 @@ module RpcCodec =
     let private tryUnsigned32 value =
         match value with
         | RpcValue.Unsigned number when number <= uint64 UInt32.MaxValue -> Some(uint32 number)
-        | RpcValue.Integer number when number >= 0L && number <= int64 UInt32.MaxValue -> Some(uint32 number)
+        | RpcValue.Integer number when number >= 0L && number <= int64 UInt32.MaxValue ->
+            Some(uint32 number)
         | _ -> None
 
     let private tryTag value =
@@ -217,11 +221,12 @@ module RpcCodec =
     let decodeFrame limits (bytes: byte array) =
         match tryReadValueLength limits bytes with
         | Error error -> Error error
-        | Ok consumed when consumed <> bytes.Length -> invalid "Trailing bytes in a frame are not allowed."
+        | Ok consumed when consumed <> bytes.Length ->
+            invalid "Trailing bytes in a frame are not allowed."
         | Ok _ ->
             try
                 let configuredSecurity = security limits
-                let mutable reader = MessagePackReader(ReadOnlyMemory<byte>(bytes))
+                let mutable reader = MessagePackReader(ReadOnlyMemory<byte> bytes)
 
                 if reader.NextMessagePackType <> MessagePackType.Array then
                     invalid "A MessagePack-RPC frame must be an array."
@@ -237,32 +242,43 @@ module RpcCodec =
                             match tryTag tagValue with
                             | Some 0 ->
                                 if count < 2 then
-                                    invalid "A request requires a non-negative uint32-compatible message ID."
+                                    invalid
+                                        "A request requires a non-negative uint32-compatible message ID."
                                 else
                                     match tryReadNext limits configuredSecurity &reader with
                                     | Error error -> Error error
                                     | Ok idValue ->
                                         match tryUnsigned32 idValue with
                                         | None ->
-                                            invalid "A request requires a non-negative uint32-compatible message ID."
+                                            invalid
+                                                "A request requires a non-negative uint32-compatible message ID."
                                         | Some id when count <> 4 ->
                                             Ok(
                                                 RpcFrameDecodeResult.RecoverableError(
                                                     id,
                                                     { Code = "invalid_request"
-                                                      Message = "A request frame must contain exactly four values."
+                                                      Message =
+                                                        "A request frame must contain exactly four values."
                                                       Data = None }
                                                 )
                                             )
                                         | Some id ->
-                                            let methodResult = tryReadNext limits configuredSecurity &reader
-                                            let paramsResult = tryReadNext limits configuredSecurity &reader
+                                            let methodResult =
+                                                tryReadNext limits configuredSecurity &reader
+
+                                            let paramsResult =
+                                                tryReadNext limits configuredSecurity &reader
 
                                             match methodResult, paramsResult with
-                                            | Ok(RpcValue.String methodName), Ok((RpcValue.Map _) as parameters) when
+                                            | Ok(RpcValue.String methodName),
+                                              Ok(RpcValue.Map _ as parameters) when
                                                 not (String.IsNullOrWhiteSpace methodName)
                                                 ->
-                                                Ok(RpcFrameDecodeResult.Frame(Request(id, methodName, parameters)))
+                                                Ok(
+                                                    RpcFrameDecodeResult.Frame(
+                                                        Request(id, methodName, parameters)
+                                                    )
+                                                )
                                             | Ok(RpcValue.String methodName), Ok _ when
                                                 not (String.IsNullOrWhiteSpace methodName)
                                                 ->
@@ -270,7 +286,8 @@ module RpcCodec =
                                                     RpcFrameDecodeResult.RecoverableError(
                                                         id,
                                                         { Code = "invalid_params"
-                                                          Message = "Request params must be a string-key map."
+                                                          Message =
+                                                            "Request params must be a string-key map."
                                                           Data = None }
                                                     )
                                                 )
@@ -283,8 +300,10 @@ module RpcCodec =
                                                         { Code = "invalid_params"
                                                           Message =
                                                             match decodeError with
-                                                            | RpcDecodeError.Invalid message -> message
-                                                            | RpcDecodeError.TooLarge message -> message
+                                                            | RpcDecodeError.Invalid message ->
+                                                                message
+                                                            | RpcDecodeError.TooLarge message ->
+                                                                message
                                                             | RpcDecodeError.Incomplete ->
                                                                 "Request params are incomplete."
                                                           Data = None }
@@ -295,7 +314,8 @@ module RpcCodec =
                                                     RpcFrameDecodeResult.RecoverableError(
                                                         id,
                                                         { Code = "invalid_request"
-                                                          Message = "A request method must be a non-empty UTF-8 string."
+                                                          Message =
+                                                            "A request method must be a non-empty UTF-8 string."
                                                           Data = None }
                                                     )
                                                 )
@@ -308,9 +328,14 @@ module RpcCodec =
                                 | Ok idValue, Ok errorValue, Ok resultValue ->
                                     match tryUnsigned32 idValue, tryError errorValue with
                                     | Some messageId, Ok rpcError ->
-                                        Ok(RpcFrameDecodeResult.Frame(Response(messageId, rpcError, resultValue)))
+                                        Ok(
+                                            RpcFrameDecodeResult.Frame(
+                                                Response(messageId, rpcError, resultValue)
+                                            )
+                                        )
                                     | None, _ ->
-                                        invalid "A response requires a non-negative uint32-compatible message ID."
+                                        invalid
+                                            "A response requires a non-negative uint32-compatible message ID."
                                     | _, Error decodeError -> Error decodeError
                                 | Error decodeError, _, _
                                 | _, Error decodeError, _
@@ -321,16 +346,22 @@ module RpcCodec =
                                 let parameters = tryReadNext limits configuredSecurity &reader
 
                                 match methodName, parameters with
-                                | Ok(RpcValue.String name), Ok((RpcValue.Map _) as notificationParameters) when
+                                | Ok(RpcValue.String name),
+                                  Ok(RpcValue.Map _ as notificationParameters) when
                                     not (String.IsNullOrWhiteSpace name)
                                     ->
-                                    Ok(RpcFrameDecodeResult.Frame(Notification(name, notificationParameters)))
+                                    Ok(
+                                        RpcFrameDecodeResult.Frame(
+                                            Notification(name, notificationParameters)
+                                        )
+                                    )
                                 | Error decodeError, _
                                 | _, Error decodeError -> Error decodeError
                                 | _ ->
                                     invalid
                                         "A notification requires a non-empty string method and string-key params map."
-                            | Some 2 -> invalid "A notification frame must contain exactly three values."
+                            | Some 2 ->
+                                invalid "A notification frame must contain exactly three values."
                             | _ -> invalid "The MessagePack-RPC frame tag must be 0, 1, or 2."
             with
             | :? EndOfStreamException -> Error RpcDecodeError.Incomplete
@@ -359,7 +390,7 @@ module RpcCodec =
 
     let encodeValue value =
         let buffer = ArrayBufferWriter<byte>()
-        let mutable writer = MessagePackWriter(buffer)
+        let mutable writer = MessagePackWriter buffer
         writeValue &writer value
         writer.Flush()
         buffer.WrittenSpan.ToArray()

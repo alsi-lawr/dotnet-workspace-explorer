@@ -20,7 +20,7 @@ type WorkspaceCapabilityId private (value: string) =
     static member Write = write
     override _.ToString() = value
 
-    override _.Equals(other) =
+    override _.Equals other =
         match other with
         | :? WorkspaceCapabilityId as candidate -> value = candidate.Value
         | _ -> false
@@ -69,14 +69,17 @@ type WorkspaceDescriptor =
 
 [<AbstractClass; Sealed>]
 type WorkspaceNodeCapabilities private () =
-    static let readOnly = ImmutableArray.Create(WorkspaceCapabilityId.Read)
+    static let readOnly = ImmutableArray.Create WorkspaceCapabilityId.Read
 
     static let readWrite =
         ImmutableArray.Create(WorkspaceCapabilityId.Read, WorkspaceCapabilityId.Write)
 
     static member For
-        (workspace: WorkspaceDescriptor, kind: WorkspaceNodeKind, capabilityProfile: WorkspaceCapabilityProfile)
-        =
+        (
+            workspace: WorkspaceDescriptor,
+            kind: WorkspaceNodeKind,
+            capabilityProfile: WorkspaceCapabilityProfile
+        ) =
         if isNull (box workspace) then
             nullArg (nameof workspace)
 
@@ -159,7 +162,14 @@ type WorkspaceNode =
             capabilityProfile: WorkspaceCapabilityProfile,
             loadState: WorkspaceNodeLoadState
         ) =
-        WorkspaceNode.CreateCore(workspace, kind, semanticIdentity, displayName, capabilityProfile, loadState)
+        WorkspaceNode.CreateCore(
+            workspace,
+            kind,
+            semanticIdentity,
+            displayName,
+            capabilityProfile,
+            loadState
+        )
 
 type NodeReplacement = { OldId: NodeId; NewId: NodeId }
 
@@ -171,7 +181,7 @@ type ContinuationToken private (value: string) =
 
     override _.ToString() = value
 
-    override _.Equals(other) =
+    override _.Equals other =
         match other with
         | :? ContinuationToken as candidate -> value = candidate.Value
         | _ -> false
@@ -197,7 +207,12 @@ type WorkspaceChange =
     | Added of node: WorkspaceNode * parentId: NodeId option * index: int
     | Removed of nodeId: NodeId * parentId: NodeId option * index: int
     | Updated of node: WorkspaceNode * parentId: NodeId option * index: int
-    | Moved of nodeId: NodeId * oldParentId: NodeId option * oldIndex: int * newParentId: NodeId option * newIndex: int
+    | Moved of
+        nodeId: NodeId *
+        oldParentId: NodeId option *
+        oldIndex: int *
+        newParentId: NodeId option *
+        newIndex: int
     | Replaced of oldNodeId: NodeId * newNode: WorkspaceNode * parentId: NodeId option * index: int
 
 type WorkspaceDelta =

@@ -16,7 +16,7 @@ module private MutationTest =
 
         let mutable now = initial
 
-        member _.Advance(value) = now <- now.Add value
+        member _.Advance value = now <- now.Add value
         override _.GetUtcNow() = now
 
     type RefusingTrash(message: string) =
@@ -26,7 +26,8 @@ module private MutationTest =
     type SabotagingTrash(directory: string) =
         interface TrashBackend with
             member _.MoveToTrash _ =
-                for path in Directory.EnumerateFileSystemEntries(directory, "*.dotnet-plus-rollback-*") do
+                for path in
+                    Directory.EnumerateFileSystemEntries(directory, "*.dotnet-plus-rollback-*") do
                     File.Delete path
 
                 Error { Message = "refused after rollback damage" }
@@ -42,7 +43,7 @@ module private MutationTest =
         let path =
             Path.Combine(Path.GetTempPath(), $"dotnet-cli-plus-{name}-{Guid.NewGuid():N}")
 
-        Directory.CreateDirectory(path) |> ignore
+        Directory.CreateDirectory path |> ignore
         path
 
     let request externalRoots targets intents revision =
@@ -82,7 +83,11 @@ module private MutationTest =
         File.WriteAllText(victim, "victim")
 
         let coordinator =
-            coordinator root TimeProvider.System (fun () -> WorkspaceRevision.Create 0L) (trash root)
+            coordinator
+                root
+                TimeProvider.System
+                (fun () -> WorkspaceRevision.Create 0L)
+                (trash root)
 
         let request = request [] [ target; victim ] [ MutationIntent.Overwrite ] 0L
 
@@ -91,7 +96,11 @@ module private MutationTest =
               MutationAction.Trash victim ]
 
         let preview = preview coordinator request actions
-        root, target, victim, coordinator.Execute(request, actions, preview.Confirmation, CancellationToken.None)
+
+        root,
+        target,
+        victim,
+        coordinator.Execute(request, actions, preview.Confirmation, CancellationToken.None)
 
 type MutationCoordinatorTests() =
     [<Fact>]
@@ -107,7 +116,7 @@ type MutationCoordinatorTests() =
                     root
                     TimeProvider.System
                     (fun () -> WorkspaceRevision.Create 0L)
-                    (MutationTest.RefusingTrash("unused"))
+                    (MutationTest.RefusingTrash "unused")
 
             let request = MutationTest.request [] [ target ] [ MutationIntent.Overwrite ] 0L
 
@@ -150,7 +159,7 @@ type MutationCoordinatorTests() =
                     root
                     TimeProvider.System
                     (fun () -> WorkspaceRevision.Create revision)
-                    (MutationTest.RefusingTrash("unused"))
+                    (MutationTest.RefusingTrash "unused")
 
             let request =
                 MutationTest.request [] [ target ] [ MutationIntent.Overwrite ] revision
@@ -161,7 +170,9 @@ type MutationCoordinatorTests() =
             let preview = MutationTest.preview coordinator request actions
             revision <- 8L
 
-            match coordinator.Execute(request, actions, preview.Confirmation, CancellationToken.None) with
+            match
+                coordinator.Execute(request, actions, preview.Confirmation, CancellationToken.None)
+            with
             | Failure(Conflict _) -> ()
             | outcome -> failwithf "Expected revision conflict, got %A" outcome
 
@@ -182,7 +193,7 @@ type MutationCoordinatorTests() =
                     root
                     TimeProvider.System
                     (fun () -> WorkspaceRevision.Create 0L)
-                    (MutationTest.RefusingTrash("unused"))
+                    (MutationTest.RefusingTrash "unused")
 
             let request = MutationTest.request [] [ target ] [ MutationIntent.Overwrite ] 0L
 
@@ -192,7 +203,9 @@ type MutationCoordinatorTests() =
             let preview = MutationTest.preview coordinator request actions
             File.WriteAllText(target, "external")
 
-            match coordinator.Execute(request, actions, preview.Confirmation, CancellationToken.None) with
+            match
+                coordinator.Execute(request, actions, preview.Confirmation, CancellationToken.None)
+            with
             | Failure(Conflict _) -> ()
             | outcome -> failwithf "Expected fingerprint conflict, got %A" outcome
 
@@ -207,14 +220,14 @@ type MutationCoordinatorTests() =
         try
             let target = Path.Combine(root, "target.txt")
             File.WriteAllText(target, "original")
-            let clock = MutationTest.Clock(DateTimeOffset.UtcNow)
+            let clock = MutationTest.Clock DateTimeOffset.UtcNow
 
             let coordinator =
                 MutationTest.coordinator
                     root
                     clock
                     (fun () -> WorkspaceRevision.Create 0L)
-                    (MutationTest.RefusingTrash("unused"))
+                    (MutationTest.RefusingTrash "unused")
 
             let request = MutationTest.request [] [ target ] [ MutationIntent.Overwrite ] 0L
 
@@ -245,7 +258,7 @@ type MutationCoordinatorTests() =
                     root
                     TimeProvider.System
                     (fun () -> WorkspaceRevision.Create 0L)
-                    (MutationTest.RefusingTrash("unused"))
+                    (MutationTest.RefusingTrash "unused")
 
             coordinator.Prepare(
                 MutationTest.request [] [ target ] [] 0L,
@@ -276,12 +289,16 @@ type MutationCoordinatorTests() =
 
             MutationTest.preview
                 coordinator
-                (MutationTest.request [ external ] [ outside ] [ MutationIntent.AccessExternalPath ] 0L)
+                (MutationTest.request
+                    [ external ]
+                    [ outside ]
+                    [ MutationIntent.AccessExternalPath ]
+                    0L)
                 []
             |> ignore
 
             let nonEmpty = Path.Combine(root, "non-empty")
-            Directory.CreateDirectory(nonEmpty) |> ignore
+            Directory.CreateDirectory nonEmpty |> ignore
             File.WriteAllText(Path.Combine(nonEmpty, "child.txt"), "child")
 
             coordinator.Prepare(
@@ -314,7 +331,7 @@ type MutationCoordinatorTests() =
                     root
                     TimeProvider.System
                     (fun () -> WorkspaceRevision.Create 0L)
-                    (MutationTest.RefusingTrash("unused"))
+                    (MutationTest.RefusingTrash "unused")
 
             let replaceRequest =
                 MutationTest.request [] [ target ] [ MutationIntent.Overwrite ] 0L
@@ -324,7 +341,12 @@ type MutationCoordinatorTests() =
 
             Assert.Equal(
                 Success Applied,
-                coordinator.Execute(replaceRequest, replace, replacePreview.Confirmation, CancellationToken.None)
+                coordinator.Execute(
+                    replaceRequest,
+                    replace,
+                    replacePreview.Confirmation,
+                    CancellationToken.None
+                )
             )
 
             let renamed = Path.Combine(root, "target.txt")
@@ -334,12 +356,19 @@ type MutationCoordinatorTests() =
 
             Assert.Equal(
                 Success Applied,
-                coordinator.Execute(renameRequest, rename, renamePreview.Confirmation, CancellationToken.None)
+                coordinator.Execute(
+                    renameRequest,
+                    rename,
+                    renamePreview.Confirmation,
+                    CancellationToken.None
+                )
             )
 
             Assert.Equal("new", File.ReadAllText renamed)
 
-            Assert.Empty(Directory.EnumerateFileSystemEntries(root, "*.dotnet-plus-*") |> Seq.toArray)
+            Assert.Empty(
+                Directory.EnumerateFileSystemEntries(root, "*.dotnet-plus-*") |> Seq.toArray
+            )
         finally
             Directory.Delete(root, true)
 
@@ -358,7 +387,7 @@ type MutationCoordinatorTests() =
                         root
                         TimeProvider.System
                         (fun () -> WorkspaceRevision.Create 0L)
-                        (MutationTest.RefusingTrash("unused"))
+                        (MutationTest.RefusingTrash "unused")
 
                 let replacementLink = Path.Combine(root, "replacement-link")
                 File.CreateSymbolicLink(replacementLink, outside) |> ignore
@@ -367,13 +396,21 @@ type MutationCoordinatorTests() =
                     MutationTest.request [] [ replacementLink ] [ MutationIntent.Overwrite ] 0L
 
                 let linkReplacement =
-                    [ MutationAction.ReplaceFile(replacementLink, Encoding.UTF8.GetBytes "replacement") ]
+                    [ MutationAction.ReplaceFile(
+                          replacementLink,
+                          Encoding.UTF8.GetBytes "replacement"
+                      ) ]
 
                 let linkPreview = MutationTest.preview coordinator linkRequest linkReplacement
 
                 Assert.Equal(
                     Success Applied,
-                    coordinator.Execute(linkRequest, linkReplacement, linkPreview.Confirmation, CancellationToken.None)
+                    coordinator.Execute(
+                        linkRequest,
+                        linkReplacement,
+                        linkPreview.Confirmation,
+                        CancellationToken.None
+                    )
                 )
 
                 Assert.Equal("replacement", File.ReadAllText replacementLink)
@@ -390,7 +427,12 @@ type MutationCoordinatorTests() =
 
                 Assert.Equal(
                     Success Applied,
-                    coordinator.Execute(brokenRequest, brokenDelete, brokenPreview.Confirmation, CancellationToken.None)
+                    coordinator.Execute(
+                        brokenRequest,
+                        brokenDelete,
+                        brokenPreview.Confirmation,
+                        CancellationToken.None
+                    )
                 )
 
                 Assert.Null((FileInfo broken).LinkTarget)
@@ -398,11 +440,14 @@ type MutationCoordinatorTests() =
                 let linkedDirectory = Path.Combine(root, "linked-directory")
                 Directory.CreateSymbolicLink(linkedDirectory, external) |> ignore
 
-                coordinator.Prepare(MutationTest.request [] [ Path.Combine(linkedDirectory, "outside.txt") ] [] 0L, [])
+                coordinator.Prepare(
+                    MutationTest.request [] [ Path.Combine(linkedDirectory, "outside.txt") ] [] 0L,
+                    []
+                )
                 |> MutationTest.assertInvalid
 
                 let tree = Path.Combine(root, "tree")
-                Directory.CreateDirectory(tree) |> ignore
+                Directory.CreateDirectory tree |> ignore
                 Directory.CreateSymbolicLink(Path.Combine(tree, "link"), external) |> ignore
 
                 coordinator.Prepare(MutationTest.request [] [ tree ] [] 0L, [])
@@ -416,7 +461,7 @@ type MutationCoordinatorTests() =
         let root = MutationTest.directory "move"
 
         let destinationRoot =
-            if OperatingSystem.IsLinux() && Directory.Exists("/dev/shm") then
+            if OperatingSystem.IsLinux() && Directory.Exists "/dev/shm" then
                 "/dev/shm"
             else
                 root
@@ -426,7 +471,7 @@ type MutationCoordinatorTests() =
 
         try
             let source = Path.Combine(root, "source")
-            Directory.CreateDirectory(source) |> ignore
+            Directory.CreateDirectory source |> ignore
             File.WriteAllText(Path.Combine(source, "child.txt"), "child")
 
             let coordinator =
@@ -434,7 +479,7 @@ type MutationCoordinatorTests() =
                     root
                     TimeProvider.System
                     (fun () -> WorkspaceRevision.Create 0L)
-                    (MutationTest.RefusingTrash("unused"))
+                    (MutationTest.RefusingTrash "unused")
 
             let isExternal = Path.GetFullPath destinationRoot <> Path.GetFullPath root
 
@@ -467,7 +512,7 @@ type MutationCoordinatorTests() =
     [<Fact>]
     member _.``should roll back prior writes when trash refuses deletion``() =
         let root, target, victim, outcome =
-            MutationTest.runCompensation (fun _ -> MutationTest.RefusingTrash("expected refusal"))
+            MutationTest.runCompensation (fun _ -> MutationTest.RefusingTrash "expected refusal")
 
         try
             match outcome with
@@ -523,7 +568,9 @@ type MutationCoordinatorTests() =
 
             let preview = MutationTest.preview coordinator request actions
 
-            match coordinator.Execute(request, actions, preview.Confirmation, cancellation.Token) with
+            match
+                coordinator.Execute(request, actions, preview.Confirmation, cancellation.Token)
+            with
             | Failure(PartialRecoveryRequired(detail, _)) -> Assert.Contains(victim, detail)
             | result -> failwithf "Expected partial cancellation result, got %A" result
 

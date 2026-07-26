@@ -3,16 +3,15 @@ namespace Dotnet.CLI.Plus.Transport
 #nowarn "3511"
 
 open System
-open System.Collections.Generic
 open System.IO
 open System.Threading
 open System.Threading.Tasks
 
 type RpcOutboundFrameTooLargeException(limit: int, actual: int) =
     inherit
-        InvalidOperationException(
+        InvalidOperationException
             $"The encoded RPC frame is {actual} bytes and exceeds the negotiated {limit}-byte limit."
-        )
+
 
     member _.Limit = limit
     member _.Actual = actual
@@ -38,7 +37,11 @@ type RpcSessionConfiguration =
       GetOutboundFrameLimit: unit -> int
       Initialize: RpcValue -> CancellationToken -> Task<Result<RpcValue, RpcError>>
       Dispatch:
-          RpcSessionContext -> string -> RpcValue -> CancellationToken -> Task<Result<RpcDispatchResult, RpcError>> }
+          RpcSessionContext
+              -> string
+              -> RpcValue
+              -> CancellationToken
+              -> Task<Result<RpcDispatchResult, RpcError>> }
 
 [<RequireQualifiedAccess>]
 module RpcErrors =
@@ -54,7 +57,10 @@ module RpcErrors =
         create "not_initialized" "initialize must be called before other methods." None
 
     let unknownMethod name =
-        create "unknown_method" $"The method '{name}' is not available in this protocol profile." None
+        create
+            "unknown_method"
+            $"The method '{name}' is not available in this protocol profile."
+            None
 
     let unsupported message =
         create "unsupported_capability" message None
@@ -75,7 +81,12 @@ module RpcSession =
         | SizeErrorResponse
 
     type private SynchronizedWriter
-        (output: Stream, getOutboundLimit: unit -> int, hardLimit: int, cancellationToken: CancellationToken) =
+        (
+            output: Stream,
+            getOutboundLimit: unit -> int,
+            hardLimit: int,
+            cancellationToken: CancellationToken
+        ) =
         let gate = new SemaphoreSlim(1, 1)
 
         let outboundLimit () =
@@ -100,7 +111,9 @@ module RpcSession =
                         return OriginalResponse
                     else
                         let fallback =
-                            RpcCodec.encodeFrame (Response(messageId, Some RpcErrors.responseTooLarge, RpcValue.Nil))
+                            RpcCodec.encodeFrame (
+                                Response(messageId, Some RpcErrors.responseTooLarge, RpcValue.Nil)
+                            )
 
                         if fallback.Length > limit then
                             raise (RpcOutboundFrameTooLargeException(limit, fallback.Length))
@@ -185,11 +198,11 @@ module RpcSession =
                     cancellationToken
                 )
 
-            let sink = RpcNotificationSink(writer.WriteNotificationAsync)
+            let sink = RpcNotificationSink writer.WriteNotificationAsync
             let backgroundTasks = ResizeArray<Task>()
 
             let backgroundFault =
-                TaskCompletionSource<exn>(TaskCreationOptions.RunContinuationsAsynchronously)
+                TaskCompletionSource<exn> TaskCreationOptions.RunContinuationsAsynchronously
 
             let pending = ResizeArray<byte>()
             let buffer = Array.zeroCreate<byte> (1024 * 1024)
@@ -203,7 +216,7 @@ module RpcSession =
             let fatalDiagnostic (message: string) =
                 task {
                     if Interlocked.CompareExchange(&fatalState, 1, 0) = 0 then
-                        do! error.WriteLineAsync($"dotnet-plus pipe protocol failure: {message}")
+                        do! error.WriteLineAsync $"dotnet-plus pipe protocol failure: {message}"
                         do! error.FlushAsync()
                 }
 
@@ -221,7 +234,10 @@ module RpcSession =
                         try
                             do! work sink backgroundCancellation.Token
                         with
-                        | :? OperationCanceledException when backgroundCancellation.IsCancellationRequested -> ()
+                        | :? OperationCanceledException when
+                            backgroundCancellation.IsCancellationRequested
+                            ->
+                            ()
                         | exceptionValue -> reportBackgroundFault exceptionValue
                     }
 
@@ -244,7 +260,10 @@ module RpcSession =
 
                     if read = 0 then
                         if pending.Count > 0 then
-                            do! fatalDiagnostic "The input ended with an incomplete MessagePack value."
+                            do!
+                                fatalDiagnostic
+                                    "The input ended with an incomplete MessagePack value."
+
                             exitCode <- protocolFailure
                         else
                             stopping <- true
@@ -273,7 +292,9 @@ module RpcSession =
                                     if methodName <> "initialize" && not initialized then
                                         let! _ = writeError id RpcErrors.preInitialize
                                         ()
-                                    elif not (isCallableMethod configuration.Profile methodName) then
+                                    elif
+                                        not (isCallableMethod configuration.Profile methodName)
+                                    then
                                         let! _ = writeError id (RpcErrors.unknownMethod methodName)
                                         ()
                                     elif methodName = "initialize" then
@@ -288,11 +309,14 @@ module RpcSession =
                                         else
                                             let! initialization =
                                                 safelyInvoke (fun () ->
-                                                    configuration.Initialize parameters cancellationToken)
+                                                    configuration.Initialize
+                                                        parameters
+                                                        cancellationToken)
 
                                             match initialization with
                                             | Ok result ->
-                                                let! outcome = writer.WriteResponseAsync(id, None, result)
+                                                let! outcome =
+                                                    writer.WriteResponseAsync(id, None, result)
 
                                                 if outcome = OriginalResponse then
                                                     initialized <- true
@@ -307,7 +331,11 @@ module RpcSession =
 
                                         let! dispatched =
                                             safelyInvoke (fun () ->
-                                                configuration.Dispatch context methodName parameters cancellationToken)
+                                                configuration.Dispatch
+                                                    context
+                                                    methodName
+                                                    parameters
+                                                    cancellationToken)
 
                                         match dispatched with
                                         | Error rpcError ->
@@ -320,18 +348,24 @@ module RpcSession =
                                             if backgroundFault.Task.IsCompleted then
                                                 raise (OperationCanceledException())
 
-                                            let! _ = writer.WriteResponseAsync(id, None, result.Result)
+                                            let! _ =
+                                                writer.WriteResponseAsync(id, None, result.Result)
+
                                             ()
                                             stopping <- true
                                         | Ok result ->
-                                            let! outcome = writer.WriteResponseAsync(id, None, result.Result)
+                                            let! outcome =
+                                                writer.WriteResponseAsync(id, None, result.Result)
 
                                             try
                                                 if outcome = OriginalResponse then
                                                     for notification in result.Notifications do
-                                                        do! writer.WriteNotificationAsync notification
+                                                        do!
+                                                            writer.WriteNotificationAsync
+                                                                notification
 
-                                                    result.BackgroundWork |> Option.iter startBackground
+                                                    result.BackgroundWork
+                                                    |> Option.iter startBackground
                                             finally
                                                 result.AfterResponse
                                                 |> Option.iter (fun action ->
@@ -353,7 +387,10 @@ module RpcSession =
                 exitCode <- cancelled
                 stopping <- true
             | _ ->
-                do! fatalDiagnostic "The RPC session failed while reading or writing protocol frames."
+                do!
+                    fatalDiagnostic
+                        "The RPC session failed while reading or writing protocol frames."
+
                 exitCode <- protocolFailure
                 stopping <- true
 

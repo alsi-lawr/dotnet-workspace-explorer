@@ -12,7 +12,7 @@ open Microsoft.VisualStudio.SolutionPersistence.Serializer
 open Xunit
 
 module private ConformanceFixture =
-    let private utf8 = UTF8Encoding(false)
+    let private utf8 = UTF8Encoding false
 
     let private write path contents =
         use writer = new StreamWriter(path, false, utf8)
@@ -50,7 +50,7 @@ module private ConformanceFixture =
         let solutionSource = Path.Combine(solutions, "src")
         let projection = Path.Combine(msbuild, "Projection")
         Directory.CreateDirectory(Path.Combine(solutions, "Filters")) |> ignore
-        Directory.CreateDirectory(solutionSource) |> ignore
+        Directory.CreateDirectory solutionSource |> ignore
         Directory.CreateDirectory(Path.Combine(projection, "Generated")) |> ignore
 
         writeLines
@@ -135,31 +135,31 @@ module private ConformanceFixture =
         let solution = Path.Combine(directory, "Scale.slnx")
 
         write solution (fun writer ->
-            writer.WriteLine("<Solution>")
+            writer.WriteLine "<Solution>"
 
             for project in 1..500 do
-                writer.WriteLine($"  <Project Path=\"src/P{project:D4}/P{project:D4}.csproj\" />")
+                writer.WriteLine $"  <Project Path=\"src/P{project:D4}/P{project:D4}.csproj\" />"
 
-            writer.WriteLine("</Solution>"))
+            writer.WriteLine "</Solution>")
 
         for project in 1..500 do
             let directory = Path.Combine(directory, "src", $"P{project:D4}")
             Directory.CreateDirectory directory |> ignore
 
             write (Path.Combine(directory, $"P{project:D4}.csproj")) (fun writer ->
-                writer.WriteLine("<Project Sdk=\"Microsoft.NET.Sdk\">")
+                writer.WriteLine "<Project Sdk=\"Microsoft.NET.Sdk\">"
 
-                writer.WriteLine(
+                writer.WriteLine
                     "  <PropertyGroup><TargetFramework>net10.0</TargetFramework><EnableDefaultCompileItems>false</EnableDefaultCompileItems></PropertyGroup>"
-                )
 
-                writer.WriteLine("  <ItemGroup>")
+
+                writer.WriteLine "  <ItemGroup>"
 
                 for node in 1..500 do
-                    writer.WriteLine($"    <Compile Include=\"Items/N{node:D4}.cs\" />")
+                    writer.WriteLine $"    <Compile Include=\"Items/N{node:D4}.cs\" />"
 
-                writer.WriteLine("  </ItemGroup>")
-                writer.WriteLine("</Project>"))
+                writer.WriteLine "  </ItemGroup>"
+                writer.WriteLine "</Project>")
 
         solution
 
@@ -173,7 +173,9 @@ module private ConformanceFixture =
 
 type ConformanceFixtureTests() =
     [<Fact>]
-    member _.``should regenerate shared fixtures and the scale corpus exactly with non-packable assets``() =
+    member _.``should regenerate shared fixtures and the scale corpus exactly with non-packable assets``
+        ()
+        =
         let root = ConformanceFixture.repositoryRoot AppContext.BaseDirectory
 
         for project in
@@ -185,10 +187,11 @@ type ConformanceFixtureTests() =
                 |> Seq.filter (fun item ->
                     match item.Attribute(XName.Get "Include") with
                     | null -> false
-                    | includePath -> includePath.Value.Contains("ConformanceFixtures", StringComparison.Ordinal))
+                    | includePath ->
+                        includePath.Value.Contains("ConformanceFixtures", StringComparison.Ordinal))
                 |> Seq.toArray
 
-            Assert.NotEmpty(items)
+            Assert.NotEmpty items
 
             Assert.All(
                 items,
@@ -224,16 +227,20 @@ type ConformanceFixtureTests() =
                 (Path.Combine(small, "MSBuild"))
 
             let firstSolution = ConformanceFixture.generateScale first
-            let secondSolution = ConformanceFixture.generateScale second
+            let _ = ConformanceFixture.generateScale second
 
             let firstProjects =
-                Directory.EnumerateFiles(Path.Combine(first, "src"), "*.csproj", SearchOption.AllDirectories)
+                Directory.EnumerateFiles(
+                    Path.Combine(first, "src"),
+                    "*.csproj",
+                    SearchOption.AllDirectories
+                )
                 |> Seq.toArray
 
             Assert.Equal(
                 500,
-                File.ReadLines(firstSolution)
-                |> Seq.filter (_.Contains("<Project Path="))
+                File.ReadLines firstSolution
+                |> Seq.filter _.Contains("<Project Path=")
                 |> Seq.length
             )
 
@@ -243,8 +250,8 @@ type ConformanceFixtureTests() =
                 250000,
                 firstProjects
                 |> Seq.sumBy (fun project ->
-                    File.ReadLines(project)
-                    |> Seq.filter (_.Contains("<Compile Include="))
+                    File.ReadLines project
+                    |> Seq.filter _.Contains("<Compile Include=")
                     |> Seq.length)
             )
 

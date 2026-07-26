@@ -54,7 +54,8 @@ type WorkspaceFailure =
         ) =
         match this with
         | InvalidInput(inputName, diagnostic) -> onInvalidInput.Invoke(inputName, diagnostic)
-        | UnsupportedCapability(capability, diagnostic) -> onUnsupportedCapability.Invoke(capability, diagnostic)
+        | UnsupportedCapability(capability, diagnostic) ->
+            onUnsupportedCapability.Invoke(capability, diagnostic)
         | NotFound(target, diagnostic) -> onNotFound.Invoke(target, diagnostic)
         | AmbiguousTarget(target, diagnostic) -> onAmbiguousTarget.Invoke(target, diagnostic)
         | Conflict(expectedRevision, actualRevision, diagnostic) ->
@@ -101,7 +102,11 @@ type WorkspaceOutcome<'value> =
 [<AbstractClass; Sealed>]
 type WorkspaceRevisionPrecondition private () =
     static member Check
-        (expectedRevision: WorkspaceRevision, actualRevision: WorkspaceRevision, conflictDiagnostic: WorkspaceDiagnostic) =
+        (
+            expectedRevision: WorkspaceRevision,
+            actualRevision: WorkspaceRevision,
+            conflictDiagnostic: WorkspaceDiagnostic
+        ) =
         if isNull (box expectedRevision) then
             nullArg (nameof expectedRevision)
 

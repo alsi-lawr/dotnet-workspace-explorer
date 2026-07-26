@@ -29,8 +29,13 @@ module private Test =
             else
                 match RpcCodec.tryReadValueLength RpcCodec.secureLimits bytes[offset..] with
                 | Ok size ->
-                    match RpcCodec.decodeFrame RpcCodec.secureLimits bytes[offset .. offset + size - 1] with
-                    | Ok(RpcFrameDecodeResult.Frame frame) -> consume (offset + size) ((frame, size) :: decoded)
+                    match
+                        RpcCodec.decodeFrame
+                            RpcCodec.secureLimits
+                            bytes[offset .. offset + size - 1]
+                    with
+                    | Ok(RpcFrameDecodeResult.Frame frame) ->
+                        consume (offset + size) ((frame, size) :: decoded)
                     | result -> failwithf "Response decode failed: %A" result
                 | Error error -> failwithf "Response length decode failed: %A" error
 
@@ -71,7 +76,11 @@ module private Test =
           Dispatch = dispatch }
 
     let configuration profile initialize dispatch =
-        configurationWithLimit profile (fun () -> RpcCodec.secureLimits.MaximumValueBytes) initialize dispatch
+        configurationWithLimit
+            profile
+            (fun () -> RpcCodec.secureLimits.MaximumValueBytes)
+            initialize
+            dispatch
 
     let defaultConfiguration profile =
         configuration
@@ -79,7 +88,11 @@ module private Test =
             (fun _ _ -> Task.FromResult(Ok(map [ "ok", RpcValue.Boolean true ])))
             (fun _ methodName _ _ ->
                 Task.FromResult(
-                    Ok(dispatchResult (map [ "method", RpcValue.String methodName ]) (methodName = "shutdown"))
+                    Ok(
+                        dispatchResult
+                            (map [ "method", RpcValue.String methodName ])
+                            (methodName = "shutdown")
+                    )
                 ))
 
     let runStream configuration (input: Stream) cancellationToken =
@@ -112,7 +125,7 @@ type private CancellingReadStream(cancellation: CancellationTokenSource) =
 
     override _.ReadAsync(_: Memory<byte>, cancellationToken: CancellationToken) =
         cancellation.Cancel()
-        ValueTask<int>(Task.FromCanceled<int>(cancellationToken))
+        ValueTask<int>(Task.FromCanceled<int> cancellationToken)
 
 type private BlockingAfterDataStream(data: byte array) =
     inherit Stream()
@@ -135,9 +148,9 @@ type private BlockingAfterDataStream(data: byte array) =
     override _.ReadAsync(buffer: Memory<byte>, cancellationToken: CancellationToken) =
         if offset < data.Length then
             let count = min buffer.Length (data.Length - offset)
-            data.AsSpan(offset, count).CopyTo(buffer.Span)
+            data.AsSpan(offset, count).CopyTo buffer.Span
             offset <- offset + count
-            ValueTask<int>(count)
+            ValueTask<int> count
         else
             ValueTask<int>(
                 task {
@@ -161,10 +174,10 @@ type private FailingWriteStream() =
     override _.Read(_, _, _) = raise (NotSupportedException())
     override _.Seek(_, _) = raise (NotSupportedException())
     override _.SetLength _ = raise (NotSupportedException())
-    override _.Write(_, _, _) = raise (IOException("write failed"))
+    override _.Write(_, _, _) = raise (IOException "write failed")
 
     override _.WriteAsync(_: ReadOnlyMemory<byte>, _: CancellationToken) =
-        ValueTask(Task.FromException(IOException("write failed")))
+        ValueTask(Task.FromException(IOException "write failed"))
 
 type TransportTests() =
     [<Fact>]
@@ -177,17 +190,21 @@ type TransportTests() =
         let cases =
             [ "standard-request.mpack", Request(7u, "x", Test.empty)
               "standard-response.mpack", Response(7u, Some error, Test.empty)
-              "standard-notification.mpack", Notification("n", Test.map [ "v", RpcValue.Boolean true ])
+              "standard-notification.mpack",
+              Notification("n", Test.map [ "v", RpcValue.Boolean true ])
               "initialize-request.mpack",
               Request(
                   10u,
                   "initialize",
                   Test.map
-                      [ "protocolVersion", Test.map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 0L ]
+                      [ "protocolVersion",
+                        Test.map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 0L ]
                         "clientInfo", Test.map [ "name", RpcValue.String "fixture" ]
                         "capabilities", RpcValue.array [ RpcValue.String "workspace.root" ]
                         "limits",
-                        Test.map [ "maxFrameBytes", RpcValue.Integer 4096L; "maxPageSize", RpcValue.Integer 1L ] ]
+                        Test.map
+                            [ "maxFrameBytes", RpcValue.Integer 4096L
+                              "maxPageSize", RpcValue.Integer 1L ] ]
               )
               "root-request.mpack", Request(11u, "workspace/root", Test.empty)
               "page-request.mpack",
@@ -199,7 +216,11 @@ type TransportTests() =
                         "pageSize", RpcValue.Integer 1L ]
               )
               "refresh-request.mpack",
-              Request(13u, "workspace/refresh", Test.map [ "expectedRevision", RpcValue.Integer 1L ])
+              Request(
+                  13u,
+                  "workspace/refresh",
+                  Test.map [ "expectedRevision", RpcValue.Integer 1L ]
+              )
               "delta-notification.mpack",
               Notification(
                   "workspace/delta",
@@ -219,7 +240,11 @@ type TransportTests() =
                         "diagnostics", RpcValue.array [] ]
               )
               "cancel-request.mpack",
-              Request(14u, "operation/cancel", Test.map [ "operationId", RpcValue.String "fixture-export" ])
+              Request(
+                  14u,
+                  "operation/cancel",
+                  Test.map [ "operationId", RpcValue.String "fixture-export" ]
+              )
               "shutdown-request.mpack", Request(15u, "shutdown", Test.empty) ]
 
         for name, frame in cases do
@@ -228,12 +253,17 @@ type TransportTests() =
             Assert.Equal<byte>(golden, RpcCodec.encodeFrame decoded)
 
             match decoded with
-            | Request(7u, "x", RpcValue.Map fields) -> Assert.Empty(fields)
+            | Request(7u, "x", RpcValue.Map fields) -> Assert.Empty fields
             | Response(7u, Some decoded, RpcValue.Map result) ->
                 Assert.Equal("e", decoded.Code)
                 Assert.Equal("m", decoded.Message)
-                Assert.Equal(Some(RpcValue.Unsigned 1UL), decoded.Data |> Option.bind (RpcValue.tryField "d"))
-                Assert.Empty(result)
+
+                Assert.Equal(
+                    Some(RpcValue.Unsigned 1UL),
+                    decoded.Data |> Option.bind (RpcValue.tryField "d")
+                )
+
+                Assert.Empty result
             | Notification("n", parameters) ->
                 Assert.Equal(Some(RpcValue.Boolean true), RpcValue.tryField "v" parameters)
             | Request(_, "initialize", _)
@@ -316,7 +346,10 @@ type TransportTests() =
               ),
               42u,
               "invalid_params"
-              "invalid UTF-8 method", [| 0x94uy; 0uy; 43uy; 0xa1uy; 0xffuy; 0x80uy |], 43u, "invalid_request"
+              "invalid UTF-8 method",
+              [| 0x94uy; 0uy; 43uy; 0xa1uy; 0xffuy; 0x80uy |],
+              43u,
+              "invalid_request"
               "invalid params map key",
               [| 0x94uy; 0uy; 44uy; 0xa1uy; byte 'x'; 0x81uy; 1uy; 0xc0uy |],
               44u,
@@ -366,11 +399,14 @@ type TransportTests() =
                     10u,
                     "initialize",
                     Test.map
-                        [ "protocolVersion", Test.map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 0L ]
+                        [ "protocolVersion",
+                          Test.map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 0L ]
                           "clientInfo", Test.map [ "name", RpcValue.String "fixture" ]
                           "capabilities", RpcValue.array [ RpcValue.String "workspace.root" ]
                           "limits",
-                          Test.map [ "maxFrameBytes", RpcValue.Integer 4096L; "maxPageSize", RpcValue.Integer 1L ] ]
+                          Test.map
+                              [ "maxFrameBytes", RpcValue.Integer 4096L
+                                "maxPageSize", RpcValue.Integer 1L ] ]
                 )
             )
 
@@ -414,7 +450,7 @@ type TransportTests() =
         for name, input, expectedExit, diagnostic in cases do
             let exitCode, stdout, stderr = Test.run configuration input
             Assert.True((exitCode = expectedExit), $"{name}: exit {exitCode}")
-            Assert.Empty(stdout)
+            Assert.Empty stdout
 
             match diagnostic with
             | Some text -> Assert.Contains(text, stderr)
@@ -471,11 +507,12 @@ type TransportTests() =
     member _.``should keep public initialization and paging schemas stable``() =
         let initialize major client capabilities limits =
             let fields =
-                ResizeArray<string * RpcValue>(
-                    [ "protocolVersion", Test.map [ "major", RpcValue.Integer major; "minor", RpcValue.Integer 9L ]
+                ResizeArray<string * RpcValue>
+                    [ "protocolVersion",
+                      Test.map [ "major", RpcValue.Integer major; "minor", RpcValue.Integer 9L ]
                       "clientInfo", Test.map [ "name", RpcValue.String client ]
                       "capabilities", capabilities |> List.map RpcValue.String |> RpcValue.array ]
-                )
+
 
             limits |> Option.iter (fun value -> fields.Add("limits", value))
             Test.map fields
@@ -485,7 +522,11 @@ type TransportTests() =
                 1L
                 "test"
                 [ "workspace.root"; "unknown.claim"; "operation.cancel" ]
-                (Some(Test.map [ "maxFrameBytes", RpcValue.Integer 4096L; "maxPageSize", RpcValue.Integer 50L ]))
+                (Some(
+                    Test.map
+                        [ "maxFrameBytes", RpcValue.Integer 4096L
+                          "maxPageSize", RpcValue.Integer 50L ]
+                ))
 
         let request =
             PublicProtocol.parseInitialize valid
@@ -565,11 +606,14 @@ type TransportTests() =
         use source = new CancellingReadStream(cancellation)
 
         let exitCode, stdout, stderr =
-            Test.runStream (Test.defaultConfiguration RpcProfile.publicProfile) source cancellation.Token
+            Test.runStream
+                (Test.defaultConfiguration RpcProfile.publicProfile)
+                source
+                cancellation.Token
             |> _.Result
 
         Assert.Equal(130, exitCode)
-        Assert.Empty(stdout)
+        Assert.Empty stdout
         Assert.Equal(String.Empty, stderr)
 
     [<Fact>]
@@ -611,7 +655,7 @@ type TransportTests() =
         | [ Response(1u, None, _)
             Response(2u, None, _)
             Notification("operation/completed", RpcValue.Map fields)
-            Response(3u, None, _) ] -> Assert.Empty(fields)
+            Response(3u, None, _) ] -> Assert.Empty fields
         | frames -> failwithf "Shutdown ordering changed: %A" frames
 
     [<Fact>]
@@ -653,10 +697,10 @@ type TransportTests() =
                                 try
                                     do! Task.Delay(Timeout.Infinite, cancellationToken)
                                 with :? OperationCanceledException ->
-                                    return raise (InvalidOperationException("shutdown fault"))
+                                    return raise (InvalidOperationException "shutdown fault")
                             }
                         else
-                            Task.FromException<unit>(InvalidOperationException("background fault"))
+                            Task.FromException<unit>(InvalidOperationException "background fault")
 
                     Task.FromResult(
                         Ok
@@ -716,7 +760,8 @@ type TransportTests() =
             |> List.iter (fun (_, size) -> Assert.True(size <= limit, $"{name}: {size}-byte frame"))
 
         let initializeInput =
-            Array.concat [ Test.request 1u "initialize" Test.empty; Test.request 2u "big" Test.empty ]
+            Array.concat
+                [ Test.request 1u "initialize" Test.empty; Test.request 2u "big" Test.empty ]
 
         let initializeExit, initializeOutput, initializeError =
             run
@@ -734,7 +779,8 @@ type TransportTests() =
         )
 
         let requestInput =
-            Array.concat [ Test.request 1u "initialize" Test.empty; Test.request 2u "big" Test.empty ]
+            Array.concat
+                [ Test.request 1u "initialize" Test.empty; Test.request 2u "big" Test.empty ]
 
         let requestExit, requestOutput, requestError =
             run
@@ -745,7 +791,11 @@ type TransportTests() =
         Assert.Equal(0, requestExit)
         Assert.Equal(String.Empty, requestError)
         assertBounded "request" requestOutput
-        Assert.Equal<(uint32 * string) list>([ 2u, "response_too_large" ], Test.responseErrors requestOutput)
+
+        Assert.Equal<(uint32 * string) list>(
+            [ 2u, "response_too_large" ],
+            Test.responseErrors requestOutput
+        )
 
         let backgroundDispatch _ methodName _ _ =
             if methodName = "start" then

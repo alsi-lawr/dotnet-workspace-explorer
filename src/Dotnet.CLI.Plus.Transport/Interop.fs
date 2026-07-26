@@ -38,11 +38,16 @@ type private CappedReadStream(inner: Stream, maximumBytes: int) =
 
     override this.ReadAsync(buffer: Memory<byte>, cancellationToken) =
         if remaining = 0 then
-            ValueTask<int>(0)
+            ValueTask<int> 0
         else
             ValueTask<int>(
                 task {
-                    let! read = inner.ReadAsync(buffer.Slice(0, min buffer.Length remaining), cancellationToken)
+                    let! read =
+                        inner.ReadAsync(
+                            buffer.Slice(0, min buffer.Length remaining),
+                            cancellationToken
+                        )
+
                     return this.Consumed read
                 }
             )
@@ -60,7 +65,9 @@ type internal RpcFrameReadFailure =
 
 [<AbstractClass; Sealed>]
 type internal RpcFrameReader private () =
-    static member ReadOneAsync(input: Stream, maximumFrameBytes: int, cancellationToken: CancellationToken) =
+    static member ReadOneAsync
+        (input: Stream, maximumFrameBytes: int, cancellationToken: CancellationToken)
+        =
         task {
             if
                 maximumFrameBytes < 1
@@ -98,7 +105,8 @@ type internal RpcFrameReader private () =
         }
 
 [<Sealed>]
-type internal RpcInteropResponse private (outcome: Result<RpcValue, RpcError>, stopAfterResponse: bool) =
+type internal RpcInteropResponse
+    private (outcome: Result<RpcValue, RpcError>, stopAfterResponse: bool) =
     member internal _.Outcome = outcome
     member internal _.StopAfterResponse = stopAfterResponse
 
@@ -109,15 +117,17 @@ type internal RpcInteropResponse private (outcome: Result<RpcValue, RpcError>, s
 
 [<AbstractClass; Sealed>]
 type internal RpcHost private () =
-    static member CreateProfile(name: string, major: int, minor: int, methods: IEnumerable<string>) =
+    static member CreateProfile
+        (name: string, major: int, minor: int, methods: IEnumerable<string>)
+        =
         methods
         |> Seq.map (fun methodName ->
             { Name = methodName
               Classification =
                 if methodName = "initialize" || methodName = "shutdown" then
-                    RpcMethodClassification.Control
+                    Control
                 else
-                    RpcMethodClassification.Read })
+                    Read })
         |> RpcProfile.create name major minor
 
     static member RunAsync

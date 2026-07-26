@@ -56,16 +56,20 @@ type HostFileSystemCaseDetector private () =
 
         match alternateName with
         | Some alternate when alternate <> name ->
-            match Path.GetDirectoryName(fullPath) |> Option.ofObj with
+            match Path.GetDirectoryName fullPath |> Option.ofObj with
             | None -> HostFileSystemCaseSemantics.Sensitive
             | Some parent ->
                 let alternatePath = Path.Combine(parent, alternate)
 
                 if File.Exists alternatePath || Directory.Exists alternatePath then
                     let matchingEntries =
-                        Directory.EnumerateFileSystemEntries(parent)
+                        Directory.EnumerateFileSystemEntries parent
                         |> Seq.filter (fun entry ->
-                            String.Equals(Path.GetFileName entry, name, StringComparison.OrdinalIgnoreCase))
+                            String.Equals(
+                                Path.GetFileName entry,
+                                name,
+                                StringComparison.OrdinalIgnoreCase
+                            ))
                         |> Seq.truncate 2
                         |> Seq.length
 
@@ -112,7 +116,7 @@ type WorkspaceTargetPath private (value: string) =
 
     override _.ToString() = value
 
-    override _.Equals(other) =
+    override _.Equals other =
         match other with
         | :? WorkspaceTargetPath as candidate -> value = candidate.Value
         | _ -> false
@@ -123,7 +127,9 @@ type WorkspaceTargetPath private (value: string) =
 type WorkspaceId private (value: string) =
     member _.Value = value
 
-    static member Create(targetPath: WorkspaceTargetPath, caseSemantics: HostFileSystemCaseSemantics) =
+    static member Create
+        (targetPath: WorkspaceTargetPath, caseSemantics: HostFileSystemCaseSemantics)
+        =
         if isNull (box targetPath) then
             nullArg (nameof targetPath)
 
@@ -133,7 +139,7 @@ type WorkspaceId private (value: string) =
 
     override _.ToString() = value
 
-    override _.Equals(other) =
+    override _.Equals other =
         match other with
         | :? WorkspaceId as candidate -> value = candidate.Value
         | _ -> false
@@ -155,7 +161,7 @@ type NodeSemanticIdentity private (value: string) =
 
     override _.ToString() = value
 
-    override _.Equals(other) =
+    override _.Equals other =
         match other with
         | :? NodeSemanticIdentity as candidate -> value = candidate.Value
         | _ -> false
@@ -166,7 +172,9 @@ type NodeSemanticIdentity private (value: string) =
 type NodeId private (value: string) =
     member _.Value = value
 
-    static member Create(workspaceId: WorkspaceId, kind: WorkspaceNodeKind, semanticIdentity: NodeSemanticIdentity) =
+    static member Create
+        (workspaceId: WorkspaceId, kind: WorkspaceNodeKind, semanticIdentity: NodeSemanticIdentity)
+        =
         if isNull (box workspaceId) then
             nullArg (nameof workspaceId)
 
@@ -179,7 +187,7 @@ type NodeId private (value: string) =
 
     override _.ToString() = value
 
-    override _.Equals(other) =
+    override _.Equals other =
         match other with
         | :? NodeId as candidate -> value = candidate.Value
         | _ -> false
@@ -203,9 +211,9 @@ type WorkspaceRevision private (value: int64) =
         WorkspaceRevision value
 
     override _.ToString() =
-        value.ToString(CultureInfo.InvariantCulture)
+        value.ToString CultureInfo.InvariantCulture
 
-    override _.Equals(other) =
+    override _.Equals other =
         match other with
         | :? WorkspaceRevision as candidate -> value = candidate.Value
         | _ -> false

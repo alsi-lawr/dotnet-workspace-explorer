@@ -60,12 +60,15 @@ module private SolutionMutation =
           ExpectedRevision = WorkspaceRevision.Create 0L }
 
     let plan workspace command target arguments =
-        SolutionPersistenceMutator.PlanAsync(workspace, request command target arguments, CancellationToken.None).Result
+        SolutionPersistenceMutator
+            .PlanAsync(workspace, request command target arguments, CancellationToken.None)
+            .Result
 
     let actions (plan: SolutionMutationPlan) =
         seq {
             match plan.FileRename with
-            | Some rename -> yield MutationAction.Rename(rename.Source.Value, rename.Destination.Value)
+            | Some rename ->
+                yield MutationAction.Rename(rename.Source.Value, rename.Destination.Value)
             | None -> ()
 
             yield MutationAction.ReplaceFile(plan.BackingPath.Value, plan.Contents)
@@ -83,9 +86,16 @@ module private SolutionMutation =
         match coordinator.Prepare(plan.Request, actions plan) with
         | Failure failure -> failwithf "Preview failed: %A" failure
         | Success preview ->
-            match coordinator.Execute(plan.Request, actions plan, preview.Confirmation, CancellationToken.None) with
-            | Success MutationApplyResult.Applied -> ()
-            | Success(MutationApplyResult.RolledBack failure)
+            match
+                coordinator.Execute(
+                    plan.Request,
+                    actions plan,
+                    preview.Confirmation,
+                    CancellationToken.None
+                )
+            with
+            | Success Applied -> ()
+            | Success(RolledBack failure)
             | Failure failure -> failwithf "Apply failed: %A" failure
 
     let project (workspace: SolutionWorkspace) (name: string) =
@@ -127,7 +137,9 @@ module private SolutionMutation =
         if dependency then
             one.AddDependency two
 
-        one.AddProjectConfigurationRule(ConfigurationRule(BuildDimension.BuildType, "Debug", "Any CPU", "Debug"))
+        one.AddProjectConfigurationRule(
+            ConfigurationRule(BuildDimension.BuildType, "Debug", "Any CPU", "Debug")
+        )
 
         save solution model
         solution, writableWorkspace solution
@@ -148,17 +160,25 @@ module private SolutionMutation =
           "solution.folder.remove", Some empty.Node.NodeId, []
           "solution.item.add",
           Some source.Node.NodeId,
-          [ argument "path" (Path(WorkspaceArtifactPath.Create(Path.Combine(directory, "new-item.txt")))) ]
+          [ argument
+                "path"
+                (Path(WorkspaceArtifactPath.Create(Path.Combine(directory, "new-item.txt")))) ]
           "solution.item.remove", Some existingItem.Node.NodeId, []
           "solution.project.add",
           None,
-          [ argument "path" (Path(WorkspaceArtifactPath.Create(Path.Combine(directory, "New.csproj")))) ]
+          [ argument
+                "path"
+                (Path(WorkspaceArtifactPath.Create(Path.Combine(directory, "New.csproj")))) ]
           "solution.project.remove", Some one.Node.NodeId, []
           "solution.project.rename", Some one.Node.NodeId, [ argument "name" (Text "Renamed") ]
-          "solution.project.move", Some one.Node.NodeId, [ argument "folder" (Node source.Node.NodeId) ]
+          "solution.project.move",
+          Some one.Node.NodeId,
+          [ argument "folder" (Node source.Node.NodeId) ]
           "solution.project.update-path",
           Some one.Node.NodeId,
-          [ argument "path" (Path(WorkspaceArtifactPath.Create(Path.Combine(directory, "Moved.csproj")))) ]
+          [ argument
+                "path"
+                (Path(WorkspaceArtifactPath.Create(Path.Combine(directory, "Moved.csproj")))) ]
           "solution.build-type.add", None, [ argument "name" (Text "Profile") ]
           "solution.build-type.remove", Some config.NodeId, []
           "solution.platform.add", None, [ argument "name" (Text "arm64") ]
@@ -175,14 +195,20 @@ module private SolutionMutation =
           Some one.Node.NodeId,
           [ argument "solutionBuildType" (Text "Debug")
             argument "solutionPlatform" (Text "Any CPU") ]
-          "solution.dependency.add", Some one.Node.NodeId, [ argument "dependency" (Node two.Node.NodeId) ]
-          "solution.dependency.remove", Some one.Node.NodeId, [ argument "dependency" (Node two.Node.NodeId) ] ]
+          "solution.dependency.add",
+          Some one.Node.NodeId,
+          [ argument "dependency" (Node two.Node.NodeId) ]
+          "solution.dependency.remove",
+          Some one.Node.NodeId,
+          [ argument "dependency" (Node two.Node.NodeId) ] ]
 
 type SolutionMutationTests() =
     [<Theory>]
     [<InlineData(".sln")>]
     [<InlineData(".slnx")>]
-    member _.``should plan every solution mutation command for both supported formats``(extension: string) =
+    member _.``should plan every solution mutation command for both supported formats``
+        (extension: string)
+        =
         let directory = SolutionMutation.temporaryDirectory ()
 
         try
@@ -192,13 +218,17 @@ type SolutionMutationTests() =
 
             for command, target, arguments in commands do
                 let solution, initialWorkspace =
-                    SolutionMutation.preparedWorkspace directory extension (command = "solution.dependency.remove")
+                    SolutionMutation.preparedWorkspace
+                        directory
+                        extension
+                        (command = "solution.dependency.remove")
 
                 let workspace =
                     if command = "solution.project-configuration.remove" then
                         let _, setTarget, setArguments =
                             commands
-                            |> List.find (fun (id, _, _) -> id = "solution.project-configuration.set")
+                            |> List.find (fun (id, _, _) ->
+                                id = "solution.project-configuration.set")
 
                         match
                             SolutionMutation.plan
@@ -210,7 +240,8 @@ type SolutionMutationTests() =
                         | Success setPlan ->
                             SolutionMutation.apply initialWorkspace setPlan
                             SolutionMutation.writableWorkspace solution
-                        | Failure failure -> failwithf "Configuration setup was not planned: %A" failure
+                        | Failure failure ->
+                            failwithf "Configuration setup was not planned: %A" failure
                     else
                         initialWorkspace
 
@@ -286,7 +317,8 @@ type SolutionMutationTests() =
                         let mapping =
                             (SolutionMutation.project reopened "One").ConfigurationMappings
                             |> Seq.find (fun value ->
-                                value.SolutionBuildType = "Debug" && value.SolutionPlatform = "Any CPU")
+                                value.SolutionBuildType = "Debug"
+                                && value.SolutionPlatform = "Any CPU")
 
                         mapping.ProjectBuildType |> should equal "ProjectDebug"
                         mapping.ProjectPlatform |> should equal "ProjectPlatform"
@@ -296,12 +328,15 @@ type SolutionMutationTests() =
                         let mapping =
                             (SolutionMutation.project reopened "One").ConfigurationMappings
                             |> Seq.find (fun value ->
-                                value.SolutionBuildType = "Debug" && value.SolutionPlatform = "Any CPU")
+                                value.SolutionBuildType = "Debug"
+                                && value.SolutionPlatform = "Any CPU")
 
                         mapping.ProjectBuildType = "ProjectDebug" |> should equal false
                         mapping.ProjectPlatform = "ProjectPlatform" |> should equal false
-                    | "solution.dependency.add" -> reopened.RootProjection.Dependencies.Length |> should equal 1
-                    | "solution.dependency.remove" -> reopened.RootProjection.Dependencies.Length |> should equal 0
+                    | "solution.dependency.add" ->
+                        reopened.RootProjection.Dependencies.Length |> should equal 1
+                    | "solution.dependency.remove" ->
+                        reopened.RootProjection.Dependencies.Length |> should equal 0
                     | value -> failwithf "Unasserted command %s" value
 
                     executions <- executions + 1
@@ -346,21 +381,31 @@ type SolutionMutationTests() =
                       None
                       [ SolutionMutation.argument
                             "path"
-                            (Path(WorkspaceArtifactPath.Create(Path.Combine(directory, "Missing.csproj")))) ]
+                            (Path(
+                                WorkspaceArtifactPath.Create(
+                                    Path.Combine(directory, "Missing.csproj")
+                                )
+                            )) ]
                   SolutionMutation.plan
                       workspace
                       "solution.project.update-path"
                       (Some one.Node.NodeId)
                       [ SolutionMutation.argument
                             "path"
-                            (Path(WorkspaceArtifactPath.Create(Path.Combine(directory, "Missing.csproj")))) ]
+                            (Path(
+                                WorkspaceArtifactPath.Create(
+                                    Path.Combine(directory, "Missing.csproj")
+                                )
+                            )) ]
                   SolutionMutation.plan
                       workspace
                       "solution.project.update-path"
                       (Some one.Node.NodeId)
                       [ SolutionMutation.argument
                             "path"
-                            (Path(WorkspaceArtifactPath.Create(Path.Combine(directory, "Two.csproj")))) ]
+                            (Path(
+                                WorkspaceArtifactPath.Create(Path.Combine(directory, "Two.csproj"))
+                            )) ]
                   SolutionMutation.plan
                       workspace
                       "solution.project.rename"
@@ -433,7 +478,9 @@ type SolutionMutationTests() =
     [<Theory>]
     [<InlineData(".sln")>]
     [<InlineData(".slnx")>]
-    member _.``should hide and refuse project writes until a managed project is hydrated``(extension: string) =
+    member _.``should hide and refuse project writes until a managed project is hydrated``
+        (extension: string)
+        =
         let directory = SolutionMutation.temporaryDirectory ()
 
         try
@@ -451,7 +498,8 @@ type SolutionMutationTests() =
                     (Some project.Node.NodeId)
                     [ SolutionMutation.argument "name" (Text "Renamed") ]
             with
-            | Failure(UnsupportedCapability(capability, _)) -> capability |> should equal WorkspaceCapabilityId.Write
+            | Failure(UnsupportedCapability(capability, _)) ->
+                capability |> should equal WorkspaceCapabilityId.Write
             | outcome -> failwithf "Expected an unsupported capability refusal, got %A" outcome
         finally
             SolutionMutation.delete directory
@@ -482,7 +530,9 @@ type SolutionMutationTests() =
                     workspace
                     "solution.project.add"
                     None
-                    [ SolutionMutation.argument "path" (Path(WorkspaceArtifactPath.Create externalProject)) ]
+                    [ SolutionMutation.argument
+                          "path"
+                          (Path(WorkspaceArtifactPath.Create externalProject)) ]
             with
             | Success plan ->
                 plan.Request.Intents.Contains MutationIntent.AccessExternalPath
@@ -521,7 +571,9 @@ type SolutionMutationTests() =
                     workspace
                     "solution.item.add"
                     (Some source.Node.NodeId)
-                    [ SolutionMutation.argument "path" (Path(WorkspaceArtifactPath.Create externalItem)) ]
+                    [ SolutionMutation.argument
+                          "path"
+                          (Path(WorkspaceArtifactPath.Create externalItem)) ]
             with
             | Success plan ->
                 plan.Request.Intents.Contains MutationIntent.AccessExternalPath
@@ -532,7 +584,9 @@ type SolutionMutationTests() =
                 |> should equal true
             | Failure failure -> failwithf "External solution item plan failed: %A" failure
 
-            match SolutionMutation.plan workspace "solution.project.remove" (Some one.Node.NodeId) [] with
+            match
+                SolutionMutation.plan workspace "solution.project.remove" (Some one.Node.NodeId) []
+            with
             | Success _ -> File.Exists(Path.Combine(directory, "One.csproj")) |> should equal true
             | Failure failure -> failwithf "Metadata-only removal plan failed: %A" failure
         finally
