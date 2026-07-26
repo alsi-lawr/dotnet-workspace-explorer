@@ -937,6 +937,46 @@ type WorkspaceAppHostTests() =
             Directory.Delete(external, true)
 
     [<Fact>]
+    member _.``should advertise folder commands only for writable project targets``() =
+        let writable =
+            PipeTest.openProject
+                "folder-command-discovery-full"
+                "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"
+
+        let unknown = PipeTest.openProject "folder-command-discovery-unknown" "<Project />"
+
+        let commands (session: PipeTest.ProjectSession) requestId =
+            PipeTest.send
+                session.Child
+                false
+                (PipeTest.request
+                    requestId
+                    "command/list"
+                    (PipeTest.map [ "targetId", RpcValue.String session.ProjectId ]))
+
+            let error, result = PipeTest.readFrame session.Child |> PipeTest.response requestId
+            Assert.True error.IsNone
+
+            PipeTest.field "commands" result
+            |> RpcValue.requireArray "commands"
+            |> Seq.map (PipeTest.field "id")
+            |> Seq.toArray
+
+        try
+            PipeTest.readAllProjectChildNames writable 3u 0L |> ignore
+
+            commands writable 5u
+            |> Array.contains (RpcValue.String "project.folder.new")
+            |> should equal true
+
+            commands unknown 3u
+            |> Array.contains (RpcValue.String "project.folder.new")
+            |> should equal false
+        finally
+            PipeTest.closeProject writable
+            PipeTest.closeProject unknown
+
+    [<Fact>]
     member _.``should write a local curated property``() =
         let session =
             PipeTest.openProject "local-property-scenario" "<Project Sdk=\"Microsoft.NET.Sdk\" />"

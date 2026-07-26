@@ -154,6 +154,63 @@ type MutationCoordinatorTests() =
             Directory.Delete(root, true)
 
     [<Fact>]
+    member _.``should compensate created and copied folders when a later write fails``() =
+        let root = MutationTest.directory "folder-action-compensation"
+        let project = Path.Combine(root, "Demo.csproj")
+        File.WriteAllText(project, "<Project />")
+
+        try
+            let coordinator =
+                MutationTest.coordinator
+                    root
+                    TimeProvider.System
+                    (fun () -> WorkspaceRevision.Create 0L)
+                    (MutationTest.RefusingTrash "unused")
+
+            let run command arguments destination =
+                let failedWrite = Path.Combine(root, "missing", "failure.txt")
+
+                let argumentPaths =
+                    arguments
+                    |> List.choose (fun argument ->
+                        match argument.Value with
+                        | Path path -> Some path.Value
+                        | _ -> None)
+
+                let request =
+                    MutationTest.folderRequest
+                        command
+                        ([ project; destination; root; failedWrite ] @ argumentPaths)
+                        arguments
+
+                let actions = [ MutationAction.ReplaceFile(failedWrite, Encoding.UTF8.GetBytes "fail") ]
+                let preview = MutationTest.preview coordinator request actions
+
+                match coordinator.Execute(request, actions, preview.Confirmation, CancellationToken.None) with
+                | Success(RolledBack(Internal _)) -> ()
+                | result -> failwithf "Expected rollback, got %A" result
+
+                Directory.Exists destination |> should equal false
+
+            let created = Path.Combine(root, "Created")
+            run "project.folder.new" [ MutationTest.argument "path" created ] created
+
+            let source = Path.Combine(root, "Source")
+            Directory.CreateDirectory source |> ignore
+            File.WriteAllText(Path.Combine(source, "Source.txt"), "source")
+            let copied = Path.Combine(root, "Copied")
+
+            run
+                "project.folder.copy"
+                [ MutationTest.argument "source" source
+                  MutationTest.argument "path" copied ]
+                copied
+
+            File.ReadAllText(Path.Combine(source, "Source.txt")) |> should equal "source"
+        finally
+            Directory.Delete(root, true)
+
+    [<Fact>]
     member _.``should consume confirmations once and bind them to the exact executable plan``() =
         let root = MutationTest.directory "binding"
 
