@@ -186,7 +186,7 @@ module internal ProjectFolderPlanning =
                     let source =
                         canonicalExternalDirectory projectDirectory (path "source") |> unwrap
 
-                    let destination = canonicalNewDirectory projectDirectory (path "path") |> unwrap
+                    let destination = canonicalVirtualDirectory projectDirectory (path "path") |> unwrap
 
                     let relative = normalizedRelative projectDirectory destination
                     let itemType = requiredItemType command.Arguments |> unwrap

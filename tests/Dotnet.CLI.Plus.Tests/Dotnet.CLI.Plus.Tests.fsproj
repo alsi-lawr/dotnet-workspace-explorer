@@ -14,6 +14,7 @@
         <Compile Include="SolutionMutationTests.fs" />
         <Compile Include="BrokerProcessTests.fs" />
         <Compile Include="WorkspaceAppHostTests.fs" />
+        <Compile Include="ProjectFolderAppHostTests.fs" />
         <Compile Include="CanonicalCommandAppHostTests.fs" />
     </ItemGroup>
 

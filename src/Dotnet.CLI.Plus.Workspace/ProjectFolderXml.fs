@@ -57,12 +57,27 @@ module internal ProjectFolderXml =
                     yield element.Value
         }
 
+    let private affectedList (source: string) (value: string) =
+        let tokens =
+            value.Split(';', StringSplitOptions.RemoveEmptyEntries)
+            |> Array.map (fun token -> token.Trim())
+
+        let affected = tokens |> Array.filter (matchesRelative source)
+        let macroAffected =
+            tokens
+            |> Array.exists (fun token ->
+                maybeMacroSource source token
+                || (hasMacro token
+                    && (token.Contains(")" + source, StringComparison.OrdinalIgnoreCase)
+                        || token.Contains(")" + source + "/", StringComparison.OrdinalIgnoreCase))))
+        macroAffected || (affected.Length > 0 && tokens.Length <> 1)
+
     let private importedDeclarationAffects sourceRelative sourcePath importPath =
         let document, _, _, _ = readDocument importPath
 
         declarationValues document
         |> Seq.exists (fun value ->
-            maybeMacroSource sourceRelative value
+            affectedList sourceRelative value
             || (not (hasMacro value)
                 && isUnder sourcePath (projectRelativeValue importPath value)))
 
@@ -75,8 +90,8 @@ module internal ProjectFolderXml =
         =
         let directValues = declarationValues document |> Seq.toArray
 
-        if directValues |> Array.exists (maybeMacroSource sourceRelative) then
-            Error "An affected project declaration uses an MSBuild macro."
+        if directValues |> Array.exists (affectedList sourceRelative) then
+            Error "An affected project declaration uses a macro or multi-value declaration."
         else
             snapshot.Imports
             |> Seq.filter (fun imported ->
