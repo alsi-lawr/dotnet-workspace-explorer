@@ -27,7 +27,8 @@ module private CanonicalAppHost =
         { Outcome: string
           Revision: int64
           Notifications: string list
-          Output: string list }
+          Output: string list
+          WorkspaceNotifications: string list }
 
     let private initialize maximumFrameBytes =
         PipeTest.map
@@ -151,6 +152,7 @@ module private CanonicalAppHost =
         let mutable nextSequence = 0L
         let notifications = ResizeArray<string>()
         let output = ResizeArray<string>()
+        let workspaceNotifications = ResizeArray<string>()
 
         while completed.IsNone do
             match PipeTest.readFrame session.Child with
@@ -181,9 +183,11 @@ module private CanonicalAppHost =
                                 PipeTest.field "revision" parameters
                                 |> RpcValue.requireInteger "revision"
                               Notifications = notifications |> Seq.toList
-                              Output = output |> Seq.toList }
+                              Output = output |> Seq.toList
+                              WorkspaceNotifications = workspaceNotifications |> Seq.toList }
                 | _ -> ()
-            | Notification(name, _) when name = "workspace/delta" || name = "workspace/reset" -> ()
+            | Notification(name, _) when name = "workspace/delta" || name = "workspace/reset" ->
+                workspaceNotifications.Add name
             | frame -> failwithf "Unexpected canonical operation frame: %A" frame
 
         completed.Value
@@ -681,3 +685,64 @@ type CanonicalCommandAppHostTests() =
             for path in [ marker; release ] do
                 if File.Exists path then
                     File.Delete path
+
+    [<Fact>]
+    member _.``should move a project tree through one completed public operation``() =
+        let session =
+            CanonicalAppHost.start "physical-project-move" (fun directory model ->
+                let source = Path.Combine(directory, "src", "One")
+                let incoming = Path.Combine(directory, "src", "Ref")
+                Directory.CreateDirectory(Path.Combine(source, "nested")) |> ignore
+                Directory.CreateDirectory incoming |> ignore
+                Directory.CreateDirectory(Path.Combine(directory, "moved")) |> ignore
+                File.WriteAllText(Path.Combine(source, "nested", "keep.txt"), "keep")
+
+                File.WriteAllText(
+                    Path.Combine(source, "One.fsproj"),
+                    "<Project Sdk=\"Microsoft.NET.Sdk\" />"
+                )
+
+                File.WriteAllText(
+                    Path.Combine(incoming, "Ref.fsproj"),
+                    "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup><ProjectReference Include=\"../One/One.fsproj\" Condition=\"'$(Configuration)' == 'Debug'\" /></ItemGroup><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"
+                )
+
+                model.AddProject("src/One/One.fsproj", null, null) |> ignore
+                model.AddProject("src/Ref/Ref.fsproj", null, null) |> ignore)
+
+        try
+            let completion =
+                CanonicalAppHost.execute
+                    session
+                    3u
+                    "project.physical-move"
+                    session.ProjectId
+                    (CanonicalAppHost.argumentMap [ "destination", RpcValue.String "moved/One" ])
+                    0L
+
+            completion.Outcome |> should equal "succeeded"
+
+            completion.Notifications
+            |> should equal [ "operation/progress"; "operation/completed" ]
+
+            completion.WorkspaceNotifications |> should contain "workspace/delta"
+
+            Directory.Exists(Path.Combine(session.Directory, "src", "One"))
+            |> should equal false
+
+            File.Exists(Path.Combine(session.Directory, "moved", "One", "One.fsproj"))
+            |> should equal true
+
+            File.ReadAllText(Path.Combine(session.Directory, "moved", "One", "nested", "keep.txt"))
+            |> should equal "keep"
+
+            File.ReadAllText(Path.Combine(session.Directory, "src", "Ref", "Ref.fsproj"))
+            |> should contain "moved/One/One.fsproj"
+
+            CanonicalAppHost.openSolution session.Solution
+            |> fun reopened ->
+                reopened.SolutionProjects
+                |> Seq.exists (fun project -> project.FilePath = "moved/One/One.fsproj")
+                |> should equal true
+        finally
+            CanonicalAppHost.stop session
