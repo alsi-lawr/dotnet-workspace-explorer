@@ -85,7 +85,7 @@ module internal ProjectFolderXml =
         let macroAffected = tokens |> Array.exists (macroReferencesSource source)
         macroAffected || (affected.Length > 0 && tokens.Length <> 1)
 
-    let private importedDeclarationAffects sourceRelative sourcePath importPath =
+    let private importedDeclarationAffects sourceRelative sourcePath projectPath importPath =
         let document, _, _, _ = readDocument importPath
 
         declarationValues document
@@ -94,7 +94,7 @@ module internal ProjectFolderXml =
             || (declarationTokens value
                 |> Array.exists (fun token ->
                     not (hasMacro token)
-                    && isUnder sourcePath (projectRelativeValue importPath token))))
+                    && isUnder sourcePath (projectRelativeValue projectPath token))))
 
     let ensureDirectOwnership
         (projectPath: string)
@@ -116,7 +116,13 @@ module internal ProjectFolderXml =
                 && File.Exists imported.Value)
             |> Seq.tryPick (fun imported ->
                 try
-                    if importedDeclarationAffects sourceRelative sourcePath imported.Value then
+                    if
+                        importedDeclarationAffects
+                            sourceRelative
+                            sourcePath
+                            projectPath
+                            imported.Value
+                    then
                         Some "An affected project declaration is owned by an import."
                     else
                         None

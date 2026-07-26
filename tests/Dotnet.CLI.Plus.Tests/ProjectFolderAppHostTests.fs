@@ -3,7 +3,6 @@ namespace Dotnet.CLI.Plus.Tests
 #nowarn "3261"
 
 open System
-open System.Diagnostics
 open System.IO
 open Microsoft.VisualStudio.SolutionPersistence.Model
 open FsUnit.Xunit
@@ -531,6 +530,40 @@ type ProjectFolderAppHostTests() =
                 0L
 
             Directory.Exists old |> should equal true
+            Directory.Exists(Path.Combine(session.Directory, "New")) |> should equal false
+            File.ReadAllText importedPath |> should equal imported
+        finally
+            PipeTest.closeProject session
+
+    [<Fact>]
+    member _.``should refuse a root-relative literal declaration in a nested import``() =
+        let imported =
+            "<Project><ItemGroup><Content Include=\"Old/Source.txt\" /></ItemGroup></Project>"
+
+        let session =
+            PipeTest.openProjectWithSetup
+                "nested-imported-literal-folder"
+                (fun directory ->
+                    let old = Path.Combine(directory, "Old")
+                    let build = Path.Combine(directory, "build")
+                    Directory.CreateDirectory old |> ignore
+                    Directory.CreateDirectory build |> ignore
+                    File.WriteAllText(Path.Combine(old, "Source.txt"), "source")
+                    File.WriteAllText(Path.Combine(build, "Shared.props"), imported))
+                "<Project Sdk=\"Microsoft.NET.Sdk\"><Import Project=\"build/Shared.props\" /></Project>"
+
+        try
+            let old = Path.Combine(session.Directory, "Old")
+            let importedPath = Path.Combine(session.Directory, "build", "Shared.props")
+
+            PipeTest.previewFailure
+                session
+                3u
+                "project.folder.rename"
+                (PipeTest.map [ "path", RpcValue.String old; "name", RpcValue.String "New" ])
+                0L
+
+            File.Exists(Path.Combine(old, "Source.txt")) |> should equal true
             Directory.Exists(Path.Combine(session.Directory, "New")) |> should equal false
             File.ReadAllText importedPath |> should equal imported
         finally
