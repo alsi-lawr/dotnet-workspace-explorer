@@ -11,23 +11,37 @@ module internal ProjectFolderXml =
     let private hasMacro (value: string) =
         value.Contains("$(", StringComparison.Ordinal)
 
-    let private sourceLeaf (source: string) =
-        source.TrimEnd('/').Split('/', StringSplitOptions.RemoveEmptyEntries)
-        |> Array.tryLast
-        |> Option.defaultValue String.Empty
+    let private normalizeRelativePath (value: string) = value.Trim().Replace('\\', '/')
+
+    let private sourcePrefixAt (source: string) (value: string) start =
+        let source = normalizeRelativePath source
+        let endIndex = start + source.Length
+
+        not (String.IsNullOrWhiteSpace source)
+        && value.Length >= endIndex
+        && value.AsSpan(start, source.Length).Equals(source, StringComparison.OrdinalIgnoreCase)
+        && (value.Length = endIndex || value[endIndex] = '/')
 
     let private matchesRelative source (value: string) =
-        value.Equals(source, StringComparison.OrdinalIgnoreCase)
-        || value.StartsWith($"{source}/", StringComparison.OrdinalIgnoreCase)
+        sourcePrefixAt source (normalizeRelativePath value) 0
 
-    let private maybeMacroSource source (value: string) =
-        let leaf = sourceLeaf source
+    let private macroReferencesSource source (value: string) =
+        let value = normalizeRelativePath value
 
         hasMacro value
-        && not (String.IsNullOrWhiteSpace leaf)
-        && (value.Equals(leaf, StringComparison.OrdinalIgnoreCase)
-            || value.Contains($"/{leaf}/", StringComparison.OrdinalIgnoreCase)
-            || value.EndsWith($"/{leaf}", StringComparison.OrdinalIgnoreCase))
+        && (sourcePrefixAt source value 0
+            || [ 0 .. value.Length - 1 ]
+               |> List.exists (fun index ->
+                   if value[index] <> ')' then
+                       false
+                   else
+                       let start =
+                           if index + 1 < value.Length && value[index + 1] = '/' then
+                               index + 2
+                           else
+                               index + 1
+
+                       sourcePrefixAt source value start))
 
     let private projectRelativeValue (projectPath: string) (value: string) =
         let directory =
@@ -57,19 +71,18 @@ module internal ProjectFolderXml =
                     yield element.Value
         }
 
-    let private affectedList (source: string) (value: string) =
+    let private declarationTokens (value: string) =
         let tokens =
             value.Split(';', StringSplitOptions.RemoveEmptyEntries)
-            |> Array.map (fun token -> token.Trim())
+            |> Array.map normalizeRelativePath
+
+        tokens
+
+    let private affectedList (source: string) (value: string) =
+        let tokens = declarationTokens value
 
         let affected = tokens |> Array.filter (matchesRelative source)
-        let macroAffected =
-            tokens
-            |> Array.exists (fun token ->
-                maybeMacroSource source token
-                || (hasMacro token
-                    && (token.Contains(")" + source, StringComparison.OrdinalIgnoreCase)
-                        || token.Contains(")" + source + "/", StringComparison.OrdinalIgnoreCase))))
+        let macroAffected = tokens |> Array.exists (macroReferencesSource source)
         macroAffected || (affected.Length > 0 && tokens.Length <> 1)
 
     let private importedDeclarationAffects sourceRelative sourcePath importPath =
@@ -78,8 +91,10 @@ module internal ProjectFolderXml =
         declarationValues document
         |> Seq.exists (fun value ->
             affectedList sourceRelative value
-            || (not (hasMacro value)
-                && isUnder sourcePath (projectRelativeValue importPath value)))
+            || (declarationTokens value
+                |> Array.exists (fun token ->
+                    not (hasMacro token)
+                    && isUnder sourcePath (projectRelativeValue importPath token))))
 
     let ensureDirectOwnership
         (projectPath: string)

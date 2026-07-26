@@ -505,6 +505,97 @@ type ProjectFolderAppHostTests() =
             PipeTest.closeProject session
 
     [<Fact>]
+    member _.``should refuse an imported macro path token owned by a project folder``() =
+        let imported =
+            "<Project><ItemGroup><Content Include=\"Old/$(File)\" /></ItemGroup></Project>"
+
+        let session =
+            PipeTest.openProjectWithSetup
+                "imported-macro-path-token-folder"
+                (fun directory ->
+                    let old = Path.Combine(directory, "Old")
+                    Directory.CreateDirectory old |> ignore
+                    File.WriteAllText(Path.Combine(old, "Source.cs"), "source")
+                    File.WriteAllText(Path.Combine(directory, "Shared.props"), imported))
+                "<Project Sdk=\"Microsoft.NET.Sdk\"><Import Project=\"Shared.props\" /></Project>"
+
+        try
+            let old = Path.Combine(session.Directory, "Old")
+            let importedPath = Path.Combine(session.Directory, "Shared.props")
+
+            PipeTest.previewFailure
+                session
+                3u
+                "project.folder.rename"
+                (PipeTest.map [ "path", RpcValue.String old; "name", RpcValue.String "New" ])
+                0L
+
+            Directory.Exists old |> should equal true
+            Directory.Exists(Path.Combine(session.Directory, "New")) |> should equal false
+            File.ReadAllText importedPath |> should equal imported
+        finally
+            PipeTest.closeProject session
+
+    [<Fact>]
+    member _.``should ignore an unrelated macro folder declaration when renaming``() =
+        let contents =
+            "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup>"
+            + "<Content Include=\"$(MSBuildThisFileDirectory)Other/Old/Unrelated.cs\" />"
+            + "<Content Include=\"Old/Source.cs\" /></ItemGroup></Project>"
+
+        let session =
+            PipeTest.openProjectWithSetup
+                "unrelated-macro-folder"
+                (fun directory ->
+                    let old = Path.Combine(directory, "Old")
+                    let unrelated = Path.Combine(directory, "Other", "Old")
+                    Directory.CreateDirectory old |> ignore
+                    Directory.CreateDirectory unrelated |> ignore
+                    File.WriteAllText(Path.Combine(old, "Source.cs"), "source")
+                    File.WriteAllText(Path.Combine(unrelated, "Unrelated.cs"), "unrelated"))
+                contents
+
+        try
+            let old = Path.Combine(session.Directory, "Old")
+            let renamed = Path.Combine(session.Directory, "New")
+
+            PipeTest.previewAndExecute
+                session.Child
+                3u
+                "project.folder.rename"
+                session.ProjectId
+                (PipeTest.map [ "path", RpcValue.String old; "name", RpcValue.String "New" ])
+                0L
+                true
+
+            File.Exists(Path.Combine(renamed, "Source.cs")) |> should equal true
+
+            File.Exists(Path.Combine(session.Directory, "Other", "Old", "Unrelated.cs"))
+            |> should equal true
+
+            let project = File.ReadAllText session.Project
+
+            Assert.Contains(
+                "Include=\"$(MSBuildThisFileDirectory)Other/Old/Unrelated.cs\"",
+                project
+            )
+
+            Assert.Contains("Include=\"New/Source.cs\"", project)
+
+            let names = PipeTest.readAllProjectChildNames session 5u 1L
+
+            names
+            |> Array.exists (fun name ->
+                name.StartsWith("Content: New/Source.cs", StringComparison.Ordinal))
+            |> should equal true
+
+            names
+            |> Array.exists (fun name -> name.Contains(": Old/Source.cs", StringComparison.Ordinal))
+            |> should equal false
+        finally
+            PipeTest.closeProject session
+
+    [<Fact>]
     member _.``should refuse an affected multi-value folder declaration``() =
         let contents =
             "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup><Content Include=\"Old/A.cs;Old/B.cs\" /></ItemGroup></Project>"
