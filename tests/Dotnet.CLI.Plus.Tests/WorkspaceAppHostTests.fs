@@ -829,6 +829,15 @@ type WorkspaceAppHostTests() =
             let project = File.ReadAllText session.Project
             Assert.Contains("Include=\"New/Source.txt\"", project)
             Assert.Contains("<Link>New/Source.txt</Link>", project)
+
+            let names = PipeTest.readAllProjectChildNames session 5u 1L
+            names
+            |> Array.exists (fun name -> name.StartsWith("Content: New/Source.txt", StringComparison.Ordinal))
+            |> should equal true
+
+            names
+            |> Array.exists (fun name -> name.Contains(": Old/Source.txt", StringComparison.Ordinal))
+            |> should equal false
         finally
             PipeTest.closeProject session
 
@@ -862,6 +871,11 @@ type WorkspaceAppHostTests() =
                 "<Content Remove=\"Assets/Source.txt\"",
                 File.ReadAllText session.Project
             )
+
+            let names = PipeTest.readAllProjectChildNames session 5u 1L
+            names
+            |> Array.exists (fun name -> name.Contains(": Assets/Source.txt", StringComparison.Ordinal))
+            |> should equal false
         finally
             PipeTest.closeProject session
 
@@ -897,6 +911,15 @@ type WorkspaceAppHostTests() =
             Assert.Contains("Include=\"Moved/Source.txt\"", project)
             Assert.Contains("Condition=\"'$(Configuration)' == 'Debug'\"", project)
             Assert.Contains("<Link>Moved/Source.txt</Link>", project)
+
+            let names = PipeTest.readAllProjectChildNames session 5u 1L
+            names
+            |> Array.exists (fun name -> name.StartsWith("Content: Moved/Source.txt", StringComparison.Ordinal))
+            |> should equal true
+
+            names
+            |> Array.exists (fun name -> name.Contains(": Old/Source.txt", StringComparison.Ordinal))
+            |> should equal false
         finally
             PipeTest.closeProject session
 
