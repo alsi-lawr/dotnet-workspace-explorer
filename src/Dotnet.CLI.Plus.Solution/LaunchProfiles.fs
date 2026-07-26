@@ -254,7 +254,7 @@ module internal LaunchProfiles =
             | HasProfile(name, projects) ->
                 match document.Profiles |> List.tryFind (fun profile -> profile.Name = name) with
                 | Some profile when
-                    (profile.Projects |> List.map (fun project -> project.Path, project.Action)) = projects
+                    profile.Projects |> List.map (fun project -> project.Path, project.Action) = projects
                     ->
                     Ok()
                 | _ -> invalid "Launch profile write could not be verified."
