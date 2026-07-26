@@ -564,6 +564,7 @@ module internal ProjectMutations =
             item.EvaluatedInclude = includeValue
             || (not (isNull item.ResolvedPath) && item.ResolvedPath.Value = path))
         |> Seq.map _.ItemType
+        |> Seq.filter (fun itemType -> itemTypes.Contains itemType)
         |> Seq.distinct
         |> Seq.toArray
 
