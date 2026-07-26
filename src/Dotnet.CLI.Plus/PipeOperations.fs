@@ -54,6 +54,24 @@ type internal OperationNotificationWriter(publish: string -> unit) =
             publish value
 
 module internal PipeOperations =
+    let completedOutcome
+        (operation: ExportOperationState)
+        (completionReserved: bool)
+        (outcome: PublicOperationOutcome)
+        =
+        task {
+            if completionReserved || operation.TryReserveCompletion() then
+                return outcome
+            else
+                do! operation.WaitForCancellationResponseAsync()
+
+                return
+                    match outcome with
+                    | PublicOperationOutcome.Failed(code, _) when code = "partial_recovery_required" ->
+                        outcome
+                    | _ -> PublicOperationOutcome.Cancelled
+        }
+
     let chunkExportNodes
         maximumFrameBytes
         descriptor

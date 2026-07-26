@@ -3,9 +3,7 @@ namespace Dotnet.CLI.Plus
 open System
 open System.Collections.Immutable
 open System.IO
-open System.Threading
 open System.Threading.Tasks
-open System.Xml.Linq
 open Dotnet.CLI.Plus.Core
 open Dotnet.CLI.Plus.MSBuild
 open Dotnet.CLI.Plus.Solution
@@ -73,14 +71,14 @@ module internal ProjectRelocationPlanning =
         let relative = Path.GetRelativePath(parent, child)
 
         relative = "."
-        || (relative <> ".."
-            && not (
-                relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
-            )
-            && not (
-                relative.StartsWith($"..{Path.AltDirectorySeparatorChar}", StringComparison.Ordinal)
-            )
-            && not (Path.IsPathRooted relative))
+        || relative <> ".."
+           && not (
+               relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+           )
+           && not (
+               relative.StartsWith($"..{Path.AltDirectorySeparatorChar}", StringComparison.Ordinal)
+           )
+           && not (Path.IsPathRooted relative)
 
     let private referencePath (projectPath: string) (includeValue: string) =
         Path.GetFullPath(
@@ -103,7 +101,7 @@ module internal ProjectRelocationPlanning =
                 destination
             )
 
-        if oldInclude.Contains('\\') && not (oldInclude.Contains('/')) then
+        if oldInclude.Contains '\\' && not (oldInclude.Contains '/') then
             value.Replace('/', '\\')
         else
             value.Replace('\\', '/')
@@ -126,7 +124,9 @@ module internal ProjectRelocationPlanning =
             snapshot.Imports
             |> Seq.exists (fun imported ->
                 try
-                    if File.Exists imported.Value then
+                    if
+                        not (pathEquals imported.Value projectPath) && File.Exists imported.Value
+                    then
                         let document, _, _, _ = ProjectXml.readDocument imported.Value
 
                         document.Descendants(ProjectXml.name "ProjectReference")
@@ -174,6 +174,27 @@ module internal ProjectRelocationPlanning =
 
                 Ok(ProjectXml.replaceProject projectPath document encoding preamble lineEnding)
 
+    type private DirectReferences =
+        { ReferencesSource: bool
+          HasMacro: bool }
+
+    let private directReferences source projectPath =
+        let document, _, _, _ = ProjectXml.readDocument projectPath
+
+        document.Descendants(ProjectXml.name "ProjectReference")
+        |> Seq.choose (ProjectXml.attribute "Include")
+        |> Seq.fold
+            (fun declarations includeValue ->
+                if includeValue.Contains("$(", StringComparison.Ordinal) then
+                    { declarations with HasMacro = true }
+                elif pathEquals (referencePath projectPath includeValue) source then
+                    { declarations with
+                        ReferencesSource = true }
+                else
+                    declarations)
+            { ReferencesSource = false
+              HasMacro = false }
+
     let private incomingActions
         (workspace: SolutionWorkspace)
         (state: WorkspaceState)
@@ -192,25 +213,37 @@ module internal ProjectRelocationPlanning =
 
                     match hydrated with
                     | Failure outcome -> failure <- Some outcome
-                    | Success(_, projection, snapshot) when hasIncomingReference source snapshot ->
-                        match
-                            rewriteReferences
-                                source
-                                destination
-                                projection.Path.AbsolutePath.Value
-                                snapshot
-                        with
-                        | Ok action ->
-                            actions.Add action
-                            paths.Add projection.Path.AbsolutePath.Value
-                        | Error message ->
-                            failure <-
-                                Some(InvalidInput("reference", diagnostic "invalid_input" message))
-                    | Success _ -> ()
+                    | Success(_, projection, snapshot) ->
+                        let declarations =
+                            directReferences source projection.Path.AbsolutePath.Value
+
+                        if
+                            hasIncomingReference source snapshot
+                            || declarations.ReferencesSource
+                            || declarations.HasMacro
+                        then
+                            match
+                                rewriteReferences
+                                    source
+                                    destination
+                                    projection.Path.AbsolutePath.Value
+                                    snapshot
+                            with
+                            | Ok action ->
+                                actions.Add action
+                                paths.Add projection.Path.AbsolutePath.Value
+                            | Error message ->
+                                failure <-
+                                    Some(
+                                        InvalidInput(
+                                            "reference",
+                                            diagnostic "invalid_input" message
+                                        )
+                                    )
 
             return
                 match failure with
-                | Some outcome -> outcome |> Result.Error
+                | Some outcome -> Error outcome
                 | None -> Ok(actions |> Seq.toList, paths |> Seq.toList)
         }
 
@@ -364,6 +397,13 @@ module internal ProjectRelocationPlanning =
                                 "destination"
                                 "The project directory contains another solution project."
                     else
+                        let planningWorkspace =
+                            SolutionProjection.EnrichProjectCapabilities(
+                                workspace,
+                                [ { ProjectId = target
+                                    CapabilityProfile = snapshot.CapabilityProfile } ]
+                            )
+
                         match
                             MutationFiles.canonicalNoFollow false sourceDirectory,
                             MutationFiles.canonicalNoFollow false destination
@@ -384,7 +424,7 @@ module internal ProjectRelocationPlanning =
                             | Ok(referenceActions, referencePaths) ->
                                 let! solution =
                                     planSolution
-                                        workspace
+                                        planningWorkspace
                                         command
                                         target
                                         destinationProject
@@ -410,7 +450,7 @@ module internal ProjectRelocationPlanning =
                                           yield plan.BackingPath.Value ]
 
                                     return
-                                        Success(
+                                        Success
                                             { Request =
                                                 requestForActions
                                                     workspace
@@ -423,7 +463,6 @@ module internal ProjectRelocationPlanning =
                                                 |> Seq.map WorkspaceArtifactPath.Create
                                                 |> Seq.distinct
                                                 |> Seq.toArray }
-                                        )
         }
 
     let private planRename
@@ -497,7 +536,7 @@ module internal ProjectRelocationPlanning =
                                   | None -> () ]
 
                             return
-                                Success(
+                                Success
                                     { Request =
                                         requestForActions workspace command plan.Request paths
                                       Actions = actions |> List.toArray
@@ -506,7 +545,6 @@ module internal ProjectRelocationPlanning =
                                         |> Seq.map WorkspaceArtifactPath.Create
                                         |> Seq.distinct
                                         |> Seq.toArray }
-                                )
         }
 
     let plan workspace state (command: CommandMutationRequest) cancellationToken =

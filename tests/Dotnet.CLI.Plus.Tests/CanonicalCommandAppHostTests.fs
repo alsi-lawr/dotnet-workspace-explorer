@@ -699,7 +699,7 @@ type CanonicalCommandAppHostTests() =
 
                 File.WriteAllText(
                     Path.Combine(source, "One.fsproj"),
-                    "<Project Sdk=\"Microsoft.NET.Sdk\" />"
+                    "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"
                 )
 
                 File.WriteAllText(
@@ -707,6 +707,7 @@ type CanonicalCommandAppHostTests() =
                     "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup><ProjectReference Include=\"../One/One.fsproj\" Condition=\"'$(Configuration)' == 'Debug'\" /></ItemGroup><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"
                 )
 
+                model.AddFolder "/moved/" |> ignore
                 model.AddProject("src/One/One.fsproj", null, null) |> ignore
                 model.AddProject("src/Ref/Ref.fsproj", null, null) |> ignore)
 
@@ -717,7 +718,9 @@ type CanonicalCommandAppHostTests() =
                     3u
                     "project.physical-move"
                     session.ProjectId
-                    (CanonicalAppHost.argumentMap [ "destination", RpcValue.String "moved/One" ])
+                    (CanonicalAppHost.argumentMap
+                        [ "destination", RpcValue.String "moved/One"
+                          "folder", RpcValue.String session.FolderId.Value ])
                     0L
 
             completion.Outcome |> should equal "succeeded"
@@ -737,15 +740,62 @@ type CanonicalCommandAppHostTests() =
             |> should equal "keep"
 
             File.ReadAllText(Path.Combine(session.Directory, "src", "Ref", "Ref.fsproj"))
-            |> should contain "moved/One/One.fsproj"
+            |> fun contents -> contents.Contains "moved/One/One.fsproj"
+            |> should equal true
 
             File.ReadAllText(Path.Combine(session.Directory, "src", "Ref", "Ref.fsproj"))
-            |> should contain "Condition=\"'$(Configuration)' == 'Debug'\""
+            |> fun contents -> contents.Contains "Condition=\"'$(Configuration)' == 'Debug'\""
+            |> should equal true
 
             CanonicalAppHost.openSolution session.Solution
             |> fun reopened ->
                 reopened.SolutionProjects
-                |> Seq.exists (fun project -> project.FilePath = "moved/One/One.fsproj")
-                |> should equal true
+                |> Seq.find (fun project -> project.FilePath = "moved/One/One.fsproj")
+                |> fun project -> project.Parent.Path
+                |> should equal "/moved/"
+        finally
+            CanonicalAppHost.stop session
+
+    [<Fact>]
+    member _.``should refuse a relocation when any direct project reference uses a macro``() =
+        let session =
+            CanonicalAppHost.start "physical-project-move-macro" (fun directory model ->
+                let source = Path.Combine(directory, "src", "One")
+                let incoming = Path.Combine(directory, "src", "Ref")
+                Directory.CreateDirectory source |> ignore
+                Directory.CreateDirectory incoming |> ignore
+                Directory.CreateDirectory(Path.Combine(directory, "moved")) |> ignore
+
+                File.WriteAllText(
+                    Path.Combine(source, "One.fsproj"),
+                    "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"
+                )
+
+                File.WriteAllText(
+                    Path.Combine(incoming, "Ref.fsproj"),
+                    "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup><ProjectReference Include=\"$(MSBuildProjectDirectory)/NoSuch.fsproj\" Condition=\"'$(Configuration)' == 'Never'\" /></ItemGroup><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"
+                )
+
+                model.AddProject("src/One/One.fsproj", null, null) |> ignore
+                model.AddProject("src/Ref/Ref.fsproj", null, null) |> ignore)
+
+        try
+            Assert.Throws<Exception>(fun () ->
+                CanonicalAppHost.beginMutation
+                    session
+                    3u
+                    "project.physical-move"
+                    session.ProjectId
+                    (CanonicalAppHost.argumentMap [ "destination", RpcValue.String "moved/One" ])
+                    0L
+                |> ignore)
+            |> fun error -> error.Message.Contains "macro"
+            |> should equal true
+
+            Directory.Exists(Path.Combine(session.Directory, "src", "One"))
+            |> should equal true
+
+            Directory.Exists(Path.Combine(session.Directory, "moved", "One"))
+            |> should equal false
         finally
             CanonicalAppHost.stop session

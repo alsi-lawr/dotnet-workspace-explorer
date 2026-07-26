@@ -670,12 +670,13 @@ type MutationCoordinator
                         { Confirmation = MutationConfirmationToken.Create token
                           ExpiresAtUtc = expiry })
 
-    member _.Execute
+    member private _.ExecuteCore
         (
             request: MutationPreviewRequest,
             actions: seq<MutationAction>,
             token: MutationConfirmationToken,
-            cancellationToken: CancellationToken
+            cancellationToken: CancellationToken,
+            tryReserveCommit: unit -> bool
         ) =
         lock gate (fun () ->
             let mutable preview = Unchecked.defaultof<BoundPreview>
@@ -981,6 +982,15 @@ type MutationCoordinator
                         | MutationFailed typed -> failure <- Some typed
                         | ex -> failure <- Some(internalFailure ex.Message)
 
+                        if failure.IsNone && not (tryReserveCommit ()) then
+                            failure <-
+                                Some(
+                                    Cancelled(
+                                        OperationId.New(),
+                                        diagnostic "cancelled" "The mutation was cancelled."
+                                    )
+                                )
+
                         match failure with
                         | None ->
                             match cleanAll cleanup with
@@ -996,6 +1006,25 @@ type MutationCoordinator
                                 Success(RolledBack original)
                             else
                                 partial remaining)
+
+    member this.Execute
+        (
+            request: MutationPreviewRequest,
+            actions: seq<MutationAction>,
+            token: MutationConfirmationToken,
+            cancellationToken: CancellationToken
+        ) =
+        this.ExecuteCore(request, actions, token, cancellationToken, fun () -> true)
+
+    member internal this.ExecuteOperation
+        (
+            request: MutationPreviewRequest,
+            actions: seq<MutationAction>,
+            token: MutationConfirmationToken,
+            cancellationToken: CancellationToken,
+            tryReserveCommit: unit -> bool
+        ) =
+        this.ExecuteCore(request, actions, token, cancellationToken, tryReserveCommit)
 
     static member CreateProduction
         (workspaceRoot: WorkspaceArtifactPath, currentRevision: unit -> WorkspaceRevision)

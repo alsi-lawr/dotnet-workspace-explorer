@@ -510,6 +510,54 @@ type MutationCoordinatorTests() =
             Directory.Delete(root, true)
 
     [<Fact>]
+    member _.``should compensate a staged physical project move when a later write fails``() =
+        let root = MutationTest.directory "physical-move-compensation"
+
+        try
+            let source = Path.Combine(root, "src", "One")
+            let destination = Path.Combine(root, "moved", "One")
+            let failedWrite = Path.Combine(root, "missing", "Demo.slnx")
+            Directory.CreateDirectory(Path.Combine(source, "nested")) |> ignore
+            Directory.CreateDirectory(Path.Combine(root, "moved")) |> ignore
+            File.WriteAllText(Path.Combine(source, "nested", "keep.txt"), "keep")
+
+            let coordinator =
+                MutationTest.coordinator
+                    root
+                    TimeProvider.System
+                    (fun () -> WorkspaceRevision.Create 0L)
+                    (MutationTest.RefusingTrash "unused")
+
+            let request =
+                { MutationTest.request
+                      []
+                      [ source; destination; failedWrite ]
+                      [ MutationIntent.Overwrite ]
+                      0L with
+                    CommandId = CommandId.Create "project.physical-move" }
+
+            let actions =
+                [ MutationAction.Move(source, destination)
+                  MutationAction.ReplaceFile(failedWrite, Encoding.UTF8.GetBytes "unreachable") ]
+
+            let preview = MutationTest.preview coordinator request actions
+
+            match
+                coordinator.Execute(request, actions, preview.Confirmation, CancellationToken.None)
+            with
+            | Success(RolledBack(Internal _)) -> ()
+            | result -> failwithf "Expected complete physical-move compensation, got %A" result
+
+            Directory.Exists source |> should equal true
+
+            File.ReadAllText(Path.Combine(source, "nested", "keep.txt"))
+            |> should equal "keep"
+
+            Directory.Exists destination |> should equal false
+        finally
+            Directory.Delete(root, true)
+
+    [<Fact>]
     member _.``should roll back prior writes when trash refuses deletion``() =
         let root, target, victim, outcome =
             MutationTest.runCompensation (fun _ -> MutationTest.RefusingTrash "expected refusal")

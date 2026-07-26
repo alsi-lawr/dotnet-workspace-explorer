@@ -608,20 +608,7 @@ module internal CanonicalCommandOperation =
 
                         try
                             let! completedOutcome =
-                                task {
-                                    if completionReserved || operation.TryReserveCompletion() then
-                                        return outcome
-                                    else
-                                        do! operation.WaitForCancellationResponseAsync()
-
-                                        return
-                                            match outcome with
-                                            | PublicOperationOutcome.Failed(code, _) when
-                                                code = "partial_recovery_required"
-                                                ->
-                                                outcome
-                                            | _ -> PublicOperationOutcome.Cancelled
-                                }
+                                PipeOperations.completedOutcome operation completionReserved outcome
 
                             do!
                                 sink.WriteAsync(

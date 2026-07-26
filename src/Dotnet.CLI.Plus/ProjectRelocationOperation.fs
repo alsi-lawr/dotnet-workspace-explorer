@@ -14,7 +14,6 @@ type internal ProjectRelocationOperation =
     static member Start
         (
             context: CanonicalCommandOperationContext,
-            request: CommandMutationRequest,
             plan: PlannedMutation,
             previewId: string,
             requestCancellationToken: CancellationToken
@@ -36,30 +35,32 @@ type internal ProjectRelocationOperation =
 
                         let nextSequence () = Interlocked.Increment(&sequence) - 1
 
+                        let operationFailure failure =
+                            match failure with
+                            | Cancelled _ -> PublicOperationOutcome.Cancelled
+                            | _ ->
+                                PublicOperationOutcome.Failed(
+                                    failure.Code.Value,
+                                    failure.Diagnostic.Message
+                                )
+
                         let complete () =
                             task {
-                                if completionReserved || operation.TryReserveCompletion() then
-                                    do!
-                                        sink.WriteAsync(
-                                            PublicProtocol.operationCompleted
-                                                context.State.Descriptor
-                                                operationId
-                                                (nextSequence ())
-                                                context.State.Revision
-                                                outcome
-                                        )
-                                else
-                                    do! operation.WaitForCancellationResponseAsync()
+                                let! completedOutcome =
+                                    PipeOperations.completedOutcome
+                                        operation
+                                        completionReserved
+                                        outcome
 
-                                    do!
-                                        sink.WriteAsync(
-                                            PublicProtocol.operationCompleted
-                                                context.State.Descriptor
-                                                operationId
-                                                (nextSequence ())
-                                                context.State.Revision
-                                                PublicOperationOutcome.Cancelled
-                                        )
+                                do!
+                                    sink.WriteAsync(
+                                        PublicProtocol.operationCompleted
+                                            context.State.Descriptor
+                                            operationId
+                                            (nextSequence ())
+                                            context.State.Revision
+                                            completedOutcome
+                                    )
                             }
 
                         try
@@ -83,32 +84,24 @@ type internal ProjectRelocationOperation =
                                 )
 
                             let execution =
-                                context.Coordinator.Execute(
+                                context.Coordinator.ExecuteOperation(
                                     plannedRequest plan,
                                     plannedActions plan,
                                     MutationConfirmationToken.Create previewId,
-                                    linked.Token
+                                    linked.Token,
+                                    fun () ->
+                                        let reserved = operation.TryReserveCompletion()
+
+                                        if reserved then
+                                            completionReserved <- true
+
+                                        reserved
                                 )
 
                             match execution with
-                            | Failure failure ->
-                                outcome <-
-                                    PublicOperationOutcome.Failed(
-                                        failure.Code.Value,
-                                        failure.Diagnostic.Message
-                                    )
-                            | Success(RolledBack failure) ->
-                                outcome <-
-                                    PublicOperationOutcome.Failed(
-                                        failure.Code.Value,
-                                        failure.Diagnostic.Message
-                                    )
+                            | Failure failure -> outcome <- operationFailure failure
+                            | Success(RolledBack failure) -> outcome <- operationFailure failure
                             | Success Applied ->
-                                let reserved = operation.TryReserveCompletion()
-
-                                if reserved then
-                                    completionReserved <- true
-
                                 let! invalidated =
                                     context.State.InvalidateFromTransactionAsync(
                                         plannedPaths plan,
@@ -155,9 +148,6 @@ type internal ProjectRelocationOperation =
                                     @ watcherNotifications do
                                     do! sink.WriteAsync notification
 
-                                if not reserved then
-                                    do! operation.WaitForCancellationResponseAsync()
-                                    outcome <- PublicOperationOutcome.Cancelled
                         with
                         | :? OperationCanceledException ->
                             if operation.IsCancellationReserved then

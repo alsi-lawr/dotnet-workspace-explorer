@@ -257,12 +257,11 @@ module internal PipeCommandRequests =
                                       MaximumFrameBytes = context.MaximumFrameBytes
                                       RebuildWatcher = context.RebuildWatcher
                                       MutationNotifications = context.MutationNotifications },
-                                    mutationRequest,
                                     CompositePlan plan,
                                     previewId,
                                     requestCancellationToken
                                 )
-                        | Success _ -> return Error(RpcErrors.internalError)
+                        | Success _ -> return Error RpcErrors.internalError
                 | _, _, None ->
                     return Error(RpcErrors.invalidParams "command/execute requires previewId.")
                 | Ok target, Some descriptor, Some previewId ->

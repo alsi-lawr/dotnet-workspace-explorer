@@ -1911,7 +1911,7 @@ type WorkspaceAppHostTests() =
             File.WriteAllText(
                 incoming,
                 "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup>"
-                + "<ProjectReference Include=\"One.fsproj\" Condition=\"'$(Configuration)' == 'Debug'\" />"
+                + "<ProjectReference Include=\"One.fsproj\" Condition=\"'$(Configuration)' == 'Never'\" />"
                 + "</ItemGroup><PropertyGroup><TargetFramework>net10.0</TargetFramework>"
                 + "</PropertyGroup></Project>"
             )
@@ -2052,7 +2052,10 @@ type WorkspaceAppHostTests() =
                     PipeTest.field "previewId" previewResult |> RpcValue.requireString "previewId"
 
                 Assert.True(File.Exists source)
-                File.ReadAllText incoming |> should contain "One.fsproj"
+
+                File.ReadAllText incoming
+                |> fun contents -> contents.Contains "One.fsproj"
+                |> should equal true
 
                 let execute =
                     PipeTest.map
@@ -2091,10 +2094,14 @@ type WorkspaceAppHostTests() =
 
                 Assert.False(File.Exists source)
                 Assert.True(File.Exists destination)
-                File.ReadAllText incoming |> should contain "Renamed.fsproj"
 
                 File.ReadAllText incoming
-                |> should contain "Condition=\"'$(Configuration)' == 'Debug'\""
+                |> fun contents -> contents.Contains "Renamed.fsproj"
+                |> should equal true
+
+                File.ReadAllText incoming
+                |> fun contents -> contents.Contains "Condition=\"'$(Configuration)' == 'Never'\""
+                |> should equal true
 
                 let reopened =
                     SolutionSerializers
