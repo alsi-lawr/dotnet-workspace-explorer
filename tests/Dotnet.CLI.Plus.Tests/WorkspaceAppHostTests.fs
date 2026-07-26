@@ -1181,6 +1181,104 @@ type WorkspaceAppHostTests() =
             Directory.Delete(external, true)
 
     [<Fact>]
+    member _.``should refuse terminal and intermediate symbolic folder operands``() =
+        if not (OperatingSystem.IsWindows()) then
+            let external = PipeTest.temporaryDirectory "folder-symbolic-target"
+            File.WriteAllText(Path.Combine(external, "Source.txt"), "source")
+
+            let session =
+                PipeTest.openProject
+                    "folder-symbolic-scenario"
+                    "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"
+
+            try
+                let terminal = Path.Combine(session.Directory, "Terminal")
+                let intermediate = Path.Combine(session.Directory, "Intermediate")
+                Directory.CreateSymbolicLink(terminal, external) |> ignore
+                Directory.CreateSymbolicLink(intermediate, external) |> ignore
+
+                PipeTest.previewFailure
+                    session
+                    3u
+                    "project.folder.remove"
+                    (PipeTest.map [ "path", RpcValue.String terminal ])
+                    0L
+
+                PipeTest.previewFailure
+                    session
+                    5u
+                    "project.folder.new"
+                    (PipeTest.map [ "path", RpcValue.String(Path.Combine(intermediate, "Child")) ])
+                    0L
+            finally
+                PipeTest.closeProject session
+                Directory.Delete(external, true)
+
+    [<Fact>]
+    member _.``should delete project folders through the native trash boundary``() =
+        let directory = PipeTest.temporaryDirectory "folder-delete-trash-scenario"
+        let trashHome = Path.Combine(directory, "data")
+        let solution = Path.Combine(directory, "Demo.slnx")
+        let project = Path.Combine(directory, "Demo.csproj")
+        let deleted = Path.Combine(directory, "Delete")
+        let model = SolutionModel()
+        model.AddProject("Demo.csproj", "Demo", null) |> ignore
+        Directory.CreateDirectory deleted |> ignore
+        File.WriteAllText(Path.Combine(deleted, "Source.txt"), "delete")
+
+        File.WriteAllText(
+            project,
+            "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup><ItemGroup><Content Include=\"Delete/Source.txt\" /></ItemGroup></Project>"
+        )
+
+        Directory.CreateDirectory trashHome |> ignore
+        PipeTest.save solution model
+
+        use child =
+            if OperatingSystem.IsLinux() then
+                PipeTest.startPipeWithDataHome "solution" solution (Some trashHome)
+            else
+                PipeTest.startPipe "solution" solution
+
+        try
+            PipeTest.send child false (PipeTest.request 1u "initialize" PipeTest.initialize)
+            PipeTest.readFrame child |> PipeTest.response 1u |> ignore
+            PipeTest.send child false (PipeTest.request 2u "workspace/root" RpcValue.emptyMap)
+            let _, root = PipeTest.readFrame child |> PipeTest.response 2u
+
+            let projectId =
+                PipeTest.field "nodes" root
+                |> RpcValue.requireArray "nodes"
+                |> Seq.find (fun node -> PipeTest.field "kind" node = RpcValue.String "project")
+                |> PipeTest.field "id"
+                |> RpcValue.requireString "id"
+
+            PipeTest.previewAndExecute
+                child
+                3u
+                "project.folder.delete"
+                projectId
+                (PipeTest.map [ "path", RpcValue.String deleted ])
+                0L
+                true
+
+            Directory.Exists deleted |> should equal false
+            Assert.Contains("<Content Remove=\"Delete/Source.txt\"", File.ReadAllText project)
+
+            if OperatingSystem.IsLinux() then
+                Directory.EnumerateDirectories(Path.Combine(trashHome, "Trash", "files"))
+                |> Seq.exactlyOne
+                |> Path.GetFileName
+                |> should equal "Delete"
+
+            PipeTest.shutdown child 5u
+        finally
+            PipeTest.disposeProcess child
+
+            if Directory.Exists directory then
+                Directory.Delete(directory, true)
+
+    [<Fact>]
     member _.``should delete project files through the native trash boundary``() =
         let directory = PipeTest.temporaryDirectory "delete-trash-scenario"
         let trashHome = Path.Combine(directory, "data")
