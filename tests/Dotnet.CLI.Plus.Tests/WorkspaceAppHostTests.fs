@@ -710,6 +710,162 @@ type WorkspaceAppHostTests() =
             PipeTest.closeProject session
 
     [<Fact>]
+    member _.``should create an empty project folder with one Folder declaration``() =
+        let session =
+            PipeTest.openProject
+                "folder-new-scenario"
+                "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"
+
+        try
+            let folder = Path.Combine(session.Directory, "Empty")
+
+            PipeTest.previewAndExecute
+                session.Child
+                3u
+                "project.folder.new"
+                session.ProjectId
+                (PipeTest.map [ "path", RpcValue.String folder ])
+                0L
+                true
+
+            Directory.Exists folder |> should equal true
+            Assert.Contains("<Folder Include=\"Empty/\"", File.ReadAllText(session.Project))
+        finally
+            PipeTest.closeProject session
+
+    [<Fact>]
+    member _.``should copy a complete external folder tree after collision-free preview``() =
+        let external = PipeTest.temporaryDirectory "folder-copy-source"
+        let nested = Path.Combine(external, "Nested")
+        Directory.CreateDirectory nested |> ignore
+        File.WriteAllText(Path.Combine(nested, "Source.txt"), "source")
+
+        let session =
+            PipeTest.openProject
+                "folder-copy-scenario"
+                "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"
+
+        try
+            let destination = Path.Combine(session.Directory, "Copied")
+
+            PipeTest.previewAndExecute
+                session.Child
+                3u
+                "project.folder.copy"
+                session.ProjectId
+                (PipeTest.map
+                    [ "source", RpcValue.String external; "path", RpcValue.String destination ])
+                0L
+                true
+
+            File.ReadAllText(Path.Combine(destination, "Nested", "Source.txt"))
+            |> should equal "source"
+
+            Directory.Exists external |> should equal true
+        finally
+            PipeTest.closeProject session
+            Directory.Delete(external, true)
+
+    [<Fact>]
+    member _.``should link an external project folder with the wildcard convention``() =
+        let external = PipeTest.temporaryDirectory "folder-link-source"
+        File.WriteAllText(Path.Combine(external, "Source.txt"), "source")
+
+        let session =
+            PipeTest.openProject
+                "folder-link-scenario"
+                "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"
+
+        try
+            PipeTest.previewAndExecute
+                session.Child
+                3u
+                "project.folder.link"
+                session.ProjectId
+                (PipeTest.map
+                    [ "source", RpcValue.String external
+                      "path", RpcValue.String "Linked"
+                      "itemType", RpcValue.String "Content" ])
+                0L
+                true
+
+            let project = File.ReadAllText session.Project
+            Assert.Contains($"Include=\"{external.Replace('\\', '/')}/**/*\"", project)
+            Assert.Contains("<Link>Linked/%(RecursiveDir)%(Filename)%(Extension)</Link>", project)
+
+            Directory.Exists(Path.Combine(session.Directory, "Linked"))
+            |> should equal false
+        finally
+            PipeTest.closeProject session
+            Directory.Delete(external, true)
+
+    [<Fact>]
+    member _.``should rename a project folder and preserve descendant declaration metadata``() =
+        let session =
+            PipeTest.openProjectWithSetup
+                "folder-rename-scenario"
+                (fun directory ->
+                    let folder = Path.Combine(directory, "Old")
+                    Directory.CreateDirectory folder |> ignore
+                    File.WriteAllText(Path.Combine(folder, "Source.txt"), "source"))
+                ("<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>"
+                 + "<ItemGroup><Content Include=\"Old/Source.txt\"><Link>Old/Source.txt</Link></Content></ItemGroup></Project>")
+
+        try
+            let source = Path.Combine(session.Directory, "Old")
+
+            PipeTest.previewAndExecute
+                session.Child
+                3u
+                "project.folder.rename"
+                session.ProjectId
+                (PipeTest.map [ "path", RpcValue.String source; "name", RpcValue.String "New" ])
+                0L
+                true
+
+            File.Exists(Path.Combine(session.Directory, "New", "Source.txt"))
+            |> should equal true
+
+            let project = File.ReadAllText session.Project
+            Assert.Contains("Include=\"New/Source.txt\"", project)
+            Assert.Contains("<Link>New/Source.txt</Link>", project)
+        finally
+            PipeTest.closeProject session
+
+    [<Fact>]
+    member _.``should remove a project folder from membership without deleting its tree``() =
+        let session =
+            PipeTest.openProjectWithSetup
+                "folder-remove-scenario"
+                (fun directory ->
+                    let folder = Path.Combine(directory, "Assets")
+                    Directory.CreateDirectory folder |> ignore
+                    File.WriteAllText(Path.Combine(folder, "Source.txt"), "source"))
+                ("<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>"
+                 + "<ItemGroup><Content Include=\"Assets/Source.txt\" /></ItemGroup></Project>")
+
+        try
+            let folder = Path.Combine(session.Directory, "Assets")
+
+            PipeTest.previewAndExecute
+                session.Child
+                3u
+                "project.folder.remove"
+                session.ProjectId
+                (PipeTest.map [ "path", RpcValue.String folder ])
+                0L
+                true
+
+            File.Exists(Path.Combine(folder, "Source.txt")) |> should equal true
+
+            Assert.Contains(
+                "<Content Remove=\"Assets/Source.txt\"",
+                File.ReadAllText session.Project
+            )
+        finally
+            PipeTest.closeProject session
+
+    [<Fact>]
     member _.``should write a local curated property``() =
         let session =
             PipeTest.openProject "local-property-scenario" "<Project Sdk=\"Microsoft.NET.Sdk\" />"
