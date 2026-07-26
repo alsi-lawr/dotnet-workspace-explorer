@@ -133,12 +133,15 @@ type ProjectFolderAppHostTests() =
             Assert.Contains("<Link>New/Source.txt</Link>", project)
 
             let names = PipeTest.readAllProjectChildNames session 5u 1L
+
             names
-            |> Array.exists (fun name -> name.StartsWith("Content: New/Source.txt", StringComparison.Ordinal))
+            |> Array.exists (fun name ->
+                name.StartsWith("Content: New/Source.txt", StringComparison.Ordinal))
             |> should equal true
 
             names
-            |> Array.exists (fun name -> name.Contains(": Old/Source.txt", StringComparison.Ordinal))
+            |> Array.exists (fun name ->
+                name.Contains(": Old/Source.txt", StringComparison.Ordinal))
             |> should equal false
         finally
             PipeTest.closeProject session
@@ -175,8 +178,10 @@ type ProjectFolderAppHostTests() =
             )
 
             let names = PipeTest.readAllProjectChildNames session 5u 1L
+
             names
-            |> Array.exists (fun name -> name.Contains(": Assets/Source.txt", StringComparison.Ordinal))
+            |> Array.exists (fun name ->
+                name.Contains(": Assets/Source.txt", StringComparison.Ordinal))
             |> should equal false
         finally
             PipeTest.closeProject session
@@ -215,12 +220,15 @@ type ProjectFolderAppHostTests() =
             Assert.Contains("<Link>Moved/Source.txt</Link>", project)
 
             let names = PipeTest.readAllProjectChildNames session 5u 1L
+
             names
-            |> Array.exists (fun name -> name.StartsWith("Content: Moved/Source.txt", StringComparison.Ordinal))
+            |> Array.exists (fun name ->
+                name.StartsWith("Content: Moved/Source.txt", StringComparison.Ordinal))
             |> should equal true
 
             names
-            |> Array.exists (fun name -> name.Contains(": Old/Source.txt", StringComparison.Ordinal))
+            |> Array.exists (fun name ->
+                name.Contains(": Old/Source.txt", StringComparison.Ordinal))
             |> should equal false
         finally
             PipeTest.closeProject session
@@ -398,3 +406,131 @@ type ProjectFolderAppHostTests() =
 
             if Directory.Exists directory then
                 Directory.Delete(directory, true)
+
+    [<Fact>]
+    member _.``should link an external folder at a nested virtual path without creating directories``
+        ()
+        =
+        let external = PipeTest.temporaryDirectory "nested-virtual-link-source"
+        File.WriteAllText(Path.Combine(external, "Source.txt"), "source")
+
+        let session =
+            PipeTest.openProject
+                "nested-virtual-link"
+                "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"
+
+        try
+            PipeTest.previewAndExecute
+                session.Child
+                3u
+                "project.folder.link"
+                session.ProjectId
+                (PipeTest.map
+                    [ "source", RpcValue.String external
+                      "path", RpcValue.String "Virtual/Linked"
+                      "itemType", RpcValue.String "Content" ])
+                0L
+                true
+
+            let project = File.ReadAllText session.Project
+
+            Assert.Contains(
+                "<Link>Virtual/Linked/%(RecursiveDir)%(Filename)%(Extension)</Link>",
+                project
+            )
+
+            Directory.Exists(Path.Combine(session.Directory, "Virtual"))
+            |> should equal false
+        finally
+            PipeTest.closeProject session
+            Directory.Delete(external, true)
+
+    [<Fact>]
+    member _.``should refuse an affected direct macro folder declaration``() =
+        let contents =
+            "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup><Content Include=\"$(MSBuildThisFileDirectory)Old/Source.cs\" /></ItemGroup></Project>"
+
+        let session =
+            PipeTest.openProjectWithSetup
+                "direct-macro-folder"
+                (fun directory ->
+                    let old = Path.Combine(directory, "Old")
+                    Directory.CreateDirectory old |> ignore
+                    File.WriteAllText(Path.Combine(old, "Source.cs"), "source"))
+                contents
+
+        try
+            let old = Path.Combine(session.Directory, "Old")
+
+            PipeTest.previewFailure
+                session
+                3u
+                "project.folder.rename"
+                (PipeTest.map [ "path", RpcValue.String old; "name", RpcValue.String "New" ])
+                0L
+
+            Directory.Exists old |> should equal true
+            File.ReadAllText session.Project |> should equal contents
+        finally
+            PipeTest.closeProject session
+
+    [<Fact>]
+    member _.``should refuse an affected imported macro folder declaration``() =
+        let session =
+            PipeTest.openProjectWithSetup
+                "imported-macro-folder"
+                (fun directory ->
+                    let old = Path.Combine(directory, "Old")
+                    Directory.CreateDirectory old |> ignore
+                    File.WriteAllText(Path.Combine(old, "Source.cs"), "source")
+
+                    File.WriteAllText(
+                        Path.Combine(directory, "Shared.props"),
+                        "<Project><ItemGroup><Content Include=\"$(MSBuildThisFileDirectory)Old/Source.cs\" /></ItemGroup></Project>"
+                    ))
+                "<Project Sdk=\"Microsoft.NET.Sdk\"><Import Project=\"Shared.props\" /></Project>"
+
+        try
+            let old = Path.Combine(session.Directory, "Old")
+
+            PipeTest.previewFailure
+                session
+                3u
+                "project.folder.rename"
+                (PipeTest.map [ "path", RpcValue.String old; "name", RpcValue.String "New" ])
+                0L
+
+            Directory.Exists old |> should equal true
+        finally
+            PipeTest.closeProject session
+
+    [<Fact>]
+    member _.``should refuse an affected multi-value folder declaration``() =
+        let contents =
+            "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup><Content Include=\"Old/A.cs;Old/B.cs\" /></ItemGroup></Project>"
+
+        let session =
+            PipeTest.openProjectWithSetup
+                "multi-value-folder"
+                (fun directory ->
+                    let old = Path.Combine(directory, "Old")
+                    Directory.CreateDirectory old |> ignore
+                    File.WriteAllText(Path.Combine(old, "A.cs"), "a")
+                    File.WriteAllText(Path.Combine(old, "B.cs"), "b"))
+                contents
+
+        try
+            let old = Path.Combine(session.Directory, "Old")
+
+            PipeTest.previewFailure
+                session
+                3u
+                "project.folder.rename"
+                (PipeTest.map [ "path", RpcValue.String old; "name", RpcValue.String "New" ])
+                0L
+
+            File.Exists(Path.Combine(old, "A.cs")) |> should equal true
+            File.Exists(Path.Combine(old, "B.cs")) |> should equal true
+            File.ReadAllText session.Project |> should equal contents
+        finally
+            PipeTest.closeProject session
