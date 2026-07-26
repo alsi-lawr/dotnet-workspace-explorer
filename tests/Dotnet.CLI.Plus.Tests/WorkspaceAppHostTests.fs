@@ -2122,6 +2122,167 @@ type WorkspaceAppHostTests() =
                 Directory.Delete(directory, true)
 
     [<Fact>]
+    member _.``should complete a physical project move after rewriting conditional incoming references``
+        ()
+        =
+        let directory = PipeTest.temporaryDirectory "physical-project-move"
+
+        try
+            let solution = Path.Combine(directory, "Demo.slnx")
+            let sourceDirectory = Path.Combine(directory, "src", "One")
+            let source = Path.Combine(sourceDirectory, "One.fsproj")
+            let incomingDirectory = Path.Combine(directory, "src", "Ref")
+            let incoming = Path.Combine(incomingDirectory, "Ref.fsproj")
+            let destinationParent = Path.Combine(directory, "moved")
+            let destination = Path.Combine(destinationParent, "One")
+            let destinationProject = Path.Combine(destination, "One.fsproj")
+            Directory.CreateDirectory(Path.Combine(sourceDirectory, "nested")) |> ignore
+            Directory.CreateDirectory incomingDirectory |> ignore
+            Directory.CreateDirectory destinationParent |> ignore
+            File.WriteAllText(Path.Combine(sourceDirectory, "nested", "keep.txt"), "keep")
+            PipeTest.writeProject source
+
+            File.WriteAllText(
+                incoming,
+                "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup>"
+                + "<ProjectReference Include=\"../One/One.fsproj\" Condition=\"'$(Configuration)' == 'Debug'\" />"
+                + "</ItemGroup><PropertyGroup><TargetFramework>net10.0</TargetFramework>"
+                + "</PropertyGroup></Project>"
+            )
+
+            let model = SolutionModel()
+            model.AddProject("src/One/One.fsproj", null, null) |> ignore
+            model.AddProject("src/Ref/Ref.fsproj", null, null) |> ignore
+            PipeTest.save solution model
+            use child = PipeTest.startPipe "solution" solution
+
+            try
+                let initialize =
+                    PipeTest.map
+                        [ "protocolVersion",
+                          PipeTest.map
+                              [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 4L ]
+                          "clientInfo",
+                          PipeTest.map [ "name", RpcValue.String "physical-move-test" ]
+                          "capabilities",
+                          RpcValue.array
+                              [ RpcValue.String "workspace.root"
+                                RpcValue.String "workspace.children"
+                                RpcValue.String "workspace.delta"
+                                RpcValue.String "command.preview"
+                                RpcValue.String "command.execute" ]
+                          "limits",
+                          PipeTest.map
+                              [ "maxFrameBytes", RpcValue.Integer 4194304L
+                                "maxPageSize", RpcValue.Integer 50L ] ]
+
+                PipeTest.send child false (PipeTest.request 1u "initialize" initialize)
+                PipeTest.readFrame child |> PipeTest.response 1u |> ignore
+                PipeTest.send child false (PipeTest.request 2u "workspace/root" RpcValue.emptyMap)
+                let rootError, root = PipeTest.readFrame child |> PipeTest.response 2u
+                Assert.True rootError.IsNone
+
+                let projectId =
+                    PipeTest.field "nodes" root
+                    |> RpcValue.requireArray "nodes"
+                    |> Seq.find (fun node ->
+                        PipeTest.field "kind" node = RpcValue.String "project"
+                        && PipeTest.field "name" node = RpcValue.String "One")
+                    |> PipeTest.field "id"
+                    |> RpcValue.requireString "id"
+
+                PipeTest.send
+                    child
+                    false
+                    (PipeTest.request
+                        3u
+                        "workspace/children"
+                        (PipeTest.map
+                            [ "parentId", RpcValue.String projectId
+                              "pageSize", RpcValue.Integer 50L ]))
+
+                PipeTest.readFrame child |> PipeTest.response 3u |> ignore
+                PipeTest.readFrame child |> ignore
+
+                let arguments = PipeTest.map [ "destination", RpcValue.String "moved/One" ]
+
+                let preview =
+                    PipeTest.map
+                        [ "commandId", RpcValue.String "project.physical-move"
+                          "targetId", RpcValue.String projectId
+                          "arguments", arguments
+                          "expectedRevision", RpcValue.Integer 1L ]
+
+                PipeTest.send child false (PipeTest.request 4u "command/preview" preview)
+                let previewError, previewResult = PipeTest.readFrame child |> PipeTest.response 4u
+                Assert.True previewError.IsNone
+                Assert.True(Directory.Exists sourceDirectory)
+
+                let execute =
+                    PipeTest.map
+                        [ "commandId", RpcValue.String "project.physical-move"
+                          "targetId", RpcValue.String projectId
+                          "arguments", arguments
+                          "expectedRevision", RpcValue.Integer 1L
+                          "previewId", PipeTest.field "previewId" previewResult ]
+
+                PipeTest.send child false (PipeTest.request 5u "command/execute" execute)
+                let executeError, operation = PipeTest.readFrame child |> PipeTest.response 5u
+                Assert.True executeError.IsNone
+
+                let operationId =
+                    PipeTest.field "operationId" operation |> RpcValue.requireString "operationId"
+
+                let mutable completed = 0
+                let mutable sawDelta = false
+
+                while completed = 0 do
+                    match PipeTest.readFrame child with
+                    | Notification("operation/progress", parameters) ->
+                        PipeTest.field "operationId" parameters
+                        |> should equal (RpcValue.String operationId)
+                    | Notification("workspace/delta", _) -> sawDelta <- true
+                    | Notification("operation/completed", parameters) ->
+                        PipeTest.field "operationId" parameters
+                        |> should equal (RpcValue.String operationId)
+
+                        PipeTest.field "outcome" parameters
+                        |> should equal (RpcValue.String "succeeded")
+
+                        completed <- completed + 1
+                    | frame -> failwithf "Unexpected physical move frame: %A" frame
+
+                completed |> should equal 1
+                sawDelta |> should equal true
+                Directory.Exists sourceDirectory |> should equal false
+                File.Exists destinationProject |> should equal true
+
+                File.ReadAllText(Path.Combine(destination, "nested", "keep.txt"))
+                |> should equal "keep"
+
+                File.ReadAllText incoming |> should contain "moved/One/One.fsproj"
+
+                File.ReadAllText incoming
+                |> should contain "Condition=\"'$(Configuration)' == 'Debug'\""
+
+                let reopened =
+                    SolutionSerializers
+                        .GetSerializerByMoniker(solution)
+                        .OpenAsync(solution, CancellationToken.None)
+                        .Result
+
+                reopened.SolutionProjects
+                |> Seq.exists (fun project -> project.FilePath = "moved/One/One.fsproj")
+                |> should equal true
+
+                PipeTest.shutdown child 6u
+            finally
+                PipeTest.disposeProcess child
+        finally
+            if Directory.Exists directory then
+                Directory.Delete(directory, true)
+
+    [<Fact>]
     member _.``should expose only read commands and refuse mutation requests for a solution filter``
         ()
         =
