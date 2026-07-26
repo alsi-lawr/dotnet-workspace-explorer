@@ -482,32 +482,29 @@ module internal ProjectMutations =
                 let noneItems = enabled dimension "EnableDefaultNoneItems"
                 let contentItems = enabled dimension "EnableDefaultContentItems"
 
+                let workerJsonOrConfig =
+                    uses dimension "UsingMicrosoftNETSdkWorker" && contentExtension
+
+                let webWwwRoot = uses dimension "UsingMicrosoftNETSdkWeb" && inDirectory "wwwroot"
+
+                let webJsonOrConfig = uses dimension "UsingMicrosoftNETSdkWeb" && contentExtension
+
+                let razorFile =
+                    uses dimension "UsingMicrosoftNETSdkRazor"
+                    && Set.contains extension (Set.ofList [ ".cshtml"; ".razor" ])
+
                 let contentDefault =
-                    if uses dimension "UsingMicrosoftNETSdkWorker" && contentExtension then
-                        not (excluded ordinaryExcludes dimension)
-                    elif uses dimension "UsingMicrosoftNETSdkWeb" then
-                        if inDirectory "wwwroot/.well-known" then
-                            not (excluded defaultItemExcludes dimension)
-                        elif inDirectory "wwwroot" then
-                            not (excluded ordinaryExcludes dimension)
-                        elif contentExtension then
-                            not (excluded webContentExcludes dimension)
-                        else
-                            false
-                    elif
-                        uses dimension "UsingMicrosoftNETSdkRazor"
-                        && Set.contains extension (Set.ofList [ ".cshtml"; ".razor" ])
-                    then
-                        not (excluded webContentExcludes dimension)
-                    else
-                        false
+                    (workerJsonOrConfig && not (excluded ordinaryExcludes dimension))
+                    || (webWwwRoot
+                        && if inDirectory "wwwroot/.well-known" then
+                               not (excluded defaultItemExcludes dimension)
+                           else
+                               not (excluded ordinaryExcludes dimension))
+                    || (webJsonOrConfig && not (excluded webContentExcludes dimension))
+                    || (razorFile && not (excluded webContentExcludes dimension))
 
                 let hasContentDefault =
-                    (uses dimension "UsingMicrosoftNETSdkWorker" && contentExtension)
-                    || (uses dimension "UsingMicrosoftNETSdkWeb"
-                        && (inDirectory "wwwroot" || contentExtension))
-                    || (uses dimension "UsingMicrosoftNETSdkRazor"
-                        && Set.contains extension (Set.ofList [ ".cshtml"; ".razor" ]))
+                    workerJsonOrConfig || webWwwRoot || webJsonOrConfig || razorFile
 
                 if not defaultItems then
                     None
