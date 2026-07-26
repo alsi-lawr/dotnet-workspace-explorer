@@ -169,8 +169,6 @@ module RpcProfile =
                     "workspace/exportChunk"
                     "operation/progress"
                     "operation/output"
-                    "operation/completed"
-                    "test/update"
-                    "test/attachment" ] do
+                    "operation/completed" ] do
                   { Name = name
                     Classification = NotificationMethod } ]

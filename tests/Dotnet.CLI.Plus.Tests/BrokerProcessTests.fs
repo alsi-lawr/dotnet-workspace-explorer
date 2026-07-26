@@ -180,6 +180,8 @@ type BrokerProcessTests() =
                 [ [ "restore"; "Demo.slnx" ], [| "restore"; "Demo.slnx" |]
                   [ "build"; "--no-restore"; "--verbosity"; "quiet" ],
                   [| "build"; "--no-restore"; "--verbosity"; "quiet" |]
+                  [ "test"; "App.fsproj"; "--filter"; "Category=Fast" ],
+                  [| "test"; "App.fsproj"; "--filter"; "Category=Fast" |]
                   [ "run"; "--project"; "App.fsproj" ], [| "run"; "--project"; "App.fsproj" |] ] do
                 let supplied, expected = arguments
                 let result = BrokerProcess.run directory "capture" ("--json" :: supplied) []

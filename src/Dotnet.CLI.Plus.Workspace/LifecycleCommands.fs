@@ -25,6 +25,7 @@ module internal LifecycleCommands =
         ImmutableArray.CreateRange
             [ descriptor "lifecycle.restore" "Restore" workspaceAndProject [ extra ]
               descriptor "lifecycle.build" "Build" workspaceAndProject [ noRestore; extra ]
+              descriptor "lifecycle.test" "Test" workspaceAndProject [ extra ]
               descriptor "lifecycle.run" "Run" [ WorkspaceNodeKind.Project ] [ noRestore; extra ] ]
 
     let tryDescribe id =
@@ -52,7 +53,8 @@ module internal LifecycleCommands =
         match argument "arguments" arguments with
         | None -> Ok []
         | Some(TextArray values) when
-            command <> "lifecycle.restore" && values |> Seq.exists ((=) "--no-restore")
+            (command = "lifecycle.build" || command = "lifecycle.run")
+            && values |> Seq.exists ((=) "--no-restore")
             ->
             Error "Use noRestore instead of --no-restore in arguments."
         | Some(TextArray values) -> Ok(values |> Seq.toList)
@@ -94,6 +96,9 @@ module internal LifecycleCommands =
                     @ (if noRestore then [ "--no-restore" ] else [])
                     @ extra
                 )
+            | "lifecycle.test", None, _ -> Ok([ "test"; workspace.BackingPath.Value ] @ extra)
+            | "lifecycle.test", Some _, Some item ->
+                Ok([ "test"; item.Path.AbsolutePath.Value ] @ extra)
             | "lifecycle.run", Some _, Some item ->
                 Ok(
                     [ "run"; "--project"; item.Path.AbsolutePath.Value ]
@@ -102,6 +107,7 @@ module internal LifecycleCommands =
                 )
             | "lifecycle.run", None, _ -> Error "A project target is required."
             | "lifecycle.restore", Some _, None
-            | "lifecycle.build", Some _, None ->
+            | "lifecycle.build", Some _, None
+            | "lifecycle.test", Some _, None ->
                 Error "The lifecycle command requires a workspace or project target."
             | _ -> Error "The lifecycle command is not supported."

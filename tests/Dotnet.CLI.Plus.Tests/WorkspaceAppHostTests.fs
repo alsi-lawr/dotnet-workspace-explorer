@@ -2153,7 +2153,25 @@ type WorkspaceAppHostTests() =
             use child = PipeTest.startPipe "solution" filter
 
             try
-                PipeTest.send child false (PipeTest.request 1u "initialize" PipeTest.initialize)
+                let initialize =
+                    PipeTest.map
+                        [ "protocolVersion",
+                          PipeTest.map
+                              [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 4L ]
+                          "clientInfo", PipeTest.map [ "name", RpcValue.String "test" ]
+                          "capabilities",
+                          RpcValue.array
+                              [ RpcValue.String "workspace.root"
+                                RpcValue.String "workspace.export"
+                                RpcValue.String "workspace.refresh"
+                                RpcValue.String "operation.cancel"
+                                RpcValue.String "unknown.claim" ]
+                          "limits",
+                          PipeTest.map
+                              [ "maxFrameBytes", RpcValue.Integer 4096L
+                                "maxPageSize", RpcValue.Integer 50L ] ]
+
+                PipeTest.send child false (PipeTest.request 1u "initialize" initialize)
                 PipeTest.readFrame child |> PipeTest.response 1u |> ignore
                 PipeTest.send child false (PipeTest.request 2u "command/list" RpcValue.emptyMap)
                 let listError, listResult = PipeTest.readFrame child |> PipeTest.response 2u
@@ -2168,6 +2186,7 @@ type WorkspaceAppHostTests() =
                     [| "solution.launch.list"
                        "lifecycle.restore"
                        "lifecycle.build"
+                       "lifecycle.test"
                        "template.list"
                        "template.show" |]
 

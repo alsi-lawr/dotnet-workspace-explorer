@@ -53,11 +53,44 @@ type LifecycleAppHostTests() =
                           RpcValue.array [ RpcValue.String "--verbosity"; RpcValue.String "quiet" ] ])
                     0L
 
+            let workspaceTest =
+                CanonicalAppHost.executeRead
+                    session
+                    5u
+                    "lifecycle.test"
+                    None
+                    (CanonicalAppHost.argumentMap
+                        [ "arguments",
+                          RpcValue.array
+                              [ RpcValue.String "--no-restore"
+                                RpcValue.String "--filter"
+                                RpcValue.String "Category=Fast"
+                                RpcValue.String "--logger"
+                                RpcValue.String String.Empty ] ])
+                    0L
+
+            let projectTest =
+                CanonicalAppHost.executeRead
+                    session
+                    6u
+                    "lifecycle.test"
+                    session.ProjectId
+                    (CanonicalAppHost.argumentMap
+                        [ "arguments",
+                          RpcValue.array
+                              [ RpcValue.String "--logger"
+                                RpcValue.String "console"
+                                RpcValue.String "--logger"
+                                RpcValue.String "console" ] ])
+                    0L
+
             let run =
-                CanonicalAppHost.executeRead session 5u "lifecycle.run" session.ProjectId empty 0L
+                CanonicalAppHost.executeRead session 7u "lifecycle.run" session.ProjectId empty 0L
 
             restore.Outcome |> should equal "succeeded"
             build.Outcome |> should equal "succeeded"
+            workspaceTest.Outcome |> should equal "succeeded"
+            projectTest.Outcome |> should equal "succeeded"
             run.Outcome |> should equal "succeeded"
 
             CanonicalAppHost.captured capture
@@ -65,6 +98,19 @@ type LifecycleAppHostTests() =
                 equal
                 [| [| "restore"; Path.Combine(session.Directory, "App.csproj") |]
                    [| "build"; session.Solution; "--no-restore"; "--verbosity"; "quiet" |]
+                   [| "test"
+                      session.Solution
+                      "--no-restore"
+                      "--filter"
+                      "Category=Fast"
+                      "--logger"
+                      String.Empty |]
+                   [| "test"
+                      Path.Combine(session.Directory, "App.csproj")
+                      "--logger"
+                      "console"
+                      "--logger"
+                      "console" |]
                    [| "run"; "--project"; Path.Combine(session.Directory, "App.csproj") |] |]
         finally
             CanonicalAppHost.stop session
