@@ -114,32 +114,30 @@ module internal ProjectRelocationPlanning =
             |> Option.ofObj
             |> Option.exists (fun path -> pathEquals path.Value source))
 
+    let private importedReference source projectPath (snapshot: EvaluationSnapshot) =
+        snapshot.Imports
+        |> Seq.exists (fun imported ->
+            try
+                if not (pathEquals imported.Value projectPath) && File.Exists imported.Value then
+                    let document, _, _, _ = ProjectXml.readDocument imported.Value
+
+                    document.Descendants(ProjectXml.name "ProjectReference")
+                    |> Seq.choose (ProjectXml.attribute "Include")
+                    |> Seq.exists (fun includeValue ->
+                        includeValue.Contains("$(", StringComparison.Ordinal)
+                        || pathEquals (referencePath imported.Value includeValue) source)
+                else
+                    false
+            with :? IOException ->
+                true)
+
     let private rewriteReferences
         (source: string)
         (destination: string)
         (projectPath: string)
         (snapshot: EvaluationSnapshot)
         =
-        let importedSourceReference =
-            snapshot.Imports
-            |> Seq.exists (fun imported ->
-                try
-                    if
-                        not (pathEquals imported.Value projectPath) && File.Exists imported.Value
-                    then
-                        let document, _, _, _ = ProjectXml.readDocument imported.Value
-
-                        document.Descendants(ProjectXml.name "ProjectReference")
-                        |> Seq.choose (ProjectXml.attribute "Include")
-                        |> Seq.exists (fun includeValue ->
-                            not (includeValue.Contains("$(", StringComparison.Ordinal))
-                            && pathEquals (referencePath projectPath includeValue) source)
-                    else
-                        false
-                with :? IOException ->
-                    true)
-
-        if importedSourceReference then
+        if importedReference source projectPath snapshot then
             Error "The evaluated incoming project reference is declared by an import."
         else
             let document, encoding, preamble, lineEnding = ProjectXml.readDocument projectPath
@@ -217,8 +215,12 @@ module internal ProjectRelocationPlanning =
                         let declarations =
                             directReferences source projection.Path.AbsolutePath.Value
 
+                        let imported =
+                            importedReference source projection.Path.AbsolutePath.Value snapshot
+
                         if
-                            hasIncomingReference source snapshot
+                            imported
+                            || hasIncomingReference source snapshot
                             || declarations.ReferencesSource
                             || declarations.HasMacro
                         then
