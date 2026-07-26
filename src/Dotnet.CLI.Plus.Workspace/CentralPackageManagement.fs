@@ -41,10 +41,11 @@ module internal CentralPackageManagement =
 
         if File.Exists candidate && not (samePath comparison candidate owner) then
             true
+        elif samePath comparison directory workspaceRoot then
+            false
         else
             match Directory.GetParent directory with
             | null -> false
-            | parent when samePath comparison parent.FullName workspaceRoot -> false
             | parent -> hasNestedOwner comparison workspaceRoot owner parent.FullName
 
     /// Rejects imported membership/ownership and mismatched root ownership before a
@@ -86,7 +87,8 @@ module internal CentralPackageManagement =
                 let externalVersion =
                     versions
                     |> Array.tryFind (fun version ->
-                        not (samePath comparison version.DeclaringPath.Value owner))
+                        MutationFiles.isUnder workspaceRoot version.DeclaringPath.Value
+                        && not (samePath comparison version.DeclaringPath.Value owner))
 
                 match externalVersion with
                 | Some version ->

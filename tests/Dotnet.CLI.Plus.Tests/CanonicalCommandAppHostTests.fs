@@ -382,6 +382,77 @@ type CanonicalCommandAppHostTests() =
             CanonicalAppHost.stop session
 
     [<Fact>]
+    member _.``should reject a package mutation owned below the selected workspace root``() =
+        let session =
+            CanonicalAppHost.start "canonical-nested-package-owner" (fun directory model ->
+                let projectDirectory = Path.Combine(directory, "src")
+                Directory.CreateDirectory projectDirectory |> ignore
+
+                File.WriteAllText(
+                    Path.Combine(projectDirectory, "App.csproj"),
+                    "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup>"
+                    + "<TargetFramework>net10.0</TargetFramework>"
+                    + "</PropertyGroup><ItemGroup>"
+                    + "<PackageReference Include=\"Example.Package\" />"
+                    + "</ItemGroup></Project>"
+                )
+
+                File.WriteAllText(
+                    Path.Combine(projectDirectory, "Directory.Packages.props"),
+                    "<Project><PropertyGroup>"
+                    + "<ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>"
+                    + "</PropertyGroup><ItemGroup>"
+                    + "<PackageVersion Include=\"Example.Package\" Version=\"1.0.0\" />"
+                    + "</ItemGroup></Project>"
+                )
+
+                model.AddProject("src/App.csproj", "App", null) |> ignore)
+
+        try
+            let project = Path.Combine(session.Directory, "src", "App.csproj")
+            let owner = Path.Combine(session.Directory, "src", "Directory.Packages.props")
+            let projectBefore = File.ReadAllBytes project
+            let ownerBefore = File.ReadAllBytes owner
+
+            PipeTest.send
+                session.Child
+                false
+                (PipeTest.request
+                    3u
+                    "command/preview"
+                    (PipeTest.map
+                        [ "commandId", RpcValue.String "package.update"
+                          "targetId", RpcValue.String session.ProjectId.Value
+                          "arguments",
+                          CanonicalAppHost.argumentMap
+                              [ "id", RpcValue.String "Example.Package"
+                                "version", RpcValue.String "2.0.0" ]
+                          "expectedRevision", RpcValue.Integer 0L ]))
+
+            let previewError, _ = PipeTest.readFrame session.Child |> PipeTest.response 3u
+            previewError.Value.Code |> should equal "invalid_input"
+
+            previewError.Value.Message
+            |> should equal "A nested Directory.Packages.props owns package versions."
+
+            PipeTest.send
+                session.Child
+                false
+                (PipeTest.request 4u "workspace/root" RpcValue.emptyMap)
+
+            let rootError, root = PipeTest.readFrame session.Child |> PipeTest.response 4u
+            rootError |> should equal None
+
+            PipeTest.field "revision" root
+            |> RpcValue.requireInteger "revision"
+            |> should equal 0L
+
+            File.ReadAllBytes project |> should equal projectBefore
+            File.ReadAllBytes owner |> should equal ownerBefore
+        finally
+            CanonicalAppHost.stop session
+
+    [<Fact>]
     member _.``should add one project to a logical folder at the requested physical path``() =
         let session =
             CanonicalAppHost.start "canonical-template" (fun _ model ->
