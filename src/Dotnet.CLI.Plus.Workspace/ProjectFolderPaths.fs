@@ -23,10 +23,10 @@ module internal ProjectFolderPaths =
         let relative = Path.GetRelativePath(parent, path)
 
         relative = "."
-        || (not (Path.IsPathRooted relative)
-            && relative <> ".."
-            && not (relative.StartsWith $"..{Path.DirectorySeparatorChar}")
-            && not (relative.StartsWith $"..{Path.AltDirectorySeparatorChar}"))
+        || not (Path.IsPathRooted relative)
+           && relative <> ".."
+           && not (relative.StartsWith $"..{Path.DirectorySeparatorChar}")
+           && not (relative.StartsWith $"..{Path.AltDirectorySeparatorChar}")
 
     let generated projectDirectory path =
         let relative = normalizedRelative projectDirectory path

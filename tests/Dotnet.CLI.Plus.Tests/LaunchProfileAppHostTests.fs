@@ -45,7 +45,8 @@ type LaunchProfileAppHostTests() =
                 BrokerProcess.childArguments set |> should equal [||]
 
                 let profile = Path.ChangeExtension(solution, ".slnLaunch")
-                use document = JsonDocument.Parse(File.ReadAllText profile)
+                let contents: string = File.ReadAllText profile
+                use document = JsonDocument.Parse contents
                 let projects = document.RootElement[0].GetProperty("Projects")
                 projects[0].GetProperty("Path").GetString() |> should equal "Second.fsproj"
                 projects[1].GetProperty("Path").GetString() |> should equal "First.fsproj"
@@ -93,7 +94,8 @@ type LaunchProfileAppHostTests() =
                     [ "solution"; solution; "launch"; "set"; "Start"; project ]
 
             BrokerProcess.success updated |> should equal true
-            use document = JsonDocument.Parse(File.ReadAllText profile)
+            let contents: string = File.ReadAllText profile
+            use document = JsonDocument.Parse contents
 
             document.RootElement[0].GetProperty("Unknown").GetProperty("nested").GetBoolean()
             |> should equal true
@@ -125,7 +127,7 @@ type LaunchProfileAppHostTests() =
 
                 BrokerProcess.success result |> should equal false
                 BrokerProcess.diagnosticCode result |> should equal "invalid_input"
-                File.ReadAllText(profile) |> should equal expected
+                File.ReadAllText profile |> should equal expected
             finally
                 BrokerProcess.delete directory
 
@@ -157,7 +159,7 @@ type LaunchProfileAppHostTests() =
 
             BrokerProcess.success edit |> should equal false
 
-            File.ReadAllText(profile)
+            File.ReadAllText profile
             |> should equal "[{\"Name\":\"Start\",\"Projects\":[]}]"
         finally
             BrokerProcess.delete directory

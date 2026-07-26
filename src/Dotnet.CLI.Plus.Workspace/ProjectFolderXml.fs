@@ -55,9 +55,9 @@ module internal ProjectFolderXml =
         let relative = Path.GetRelativePath(source, path)
 
         relative = "."
-        || (not (Path.IsPathRooted relative)
-            && relative <> ".."
-            && not (relative.StartsWith $"..{Path.DirectorySeparatorChar}"))
+        || not (Path.IsPathRooted relative)
+           && relative <> ".."
+           && not (relative.StartsWith $"..{Path.DirectorySeparatorChar}")
 
     let private declarationValues (document: XDocument) =
         seq {
@@ -83,7 +83,7 @@ module internal ProjectFolderXml =
 
         let affected = tokens |> Array.filter (matchesRelative source)
         let macroAffected = tokens |> Array.exists (macroReferencesSource source)
-        macroAffected || (affected.Length > 0 && tokens.Length <> 1)
+        macroAffected || affected.Length > 0 && tokens.Length <> 1
 
     let private importedDeclarationAffects sourceRelative sourcePath projectPath importPath =
         let document, _, _, _ = readDocument importPath
@@ -91,10 +91,10 @@ module internal ProjectFolderXml =
         declarationValues document
         |> Seq.exists (fun value ->
             affectedList sourceRelative value
-            || (declarationTokens value
-                |> Array.exists (fun token ->
-                    not (hasMacro token)
-                    && isUnder sourcePath (projectRelativeValue projectPath token))))
+            || declarationTokens value
+               |> Array.exists (fun token ->
+                   not (hasMacro token)
+                   && isUnder sourcePath (projectRelativeValue projectPath token)))
 
     let ensureDirectOwnership
         (projectPath: string)
@@ -180,11 +180,11 @@ module internal ProjectFolderXml =
                 (Ok()))
 
     let appendFolder (document: XDocument) (relative: string) =
-        appendItem document "Folder" (relative.TrimEnd([| '/' |]) + "/") []
+        appendItem document "Folder" (relative.TrimEnd [| '/' |] + "/") []
 
     let appendExternalLink (document: XDocument) itemType (source: string) (relative: string) =
-        let source = source.TrimEnd([| '/' |])
-        let relative = relative.TrimEnd([| '/' |])
+        let source = source.TrimEnd [| '/' |]
+        let relative = relative.TrimEnd [| '/' |]
 
         appendItem
             document

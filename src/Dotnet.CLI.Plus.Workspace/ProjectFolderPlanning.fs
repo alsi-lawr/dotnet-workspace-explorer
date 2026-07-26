@@ -212,8 +212,8 @@ module internal ProjectFolderPlanning =
                     if
                         name = "."
                         || name = ".."
-                        || name.Contains('/')
-                        || name.Contains('\\')
+                        || name.Contains '/'
+                        || name.Contains '\\'
                         || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0
                         || Path.IsPathRooted name
                     then

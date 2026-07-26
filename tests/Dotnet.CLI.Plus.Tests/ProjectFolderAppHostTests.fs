@@ -30,7 +30,7 @@ type ProjectFolderAppHostTests() =
                 true
 
             Directory.Exists folder |> should equal true
-            Assert.Contains("<Folder Include=\"Empty/\"", File.ReadAllText(session.Project))
+            Assert.Contains("<Folder Include=\"Empty/\"", File.ReadAllText session.Project)
         finally
             PipeTest.closeProject session
 
