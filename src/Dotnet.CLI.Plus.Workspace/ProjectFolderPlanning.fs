@@ -186,7 +186,8 @@ module internal ProjectFolderPlanning =
                     let source =
                         canonicalExternalDirectory projectDirectory (path "source") |> unwrap
 
-                    let destination = canonicalVirtualDirectory projectDirectory (path "path") |> unwrap
+                    let destination =
+                        canonicalVirtualDirectory projectDirectory (path "path") |> unwrap
 
                     let relative = normalizedRelative projectDirectory destination
                     let itemType = requiredItemType command.Arguments |> unwrap
@@ -275,7 +276,9 @@ module internal ProjectFolderPlanning =
                     let relative = normalizedRelative projectDirectory folder
                     removeOwnedDescendants relative document
 
-                    for itemType, includeValue in descendantItems snapshot projectDirectory folder do
+                    let descendants = descendantItems snapshot projectDirectory folder
+
+                    for itemType, includeValue in descendants do
                         appendRemove document itemType includeValue
 
                     let actions =

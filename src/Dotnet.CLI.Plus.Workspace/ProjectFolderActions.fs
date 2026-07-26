@@ -1,6 +1,5 @@
 namespace Dotnet.CLI.Plus
 
-open System
 open System.IO
 open Dotnet.CLI.Plus.Core
 

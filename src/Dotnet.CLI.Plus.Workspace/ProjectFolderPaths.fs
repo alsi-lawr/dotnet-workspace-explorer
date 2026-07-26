@@ -2,7 +2,6 @@ namespace Dotnet.CLI.Plus
 
 open System
 open System.IO
-open Dotnet.CLI.Plus.Core
 
 module internal ProjectFolderPaths =
     let normalizedRelative projectDirectory path =
@@ -84,12 +83,16 @@ module internal ProjectFolderPaths =
 
         match MutationFiles.canonicalNoFollow false path with
         | Error message -> Error message
-        | Ok canonical when String.Equals(canonical, projectDirectory, StringComparison.OrdinalIgnoreCase) ->
+        | Ok canonical when
+            String.Equals(canonical, projectDirectory, StringComparison.OrdinalIgnoreCase)
+            ->
             Error "The project root is not a folder operand."
         | Ok canonical when not (isProjectLocal projectDirectory canonical) ->
             Error "The link folder must stay within the project directory."
-        | Ok canonical when generated projectDirectory canonical -> Error "Generated folders are read-only."
-        | Ok canonical when MutationFiles.exists canonical -> Error "The link folder already exists."
+        | Ok canonical when generated projectDirectory canonical ->
+            Error "Generated folders are read-only."
+        | Ok canonical when MutationFiles.exists canonical ->
+            Error "The link folder already exists."
         | Ok canonical -> Ok canonical
 
     let canonicalExternalDirectory projectDirectory value =
