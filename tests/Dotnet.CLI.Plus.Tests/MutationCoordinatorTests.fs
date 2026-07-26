@@ -183,10 +183,19 @@ type MutationCoordinatorTests() =
                         ([ project; destination; root; failedWrite ] @ argumentPaths)
                         arguments
 
-                let actions = [ MutationAction.ReplaceFile(failedWrite, Encoding.UTF8.GetBytes "fail") ]
+                let actions =
+                    [ MutationAction.ReplaceFile(failedWrite, Encoding.UTF8.GetBytes "fail") ]
+
                 let preview = MutationTest.preview coordinator request actions
 
-                match coordinator.Execute(request, actions, preview.Confirmation, CancellationToken.None) with
+                match
+                    coordinator.Execute(
+                        request,
+                        actions,
+                        preview.Confirmation,
+                        CancellationToken.None
+                    )
+                with
                 | Success(RolledBack(Internal _)) -> ()
                 | result -> failwithf "Expected rollback, got %A" result
 
@@ -202,8 +211,7 @@ type MutationCoordinatorTests() =
 
             run
                 "project.folder.copy"
-                [ MutationTest.argument "source" source
-                  MutationTest.argument "path" copied ]
+                [ MutationTest.argument "source" source; MutationTest.argument "path" copied ]
                 copied
 
             File.ReadAllText(Path.Combine(source, "Source.txt")) |> should equal "source"
