@@ -739,6 +739,9 @@ type CanonicalCommandAppHostTests() =
             File.ReadAllText(Path.Combine(session.Directory, "src", "Ref", "Ref.fsproj"))
             |> should contain "moved/One/One.fsproj"
 
+            File.ReadAllText(Path.Combine(session.Directory, "src", "Ref", "Ref.fsproj"))
+            |> should contain "Condition=\"'$(Configuration)' == 'Debug'\""
+
             CanonicalAppHost.openSolution session.Solution
             |> fun reopened ->
                 reopened.SolutionProjects
