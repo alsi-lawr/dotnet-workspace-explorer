@@ -5,7 +5,6 @@ namespace Dotnet.CLI.Plus
 open System.Collections.Concurrent
 open System.Threading
 open System.Threading.Tasks
-open Dotnet.CLI.Plus.Core
 open Dotnet.CLI.Plus.Transport
 
 type internal CommandRequestContext =

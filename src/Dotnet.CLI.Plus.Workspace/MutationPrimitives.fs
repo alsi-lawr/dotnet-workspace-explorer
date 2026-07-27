@@ -1,14 +1,9 @@
 namespace Dotnet.CLI.Plus
 
 open System
-open System.Collections.Generic
-open System.Collections.Immutable
 open System.IO
-open System.Runtime.InteropServices
 open System.Security.Cryptography
 open System.Text
-open System.Threading
-open Microsoft.VisualBasic.FileIO
 open Dotnet.CLI.Plus.Core
 
 [<RequireQualifiedAccess>]

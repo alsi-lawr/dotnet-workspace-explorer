@@ -1,6 +1,5 @@
 namespace Dotnet.CLI.Plus
 
-open System
 open System.Collections.Immutable
 open Dotnet.CLI.Plus.Core
 open Dotnet.CLI.Plus.Solution

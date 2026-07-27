@@ -2,7 +2,6 @@ namespace Dotnet.CLI.Plus.Tests
 
 #nowarn "3261"
 
-open System
 open System.IO
 open System.Text.Json
 open FsUnit.Xunit

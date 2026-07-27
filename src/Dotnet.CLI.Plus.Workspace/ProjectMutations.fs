@@ -9,7 +9,7 @@ module internal ProjectMutations =
         ProjectMutationCommands.tryDescribe id
         |> Option.orElseWith (fun () -> ProjectFolderCommands.tryDescribe id)
 
-    let discover (workspace: Dotnet.CLI.Plus.Solution.SolutionWorkspace) targetId =
+    let discover (workspace: Solution.SolutionWorkspace) targetId =
         Seq.append
             (ProjectMutationCommands.discover workspace targetId)
             (ProjectFolderCommands.discover workspace targetId)
@@ -21,10 +21,10 @@ module internal ProjectMutations =
         ProjectXml.saveDocument document encoding hasPreamble lineEnding
 
     let plan
-        (workspace: Dotnet.CLI.Plus.Solution.SolutionWorkspace)
+        (workspace: Solution.SolutionWorkspace)
         project
         snapshot
-        (command: Dotnet.CLI.Plus.Core.CommandMutationRequest)
+        (command: Core.CommandMutationRequest)
         cancellationToken
         =
         match ProjectFolderCommands.tryDescribe command.CommandId with

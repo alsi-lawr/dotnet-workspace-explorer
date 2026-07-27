@@ -61,26 +61,25 @@ module internal ProjectFolderActions =
         function
         | ProjectFolderAction.CreateDirectory path ->
             Directory.CreateDirectory path |> ignore
-            AppliedProjectFolderAction.CreatedDirectory path
+            CreatedDirectory path
         | ProjectFolderAction.CopyDirectory(source, destination) ->
             let expected = MutationFiles.fingerprint source |> Result.defaultWith invalidOp
 
             MutationFiles.copyNoFollow source destination
 
             match MutationFiles.fingerprint destination with
-            | Ok actual when actual = expected ->
-                AppliedProjectFolderAction.CopiedDirectory(source, destination, expected)
+            | Ok actual when actual = expected -> CopiedDirectory(source, destination, expected)
             | Ok _ -> invalidOp "The copied folder did not verify."
             | Error error -> invalidOp error
 
     let compensate =
         function
-        | AppliedProjectFolderAction.CreatedDirectory path ->
+        | CreatedDirectory path ->
             MutationFiles.remove path
 
             if MutationFiles.exists path then
                 invalidOp "The created folder remained after compensation."
-        | AppliedProjectFolderAction.CopiedDirectory(_, destination, expected) ->
+        | CopiedDirectory(_, destination, expected) ->
             match MutationFiles.fingerprint destination with
             | Ok actual when actual = expected -> MutationFiles.remove destination
             | Ok _ -> invalidOp "The copied folder changed before compensation."

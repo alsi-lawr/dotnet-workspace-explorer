@@ -1,8 +1,6 @@
 namespace Dotnet.CLI.Plus
 
-open System
 open System.Threading
-open System.Threading.Tasks
 open Dotnet.CLI.Plus.Core
 open Dotnet.CLI.Plus.Solution
 

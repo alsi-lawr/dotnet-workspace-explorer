@@ -3,7 +3,6 @@ namespace Dotnet.CLI.Plus
 #nowarn "3511"
 
 open System.Threading
-open System.Threading.Tasks
 open Dotnet.CLI.Plus.Core
 open Dotnet.CLI.Plus.Solution
 open Dotnet.CLI.Plus.Transport
@@ -51,7 +50,6 @@ module internal PipeLifecycleRequests =
     let private executeProfileMutation
         (context: CommandRequestContext)
         (workspace: SolutionWorkspace)
-        (descriptor: CommandDescriptor)
         (request: CommandMutationRequest)
         previewId
         cancellationToken
@@ -165,7 +163,6 @@ module internal PipeLifecycleRequests =
                             executeProfileMutation
                                 context
                                 workspace
-                                descriptor
                                 request
                                 previewId
                                 cancellationToken

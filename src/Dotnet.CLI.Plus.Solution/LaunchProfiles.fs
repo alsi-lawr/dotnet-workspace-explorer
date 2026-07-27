@@ -4,7 +4,6 @@ namespace Dotnet.CLI.Plus.Solution
 
 open System
 open System.IO
-open System.Text
 open System.Text.Json
 open System.Text.Json.Nodes
 open Dotnet.CLI.Plus.Core
@@ -26,8 +25,8 @@ module internal LaunchProfiles =
           Profiles: Profile list }
 
     type private ExpectedState =
-        | HasProfile of name: string * projects: (string * string) list
-        | LacksProfile of name: string
+        | HasProfile of string * (string * string) list
+        | LacksProfile of string
 
     let private invalid message = Error message
 

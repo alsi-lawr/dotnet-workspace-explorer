@@ -2,7 +2,6 @@ namespace Dotnet.CLI.Plus
 
 #nowarn "3511"
 
-open System.Collections.Concurrent
 open System.Threading
 open System.Threading.Tasks
 open Dotnet.CLI.Plus.Core
