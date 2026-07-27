@@ -18,6 +18,7 @@ module private Test =
             Path.Combine(Path.GetTempPath(), $"dotnet-cli-plus-msbuild-{name}-{Guid.NewGuid():N}")
 
         Directory.CreateDirectory path |> ignore
+        File.WriteAllText(Path.Combine(path, "Directory.Build.props"), "<Project />")
         path
 
     let fixturePath name =
@@ -404,10 +405,11 @@ module private Test =
                     && stringField "name" node = "Evaluated TargetFramework = net8.0")
 
             continuation <-
-                match field "nextToken" page with
-                | RpcValue.String token -> Some token
-                | RpcValue.Nil -> None
-                | value -> failwithf "Unexpected continuation token: %A" value
+                match RpcValue.tryField "nextToken" page with
+                | Some(RpcValue.String token) -> Some token
+                | Some RpcValue.Nil
+                | None -> None
+                | Some value -> failwithf "Unexpected continuation token: %A" value
 
             hasMore <- continuation.IsSome
             requestId <- requestId + 1u
