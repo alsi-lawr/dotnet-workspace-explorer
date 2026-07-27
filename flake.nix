@@ -21,6 +21,12 @@
             nugetHash = "sha256-fseS0ORahl/iK/uZmGOooTmrny8YL1KEwNNq27VxLj0=";
             dotnet-runtime = pkgs.dotnet-sdk_10;
           };
+          csharpier_1_3_0 = pkgs.buildDotnetGlobalTool {
+            pname = "csharpier";
+            version = "1.3.0";
+            nugetHash = "sha256-hwieEoQTcATyKZIZ7CQSWANPBv+pEShg6cDXU5EIexU=";
+            dotnet-runtime = pkgs.dotnet-sdk_10;
+          };
         in
         [
           pkgs.dotnet-sdk_10
@@ -28,7 +34,7 @@
           pkgs.neovim
           pkgs.fsautocomplete
           fantomas_7_0_5
-          pkgs.csharpier
+          csharpier_1_3_0
         ];
     in
     {

@@ -38,14 +38,19 @@ let trackedFSharp = gitFiles [ "ls-files"; "*.fs"; "*.fsi"; "*.fsx" ]
 require (not trackedFSharp.IsEmpty) "No tracked F# source files were found."
 
 let testProjects =
-    gitFiles [ "ls-files"; "tests/**/*.fsproj" ]
+    gitFiles [ "ls-files"; "*.fsproj"; "*.csproj"; "*.vbproj" ]
     |> List.filter (fun path ->
         File.ReadAllText(Path.Combine(repositoryRoot, path))
         |> fun contents -> contents.Contains "<IsTestProject>true</IsTestProject>")
 
 require
     (testProjects.Length = 3)
-    $"Expected exactly three F# IsTestProject projects, found {testProjects.Length}."
+    $"Expected exactly three IsTestProject projects, found {testProjects.Length}."
+
+for project in testProjects do
+    require
+        (Path.GetExtension project = ".fsproj")
+        $"{project} is an IsTestProject project but is not an F# project."
 
 let packageVersions =
     XDocument.Load(Path.Combine(repositoryRoot, "Directory.Packages.props"))
