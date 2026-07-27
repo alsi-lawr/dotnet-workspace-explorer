@@ -15,7 +15,7 @@ let require condition message =
 let repositoryRoot = Directory.GetCurrentDirectory()
 
 let gitFiles (arguments: string list) =
-    let start = ProcessStartInfo("git")
+    let start = ProcessStartInfo "git"
     start.WorkingDirectory <- repositoryRoot
     start.RedirectStandardOutput <- true
     start.RedirectStandardError <- true
@@ -40,16 +40,15 @@ require (not trackedFSharp.IsEmpty) "No tracked F# source files were found."
 let testProjects =
     gitFiles [ "ls-files"; "tests/**/*.fsproj" ]
     |> List.filter (fun path ->
-        File
-            .ReadAllText(Path.Combine(repositoryRoot, path))
-            .Contains("<IsTestProject>true</IsTestProject>"))
+        File.ReadAllText(Path.Combine(repositoryRoot, path))
+        |> fun contents -> contents.Contains "<IsTestProject>true</IsTestProject>")
 
 require
     (testProjects.Length = 3)
     $"Expected exactly three F# IsTestProject projects, found {testProjects.Length}."
 
 let packageVersions =
-    (XDocument.Load(Path.Combine(repositoryRoot, "Directory.Packages.props")))
+    XDocument.Load(Path.Combine(repositoryRoot, "Directory.Packages.props"))
     |> fun document -> document.Descendants(XName.Get "PackageVersion")
     |> Seq.choose (fun element ->
         let includeAttribute = element.Attribute(XName.Get "Include")

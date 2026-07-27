@@ -116,7 +116,7 @@ if not vim.wait(overall_timeout_ms, ready, 100) then
   return
 end
 
-if not vim.wait(quiet_timeout_ms, function()
+if not vim.wait(quiet_timeout_ms + 1000, function()
   return vim.uv.now() - last_event >= quiet_timeout_ms
 end, 100) then
   fail("timed out waiting for the final diagnostic quiet window")
@@ -143,7 +143,7 @@ if #failures > 0 then
   return
 end
 
-vim.lsp.stop_client(client_id, true)
+vim.lsp.get_client_by_id(client_id):stop(true)
 io.stdout:write(string.format(
   "F# diagnostics: %d tracked files attached, published, analyzed, and quiet for %d ms with zero diagnostics",
   #files,
