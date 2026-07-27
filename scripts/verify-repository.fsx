@@ -37,8 +37,12 @@ let trackedFSharp = gitFiles [ "ls-files"; "*.fs"; "*.fsi"; "*.fsx" ]
 
 require (not trackedFSharp.IsEmpty) "No tracked F# source files were found."
 
+let trackedProjectFiles =
+    gitFiles [ "ls-files" ]
+    |> List.filter (fun path -> path.EndsWith("proj", StringComparison.Ordinal))
+
 let testProjects =
-    gitFiles [ "ls-files"; "*.fsproj"; "*.csproj"; "*.vbproj" ]
+    trackedProjectFiles
     |> List.filter (fun path ->
         File.ReadAllText(Path.Combine(repositoryRoot, path))
         |> fun contents -> contents.Contains "<IsTestProject>true</IsTestProject>")
