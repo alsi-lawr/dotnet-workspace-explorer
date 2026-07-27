@@ -31,9 +31,9 @@ dotnet-plus solution ./Demo.slnf list
 dotnet-plus build ./Demo.sln --configuration Release
 ```
 
-`--json` writes one JSON envelope with `schemaVersion`, `commandId`, `success`, optional `revision`, result output, diagnostics, and an optional external exit code. Failed operations use the same envelope and return a non-zero exit code; diagnostic codes include invalid input, unsupported capability, ambiguous target, workspace conflict, external-tool failure, and partial-recovery-required.
+`--json` writes one JSON envelope with `schemaVersion`, `commandId`, `success`, optional `revision`, result output, diagnostics, and an optional external exit code. Failed operations use the same envelope and return a non-zero exit code; diagnostic codes include `invalid_input`, `unsupported_capability`, `ambiguous_target`, `workspace_conflict`, `external_tool_failed`, and `partial_recovery_required`.
 
-Mutating commands are verified against the selected target. The pipe protocol additionally requires a preview ID and expected revision before execution. The tool makes narrowly scoped in-process compensation attempts when a mutation fails, but does not promise durable recovery.
+Mutating commands are verified against the selected target. For pipe mutations, a preview ID and expected revision are required before execution. The tool makes narrowly scoped in-process compensation attempts when a mutation fails, but does not promise durable recovery.
 
 ## Pipe clients
 

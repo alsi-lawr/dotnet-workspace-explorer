@@ -1,7 +1,6 @@
 open System
 open System.Buffers.Binary
 open System.Diagnostics
-open System.Globalization
 open System.IO
 open System.IO.Compression
 open System.Text
@@ -24,7 +23,7 @@ let configuration =
     | _ -> fail "Usage: dotnet fsi scripts/verify-package.fsx --configuration Release"
 
 let run directory executable (arguments: string list) =
-    let start = ProcessStartInfo(executable)
+    let start = ProcessStartInfo executable
     start.WorkingDirectory <- directory
     start.UseShellExecute <- false
     start.RedirectStandardOutput <- true
@@ -57,7 +56,7 @@ let readEntry (entry: ZipArchiveEntry) =
 let normalizeArchivePath (path: string) =
     path.Replace('\\', '/').ToLowerInvariant()
 
-let inspectPackage packagePath packageId version =
+let inspectPackage (packagePath: string) (packageId: string) (version: string) =
     use archive = ZipFile.OpenRead packagePath
     let entries = archive.Entries |> Seq.map (fun entry -> entry.FullName) |> Seq.toList
     let normalized = entries |> List.map normalizeArchivePath
@@ -84,24 +83,71 @@ let inspectPackage packagePath packageId version =
     for path in required do
         require (contains path) $"The package is missing required runtime content: {path}"
 
-    let forbidden =
-        [ "/src/"
-          "/source/"
-          "/tests/"
-          "/fixtures/"
-          "/conformance"
-          "/generated"
-          "/.agent-workspace/"
-          "/nvim"
-          "/casefile"
-          "/docs/" ]
+    let isForbiddenRepositoryContent (path: string) =
+        let fileName = Path.GetFileName path
+        let extension = Path.GetExtension path
+        let segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries)
+
+        let hasSegment values =
+            segments |> Array.exists (fun segment -> values |> List.contains segment)
+
+        let isSourceOrProject =
+            [ ".cs"
+              ".fs"
+              ".fsx"
+              ".vb"
+              ".csproj"
+              ".fsproj"
+              ".vbproj"
+              ".sln"
+              ".slnx"
+              ".slnf" ]
+            |> List.contains extension
+
+        isSourceOrProject
+        || fileName.Contains("test", StringComparison.Ordinal)
+        || hasSegment
+            [ "src"
+              "source"
+              "script"
+              "scripts"
+              "project"
+              "projects"
+              "test"
+              "tests"
+              "fixture"
+              "fixtures"
+              "conformance"
+              "generated"
+              "docs"
+              ".agent-workspace"
+              "nvim"
+              "casefile" ]
+
+    let isNuGetMetadata (path: string) =
+        path = "[content_types].xml"
+        || path = "_rels/.rels"
+        || path = $"{packageId.ToLowerInvariant()}.nuspec"
+        || path.StartsWith("package/services/metadata/core-properties/", StringComparison.Ordinal)
+           && path.EndsWith(".psmdcp", StringComparison.Ordinal)
+
+    let isRuntimeOrToolFile (path: string) =
+        let prefix = "tools/net10.0/any/"
+        let extension = Path.GetExtension path
+
+        path.StartsWith(prefix, StringComparison.Ordinal)
+        && path.Length > prefix.Length
+        && [ ".dll"; ".pdb"; ".json"; ".xml"; ".so"; ".dylib"; ".exe" ]
+           |> List.contains extension
 
     for path in normalized do
-        let framed = "/" + path
+        require
+            (not (isForbiddenRepositoryContent path))
+            $"The package contains forbidden repository content: {path}"
 
         require
-            (forbidden |> List.exists (fun segment -> framed.Contains segment) |> not)
-            $"The package contains repository-only content: {path}"
+            (path = "readme.md" || isNuGetMetadata path || isRuntimeOrToolFile path)
+            $"The package entry is outside the allowed release shape: {path}"
 
     let nuspec =
         archive.Entries
@@ -142,7 +188,10 @@ let inspectPackage packagePath packageId version =
         "The package is not a DotnetTool package."
 
     printfn "package: %s" packagePath
-    printfn "manifest: %d entries; root README and runtime allowlist present" entries.Length
+
+    printfn
+        "manifest: %d entries; archive shape limited to root README, NuGet metadata, and approved tool/runtime files"
+        entries.Length
 
 let deleteDirectory path =
     if Directory.Exists path then
@@ -165,12 +214,12 @@ let bytesForUnsigned value =
     elif value <= 65535UL then
         let bytes = Array.zeroCreate 3
         bytes[0] <- 0xcduy
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(1), uint16 value)
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan 1, uint16 value)
         bytes
     else
         let bytes = Array.zeroCreate 5
         bytes[0] <- 0xceuy
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(1), uint32 value)
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan 1, uint32 value)
         bytes
 
 let stringBytes (value: string) =
@@ -183,7 +232,7 @@ let stringBytes (value: string) =
     else
         let header = Array.zeroCreate 3
         header[0] <- 0xdauy
-        BinaryPrimitives.WriteUInt16BigEndian(header.AsSpan(1), uint16 content.Length)
+        BinaryPrimitives.WriteUInt16BigEndian(header.AsSpan 1, uint16 content.Length)
         Array.concat [ header; content ]
 
 let rec encode value =
@@ -351,7 +400,7 @@ let field name fields =
     |> Option.defaultWith (fun () -> fail $"Response is missing '{name}'.")
 
 let startPipe apphost target =
-    let start = ProcessStartInfo(apphost)
+    let start = ProcessStartInfo apphost
     start.UseShellExecute <- false
     start.RedirectStandardInput <- true
     start.RedirectStandardOutput <- true
@@ -380,7 +429,7 @@ let runPipeSmoke apphost solution =
             map
                 [ "protocolVersion", map [ "major", Integer 1L; "minor", Integer 0L ]
                   "clientInfo", map (List.singleton ("name", Text "package-smoke"))
-                  "capabilities", (Array [])
+                  "capabilities", Array []
                   "limits", map [ "maxFrameBytes", Integer 65536L; "maxPageSize", Integer 16L ] ]
 
         sendFrame child.StandardInput.BaseStream (request 1L "initialize" initialize)
@@ -405,7 +454,9 @@ let runPipeSmoke apphost solution =
             readFrameWithin 10000 child.StandardOutput.BaseStream |> expectResponse 2L
 
         match field "revision" root, field "nodes" root with
-        | Integer _, Array _ -> ()
+        | Integer revision, Array nodes ->
+            require (revision >= 0L) "The workspace/root response has a negative revision."
+            printfn "pipe: workspace/root revision %d with %d nodes" revision nodes.Length
         | _ -> fail "The workspace/root response has an invalid public shape."
 
         sendFrame child.StandardInput.BaseStream (request 3L "shutdown" (map []))
@@ -429,7 +480,7 @@ let runPipeSmoke apphost solution =
         printfn "pipe: initialize/root/shutdown responses validated"
     finally
         if not child.HasExited then
-            child.Kill(true)
+            child.Kill true
             child.WaitForExit()
 
 let runRoot =
@@ -473,7 +524,7 @@ try
     let packagePath = packages[0]
 
     require
-        (Path.GetFileName(packagePath) = $"{packageId}.{version}.nupkg")
+        (Path.GetFileName packagePath = $"{packageId}.{version}.nupkg")
         "The fresh package filename differs from the generated identity."
 
     inspectPackage packagePath packageId version

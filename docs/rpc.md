@@ -20,9 +20,9 @@ The v1.0 allowlist is exactly:
 
 `workspace/root` returns the current revision and root nodes. `workspace/children` pages a parent by node ID, page size, and continuation token. `workspace/export` starts an export operation; `workspace/refresh` compares or refreshes a revision. `workspace/delta` and reset notifications let clients reconcile change instead of assuming a cached tree remains current.
 
-Nodes have stable workspace-scoped identities, kinds, load state, capabilities, and properties. Capabilities determine which commands a node may expose; properties are descriptive data rather than an instruction to mutate a backing file. Filtered and `.slnf` workspaces can contain read-only/excluded views. Clients must use revisions and must tolerate paging, export chunks, and reset notifications.
+Each public node carries its workspace ID and revision, plus `id`, `kind`, `name`, `loadState`, and `capabilities`. Capabilities determine which commands a node may expose. The node shape has no general properties field; property mutation is exposed by descriptors such as `project.property.set`. Filtered and `.slnf` workspaces can contain read-only/excluded views. Clients must use revisions and must tolerate paging, export chunks, and reset notifications.
 
-`command/list` discovers descriptors, `command/describe` obtains one descriptor, `command/preview` creates a revision-bound plan, and `command/execute` uses its preview ID and expected revision. Destructive intent is explicit: a client must preview before execution and handle conflicts rather than retrying against an unknown workspace state. `operation/cancel` requests cancellation for an operation ID; it does not promise that already-completed work can be undone. `shutdown` accepts an orderly session shutdown.
+`command/list` discovers descriptors, `command/describe` obtains one descriptor, and `command/preview` creates a revision-bound plan. A mutating or destructive `command/execute` requires that preview ID and expected revision. Clients must handle conflicts rather than retrying against an unknown workspace state. `operation/cancel` requests cancellation for an operation ID; it does not promise that already-completed work can be undone. `shutdown` accepts an orderly session shutdown.
 
 ## Notifications
 
