@@ -1,0 +1,80 @@
+name: repository qualification
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: native (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    steps:
+      - uses: actions/checkout@v5.1.0
+      - uses: actions/setup-dotnet@v5.4.0
+        with:
+          dotnet-version: 10.0.300
+      - uses: rhysd/action-setup-vim@v1.6.1
+        with:
+          neovim: true
+          version: v0.12.4
+      - name: Restore local tools and solution
+        run: |
+          dotnet tool restore
+          dotnet restore Dotnet.CLI.Plus.slnx
+      - name: Build Debug and Release
+        shell: pwsh
+        run: |
+          dotnet build Dotnet.CLI.Plus.slnx --configuration Debug --no-restore
+          dotnet build Dotnet.CLI.Plus.slnx --configuration Release --no-restore
+      - name: Run complete native-MTP apphosts
+        shell: pwsh
+        run: |
+          $suffix = if ($env:RUNNER_OS -eq 'Windows') { '.exe' } else { '' }
+          $projects = @(
+            'Dotnet.CLI.Plus.Transport.Tests',
+            'Dotnet.CLI.Plus.MSBuild.Tests',
+            'Dotnet.CLI.Plus.Tests'
+          )
+          foreach ($configuration in @('Debug', 'Release')) {
+            foreach ($project in $projects) {
+              & "tests/$project/bin/$configuration/net10.0/$project$suffix" --fail-skips on
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+          }
+      - name: Check repository contracts and formatting
+        run: |
+          dotnet fsi scripts/verify-repository.fsx
+          dotnet fantomas --check .
+          dotnet csharpier check src/Dotnet.CLI.Plus.MSBuild
+      - name: Check all F# editor diagnostics
+        run: nvim --headless -u NONE -n -c "luafile scripts/verify-fsharp-diagnostics.lua"
+      - name: Verify package smoke and clean repository state
+        shell: pwsh
+        run: |
+          git diff --check
+          dotnet fsi scripts/verify-package.fsx --configuration Release
+          if ((Test-Path .agent-workspace/release) -and (Get-ChildItem .agent-workspace/release -Force)) { throw 'Package verification left a release run root.' }
+          if (Get-Process -Name dotnet-plus -ErrorAction SilentlyContinue) { throw 'Package verification left dotnet-plus running.' }
+          if (git status --porcelain) { throw 'Qualification left repository residue.' }
+
+  nix:
+    name: nix (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    steps:
+      - uses: actions/checkout@v5.1.0
+      - uses: DeterminateSystems/determinate-nix-action@v3.9.1
+      - name: Check locked flake tool closures
+        run: nix flake check

@@ -13,6 +13,23 @@
         "aarch64-darwin"
       ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
+      qualityTools = pkgs:
+        let
+          fantomas_7_0_5 = pkgs.buildDotnetGlobalTool {
+            pname = "fantomas";
+            version = "7.0.5";
+            nugetHash = "sha256-fseS0ORahl/iK/uZmGOooTmrny8YL1KEwNNq27VxLj0=";
+            dotnet-runtime = pkgs.dotnet-sdk_10;
+          };
+        in
+        [
+          pkgs.dotnet-sdk_10
+          pkgs.git
+          pkgs.neovim
+          pkgs.fsautocomplete
+          fantomas_7_0_5
+          pkgs.csharpier
+        ];
     in
     {
       devShells = forAllSystems (
@@ -22,15 +39,33 @@
         in
         {
           default = pkgs.mkShellNoCC {
-            packages = [
-              pkgs.dotnet-sdk_10
-              pkgs.git
-            ];
+            packages = qualityTools pkgs;
 
             DOTNET_CLI_TELEMETRY_OPTOUT = "1";
             DOTNET_NOLOGO = "1";
             NUGET_XMLDOC_MODE = "skip";
           };
+        }
+      );
+
+      checks = forAllSystems (
+        system:
+        let
+          pkgs = import nixpkgs { inherit system; };
+        in
+        {
+          quality-tools = pkgs.runCommand "dotnet-cli-plus-quality-tools" {
+            nativeBuildInputs = qualityTools pkgs;
+          } ''
+            export DOTNET_CLI_HOME="$TMPDIR"
+            dotnet --version | grep -E '^10[.]'
+            git --version
+            nvim --version | grep -F 'NVIM v0.12.4'
+            fsautocomplete --version | grep -Fx '0.83.0'
+            fantomas --version | grep -F 'Fantomas v7.0.5'
+            csharpier --version | grep -F '1.3.0'
+            touch "$out"
+          '';
         }
       );
     };
