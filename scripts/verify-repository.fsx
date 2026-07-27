@@ -136,16 +136,70 @@ for source in testSources do
                 fail
                     $"{source}:{index + 1} Fact/Theory must bind a double-backticked `should ` scenario."
 
-for source in trackedFSharp do
-    let lines = File.ReadAllLines(Path.Combine(repositoryRoot, source))
+type MatchScope =
+    { Indent: int
+      mutable BranchIndent: int option
+      mutable SawBranch: bool
+      mutable BlankAfterBranch: bool }
 
-    for index in 1 .. lines.Length - 2 do
-        if
-            String.IsNullOrWhiteSpace lines[index]
-            && Regex.IsMatch(lines[index - 1], "^\\s*\\|")
-            && Regex.IsMatch(lines[index + 1], "^\\s*\\|")
-        then
-            fail $"{source}:{index + 1} has a blank line between match branches."
+let matchKeywordPattern = Regex("\\bmatch\\b", RegexOptions.Compiled)
+let branchPattern = Regex("^(\\s*)\\|", RegexOptions.Compiled)
+
+let indentation (line: string) = line.Length - line.TrimStart().Length
+
+let auditMatchBranches (source: string) (lines: string array) =
+    let scopes = ResizeArray<MatchScope>()
+
+    for index in 0 .. lines.Length - 1 do
+        let line = lines[index]
+
+        if String.IsNullOrWhiteSpace line then
+            for scope in scopes do
+                if scope.SawBranch then
+                    scope.BlankAfterBranch <- true
+        else
+            let indent = indentation line
+            let branch = branchPattern.Match line
+
+            if not branch.Success then
+                let surviving =
+                    scopes |> Seq.filter (fun scope -> indent > scope.Indent) |> Seq.toList
+
+                scopes.Clear()
+                scopes.AddRange surviving
+
+                for scope in scopes do
+                    if scope.SawBranch then
+                        scope.BlankAfterBranch <- false
+            else
+                let scope =
+                    scopes
+                    |> Seq.toList
+                    |> List.rev
+                    |> List.tryFind (fun candidate ->
+                        candidate.Indent <= indent
+                        && (candidate.BranchIndent = Some indent || candidate.BranchIndent.IsNone))
+
+                match scope with
+                | Some candidate ->
+                    if candidate.SawBranch && candidate.BlankAfterBranch then
+                        fail $"{source}:{index + 1} has a blank line between match branches."
+
+                    candidate.SawBranch <- true
+                    candidate.BranchIndent <- Some indent
+                    candidate.BlankAfterBranch <- false
+                | None -> ()
+
+            if matchKeywordPattern.IsMatch line then
+                scopes.Add
+                    { Indent = indent
+                      BranchIndent = None
+                      SawBranch = false
+                      BlankAfterBranch = false }
+
+for source in trackedFSharp do
+    File.ReadAllLines(Path.Combine(repositoryRoot, source))
+    |> auditMatchBranches source
 
 printfn
     "repository audit: %d tracked F# files; three native-MTP test projects; package, runner, naming, and match-branch contracts pass"
