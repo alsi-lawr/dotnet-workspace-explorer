@@ -728,7 +728,8 @@ type internal WorkspaceState
                 gate.Release() |> ignore
         }
 
-    member _.InvalidateAsync
+    member private _.InvalidateAsyncCore
+        (retryMaterialized: bool)
         (paths: ImmutableArray<WorkspaceArtifactPath>, cancellationToken: CancellationToken)
         =
         task {
@@ -784,7 +785,8 @@ type internal WorkspaceState
                             | Success workspace ->
                                 let! hydrated =
                                     if
-                                        kind = MsBuildInvalidationKind.ProjectOrImport
+                                        retryMaterialized
+                                        && kind = MsBuildInvalidationKind.ProjectOrImport
                                         && not touchesSolution
                                     then
                                         stageMaterializedAfterProjectInvalidation
@@ -845,12 +847,17 @@ type internal WorkspaceState
                 gate.Release() |> ignore
         }
 
+    member this.InvalidateAsync
+        (paths: ImmutableArray<WorkspaceArtifactPath>, cancellationToken: CancellationToken)
+        =
+        this.InvalidateAsyncCore true (paths, cancellationToken)
+
     member this.InvalidateFromTransactionAsync
         (paths: seq<WorkspaceArtifactPath>, cancellationToken: CancellationToken)
         =
         task {
             let! invalidated =
-                this.InvalidateAsync(ImmutableArray.CreateRange paths, cancellationToken)
+                this.InvalidateAsyncCore false (ImmutableArray.CreateRange paths, cancellationToken)
 
             match invalidated with
             | WorkspaceInvalidationResult.Delta _

@@ -1001,6 +1001,7 @@ type WorkspaceAppHostTests() =
     member _.``should bound retryable project staging failures and cancellation``() =
         let runScenario
             (name: string)
+            (fromTransaction: bool)
             (stageFactory:
                 CancellationTokenSource
                     -> int
@@ -1123,13 +1124,22 @@ type WorkspaceAppHostTests() =
                 | Error error -> failwithf "Could not hydrate retry-bound fixture: %A" error
 
                 let changed =
-                    state
-                        .InvalidateAsync(
-                            ImmutableArray.Create(WorkspaceArtifactPath.Create import),
-                            cancellation.Token
-                        )
-                        .GetAwaiter()
-                        .GetResult()
+                    if fromTransaction then
+                        state
+                            .InvalidateFromTransactionAsync(
+                                [ WorkspaceArtifactPath.Create import ],
+                                cancellation.Token
+                            )
+                            .GetAwaiter()
+                            .GetResult()
+                    else
+                        state
+                            .InvalidateAsync(
+                                ImmutableArray.Create(WorkspaceArtifactPath.Create import),
+                                cancellation.Token
+                            )
+                            .GetAwaiter()
+                            .GetResult()
 
                 let revision = state.Revision
                 state.DisposeAsync().GetAwaiter().GetResult()
@@ -1154,6 +1164,7 @@ type WorkspaceAppHostTests() =
              invalidRecoveryRevision) =
             runScenario
                 "invalid-recovered"
+                false
                 (fun _ evaluation final ->
                     if evaluation = 1 then
                         Failure(
@@ -1196,6 +1207,7 @@ type WorkspaceAppHostTests() =
              internalExhaustedRevision) =
             runScenario
                 "internal-exhausted"
+                false
                 (fun _ _ _ ->
                     Failure(
                         Internal(
@@ -1224,6 +1236,7 @@ type WorkspaceAppHostTests() =
              invalidExhaustedRevision) =
             runScenario
                 "invalid-exhausted"
+                false
                 (fun _ _ _ ->
                     Failure(
                         InvalidInput(
@@ -1251,6 +1264,7 @@ type WorkspaceAppHostTests() =
              cancelledRevision) =
             runScenario
                 "cancelled"
+                false
                 (fun cancellation _ _ ->
                     cancellation.Cancel()
 
@@ -1268,6 +1282,35 @@ type WorkspaceAppHostTests() =
         Assert.Equal(0, cancelledRetries)
         Assert.Equal(0, cancelledRefreshes)
         Assert.Equal(1L, cancelledRevision)
+
+        let (transactionReset,
+             transactionEvaluations,
+             transactionRetries,
+             transactionRefreshes,
+             transactionRevision) =
+            runScenario
+                "transaction"
+                true
+                (fun _ _ _ ->
+                    Failure(
+                        Internal(
+                            diagnostic
+                                "workspace.test_internal"
+                                "The transaction evaluation failed internally."
+                        )
+                    ))
+                (fun () -> new CancellationTokenSource())
+
+        match transactionReset with
+        | WorkspaceInvalidationResult.Reset reset ->
+            Assert.Equal(2L, reset.Revision.Value)
+            Assert.Equal("workspace.watch_unverified", reset.Diagnostics[0].DiagnosticCode.Value)
+        | result -> failwithf "Expected a transaction staging reset, got %A" result
+
+        Assert.Equal(1, transactionEvaluations)
+        Assert.Equal(0, transactionRetries)
+        Assert.Equal(1, transactionRefreshes)
+        Assert.Equal(2L, transactionRevision)
 
     [<Fact>]
     member _.``should bound export admission release canonically and recover after cancellation``
