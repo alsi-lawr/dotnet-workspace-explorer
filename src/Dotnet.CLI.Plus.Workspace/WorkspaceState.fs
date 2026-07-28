@@ -713,7 +713,14 @@ type internal WorkspaceState
                         if kind = MsBuildInvalidationKind.None && not touchesSolution then
                             return WorkspaceInvalidationResult.None
                         else
-                            let! opened = services.OpenAsync target cancellationToken
+                            let! opened =
+                                if
+                                    kind = MsBuildInvalidationKind.ProjectOrImport
+                                    && not touchesSolution
+                                then
+                                    Task.FromResult(Success current.Workspace)
+                                else
+                                    services.OpenAsync target cancellationToken
 
                             match opened with
                             | Failure failure when failure.Code = WorkspaceErrorCode.Cancelled ->

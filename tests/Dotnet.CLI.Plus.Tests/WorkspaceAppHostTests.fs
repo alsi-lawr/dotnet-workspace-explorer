@@ -533,6 +533,242 @@ type WorkspaceAppHostTests() =
                 Directory.Delete(directory, true)
 
     [<Fact>]
+    member _.``should reuse static solution projection only for project or import invalidation``() =
+        let directory = PipeTest.temporaryDirectory "workspace-state-invalidation"
+
+        try
+            let solution = Path.Combine(directory, "Demo.slnx")
+            let filter = Path.Combine(directory, "Demo.slnf")
+            let project = Path.Combine(directory, "Demo.csproj")
+            let oldImport = Path.Combine(directory, "Old.props")
+            let freshImport = Path.Combine(directory, "Fresh.props")
+            let freshWatch = Path.Combine(directory, "Fresh.targets")
+            let freshGlob = Path.Combine(directory, "FreshItems")
+            let model = SolutionModel()
+            model.AddProject("Demo.csproj", "Demo", null) |> ignore
+            PipeTest.save solution model
+            PipeTest.writeProject project
+
+            File.WriteAllText(
+                filter,
+                """{ "solution": { "path": "Demo.slnx", "projects": [ "Demo.csproj" ] } }"""
+            )
+
+            File.WriteAllText(oldImport, "<Project />")
+            File.WriteAllText(freshImport, "<Project />")
+            File.WriteAllText(freshWatch, "<Project />")
+            Directory.CreateDirectory freshGlob |> ignore
+
+            let workspace =
+                match SolutionStore.OpenAsync(filter).Result with
+                | Success value -> value
+                | Failure failure -> failwithf "Could not open invalidation fixture: %A" failure
+
+            let projectNode =
+                workspace.RootProjection.Projects
+                |> Seq.find (fun value -> not value.IsFilteredOut)
+
+            let snapshot visible imports watchInputs globRoots =
+                let item =
+                    EvaluatedItem(
+                        "Compile",
+                        "Items/N0001.cs",
+                        null,
+                        ImmutableArray.Create(EvaluatedMetadata("Visible", visible))
+                    )
+
+                let dimension =
+                    EvaluationDimensionSnapshot(
+                        Nullable(),
+                        ImmutableArray<EvaluatedProperty>.Empty,
+                        ImmutableArray.Create item,
+                        ImmutableArray<EvaluatedReference>.Empty,
+                        ImmutableArray<EvaluatedReference>.Empty,
+                        ImmutableArray<EvaluatedPackage>.Empty,
+                        ImmutableArray<WorkspaceArtifactPath>.Empty
+                    )
+
+                EvaluationSnapshot(
+                    WorkspaceArtifactPath.Create project,
+                    ImmutableArray.Create dimension,
+                    imports |> Seq.map WorkspaceArtifactPath.Create |> ImmutableArray.CreateRange,
+                    watchInputs
+                    |> Seq.map WorkspaceArtifactPath.Create
+                    |> ImmutableArray.CreateRange,
+                    globRoots |> Seq.map WorkspaceArtifactPath.Create |> ImmutableArray.CreateRange,
+                    WorkspaceCapabilityProfile.Full,
+                    ImmutableArray<WorkspaceCapabilityId>.Empty,
+                    ImmutableArray<WorkspaceDiagnostic>.Empty
+                )
+
+            let mutable evaluated = snapshot "true" [ oldImport ] Array.empty Array.empty
+
+            let mutable invalidationKind = MsBuildInvalidationKind.ProjectOrImport
+            let mutable openCount = 0
+            let mutable refreshCount = 0
+
+            let services =
+                { OpenAsync =
+                    fun observedTarget _ ->
+                        Assert.Equal(filter, observedTarget)
+                        openCount <- openCount + 1
+                        Task.FromResult<WorkspaceOutcome<SolutionWorkspace>>(Success workspace)
+                  EvaluateAsync =
+                    fun observedProject observedBacking _ ->
+                        Assert.Equal(project, observedProject.Value)
+                        Assert.Equal(solution, observedBacking.Value)
+
+                        Task.FromResult<WorkspaceOutcome<EvaluationSnapshot>>(Success evaluated)
+                  InvalidateAsync =
+                    fun _ _ ->
+                        Task.FromResult<WorkspaceOutcome<MsBuildInvalidationKind>>(
+                            Success invalidationKind
+                        )
+                  OpenExportSessionAsync = fun _ _ _ -> failwith "Export was not expected."
+                  RefreshAsync =
+                    fun () ->
+                        refreshCount <- refreshCount + 1
+                        Task.CompletedTask
+                  DisposeAsync = fun () -> Task.CompletedTask }
+
+            let state =
+                WorkspaceState.Create(
+                    filter,
+                    workspace,
+                    services,
+                    { HydrationLimit = 32
+                      ExportCapacity = 3
+                      TokenSecret = Array.create 32 1uy }
+                )
+
+            let hydrated =
+                state
+                    .ChildrenAsync(
+                        projectNode.Node.NodeId.Value,
+                        Some 100,
+                        100,
+                        None,
+                        CancellationToken.None
+                    )
+                    .GetAwaiter()
+                    .GetResult()
+
+            let hydratedPage =
+                match hydrated with
+                | Ok page -> page
+                | Error error -> failwithf "Could not hydrate invalidation fixture: %A" error
+
+            Assert.Equal(1L, hydratedPage.Revision)
+
+            let oldItem =
+                hydratedPage.Nodes
+                |> Seq.find (fun node ->
+                    node.NodeKind = WorkspaceNodeKind.ProjectItem
+                    && node.Name.Contains("Visible=true", StringComparison.Ordinal))
+
+            evaluated <- snapshot "false" [ freshImport ] [ freshWatch ] [ freshGlob ]
+
+            let changed =
+                state
+                    .InvalidateAsync(
+                        ImmutableArray.Create(WorkspaceArtifactPath.Create oldImport),
+                        CancellationToken.None
+                    )
+                    .GetAwaiter()
+                    .GetResult()
+
+            Assert.Equal(0, openCount)
+
+            match changed with
+            | WorkspaceInvalidationResult.Delta delta ->
+                Assert.Equal(1L, delta.BaseRevision.Value)
+                Assert.Equal(2L, delta.NewRevision.Value)
+
+                let removedParent =
+                    delta.Changes
+                    |> Seq.choose (function
+                        | Removed(nodeId, parentId, _) when nodeId = oldItem.NodeId -> Some parentId
+                        | _ -> None)
+                    |> Seq.exactlyOne
+
+                let newNode, addedParent =
+                    delta.Changes
+                    |> Seq.choose (function
+                        | Added(node, parentId, _) when
+                            node.Name.Contains("Visible=false", StringComparison.Ordinal)
+                            ->
+                            Some(node, parentId)
+                        | _ -> None)
+                    |> Seq.exactlyOne
+
+                Assert.NotEqual(oldItem.NodeId, newNode.NodeId)
+                Assert.Equal(Some projectNode.Node.NodeId, removedParent)
+                Assert.Equal(removedParent, addedParent)
+                Assert.Contains("Visible=false", newNode.Name)
+            | result -> failwithf "Expected a project-item replacement delta, got %A" result
+
+            let watchPlan =
+                state.WatchPlanAsync(CancellationToken.None).GetAwaiter().GetResult()
+
+            let watchesExact (path: string) =
+                watchPlan
+                |> Seq.exists (fun spec ->
+                    spec.Kind = WatchKind.ExactFile
+                    && spec.Directory = Path.GetDirectoryName path
+                    && spec.Filters.Contains(Path.GetFileName path))
+
+            Assert.True(watchesExact freshImport)
+            Assert.True(watchesExact freshWatch)
+            Assert.False(watchesExact oldImport)
+
+            Assert.Contains(
+                watchPlan,
+                fun spec ->
+                    spec.Kind = WatchKind.RecursiveGlob
+                    && spec.Directory = freshGlob
+                    && spec.IncludeSubdirectories
+            )
+
+            for solutionPath in [ filter; solution ] do
+                let reopened =
+                    state
+                        .InvalidateAsync(
+                            ImmutableArray.Create(WorkspaceArtifactPath.Create solutionPath),
+                            CancellationToken.None
+                        )
+                        .GetAwaiter()
+                        .GetResult()
+
+                Assert.Equal(WorkspaceInvalidationResult.None, reopened)
+
+            Assert.Equal(2, openCount)
+            invalidationKind <- MsBuildInvalidationKind.ToolsetSelection
+
+            let toolsetChanged =
+                state
+                    .InvalidateAsync(
+                        ImmutableArray.Create(
+                            WorkspaceArtifactPath.Create(Path.Combine(directory, "global.json"))
+                        ),
+                        CancellationToken.None
+                    )
+                    .GetAwaiter()
+                    .GetResult()
+
+            match toolsetChanged with
+            | WorkspaceInvalidationResult.Reset reset ->
+                Assert.Equal(3L, reset.Revision.Value)
+                Assert.Equal("workspace.toolset_changed", reset.Diagnostics[0].DiagnosticCode.Value)
+            | result -> failwithf "Expected a toolset reset, got %A" result
+
+            Assert.Equal(2, openCount)
+            Assert.Equal(1, refreshCount)
+            state.DisposeAsync().GetAwaiter().GetResult()
+        finally
+            if Directory.Exists directory then
+                Directory.Delete(directory, true)
+
+    [<Fact>]
     member _.``should bound export admission release canonically and recover after cancellation``
         ()
         =
