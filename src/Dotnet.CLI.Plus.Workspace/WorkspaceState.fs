@@ -1,6 +1,7 @@
 namespace Dotnet.CLI.Plus
 
 open System
+open System.Collections.Generic
 open System.Collections.Immutable
 open System.IO
 open System.Security.Cryptography
@@ -22,11 +23,22 @@ type internal WorkspaceStateServices =
           ImmutableArray<WorkspaceArtifactPath>
               -> CancellationToken
               -> Task<WorkspaceOutcome<MsBuildInvalidationKind>>
+      OpenExportSessionAsync:
+          WorkspaceArtifactPath
+              -> int
+              -> CancellationToken
+              -> Task<WorkspaceOutcome<WorkspaceExportSession>>
       RefreshAsync: unit -> Task
+      DisposeAsync: unit -> Task }
+
+and internal WorkspaceExportSession =
+    { EvaluateAsync:
+        WorkspaceArtifactPath -> CancellationToken -> Task<WorkspaceOutcome<EvaluationSnapshot>>
       DisposeAsync: unit -> Task }
 
 type internal WorkspaceStateOptions =
     { HydrationLimit: int
+      ExportCapacity: int
       TokenSecret: byte array }
 
 type internal WorkspacePageResult =
@@ -46,6 +58,10 @@ type internal WorkspaceRefreshResult =
 type internal WorkspaceExportBatch =
     { Nodes: WorkspaceNode array
       IsFinal: bool }
+
+type private WorkspaceExportAdmission =
+    { Cancellation: CancellationTokenSource
+      Completion: Task<Result<HydratedProject option, RpcError>> }
 
 [<RequireQualifiedAccess>]
 type internal WorkspaceInvalidationResult =
@@ -94,17 +110,14 @@ type internal WorkspaceState
     let touch (key: string) (recency: string list) =
         key :: (recency |> List.filter ((<>) key))
 
-    let evaluate
+    let evaluateWith
+        evaluateAsync
         (workspace: SolutionWorkspace)
         (project: SolutionProjectProjection)
         (cancellationToken: CancellationToken)
         =
         task {
-            let! outcome =
-                services.EvaluateAsync
-                    project.Path.AbsolutePath
-                    workspace.BackingPath
-                    cancellationToken
+            let! outcome = evaluateAsync project.Path.AbsolutePath cancellationToken
 
             return
                 match outcome with
@@ -116,6 +129,18 @@ type internal WorkspaceState
                     |> Result.mapError (fun message -> RpcErrors.create "project" message None)
                 | Failure failure -> Error(failureError failure)
         }
+
+    let evaluate
+        (workspace: SolutionWorkspace)
+        (project: SolutionProjectProjection)
+        (cancellationToken: CancellationToken)
+        =
+        evaluateWith
+            (fun projectPath token ->
+                services.EvaluateAsync projectPath workspace.BackingPath token)
+            workspace
+            project
+            cancellationToken
 
     let invalidateProject
         (project: SolutionProjectProjection)
@@ -816,45 +841,222 @@ type internal WorkspaceState
                     if staticBatch.Count = 0 && projects.Length = 0 then
                         do! writeBatch { Nodes = Array.empty; IsFinal = true }
 
-                    let mutable failure = None
+                    let firstEvaluable =
+                        projects
+                        |> Array.tryFindIndex (fun project ->
+                            not project.IsFilteredOut
+                            && File.Exists project.Path.AbsolutePath.Value)
 
-                    for index in 0 .. projects.Length - 1 do
-                        let project = projects[index]
+                    let firstMissing =
+                        projects
+                        |> Array.tryFindIndex (fun project ->
+                            not project.IsFilteredOut
+                            && not (File.Exists project.Path.AbsolutePath.Value))
 
-                        if failure.IsNone && not project.IsFilteredOut then
-                            if not (File.Exists project.Path.AbsolutePath.Value) then
-                                let message =
-                                    $"Project '{project.Path.AbsolutePath.Value}' was not found."
+                    let needsSession =
+                        match firstEvaluable, firstMissing with
+                        | Some evaluated, Some missing -> evaluated < missing
+                        | Some _, None -> true
+                        | None, _ -> false
 
-                                failure <- Some(RpcErrors.create "not_found" message None)
+                    let! openedSession =
+                        task {
+                            if needsSession then
+                                let! opened =
+                                    services.OpenExportSessionAsync
+                                        current.Workspace.BackingPath
+                                        options.ExportCapacity
+                                        cancellationToken
+
+                                return
+                                    match opened with
+                                    | Success session -> Success(Some session)
+                                    | Failure failure -> Failure failure
                             else
-                                let! evaluated =
-                                    evaluate current.Workspace project cancellationToken
+                                return Success None
+                        }
 
-                                match evaluated with
-                                | Ok snapshot ->
-                                    do!
-                                        writeBatch
-                                            { Nodes =
-                                                WorkspaceStatePure.exportProjectNodes
-                                                    current.Workspace.WorkspaceDescriptor
-                                                    project
-                                                    (Some snapshot)
-                                              IsFinal = index = projects.Length - 1 }
-                                | Error error -> failure <- Some error
-                        elif failure.IsNone then
-                            do!
-                                writeBatch
-                                    { Nodes =
-                                        WorkspaceStatePure.exportProjectNodes
-                                            current.Workspace.WorkspaceDescriptor
-                                            project
-                                            None
-                                      IsFinal = index = projects.Length - 1 }
+                    match openedSession with
+                    | Failure failure -> return Error(failureError failure)
+                    | Success session ->
+                        let admissions = Dictionary<int, WorkspaceExportAdmission>()
+                        let admissionGate = obj ()
+                        let mutable earliestFailure = Int32.MaxValue
+                        let mutable nextAdmission = 0
+                        let mutable nextEmission = 0
 
-                    match failure with
-                    | Some error -> return Error error
-                    | None -> return Ok()
+                        let recordFailure ordinal =
+                            let later =
+                                lock admissionGate (fun () ->
+                                    if ordinal < earliestFailure then
+                                        earliestFailure <- ordinal
+
+                                        admissions
+                                        |> Seq.choose (fun (KeyValue(index, admission)) ->
+                                            if index > ordinal then
+                                                Some admission.Cancellation
+                                            else
+                                                None)
+                                        |> Seq.toArray
+                                    else
+                                        Array.empty)
+
+                            for cancellation in later do
+                                cancellation.Cancel()
+
+                        let cancelAll () =
+                            let cancellations =
+                                lock admissionGate (fun () ->
+                                    admissions.Values |> Seq.map _.Cancellation |> Seq.toArray)
+
+                            for cancellation in cancellations do
+                                cancellation.Cancel()
+
+                        let admit ordinal =
+                            let project = projects[ordinal]
+
+                            let projectCancellation =
+                                CancellationTokenSource.CreateLinkedTokenSource cancellationToken
+
+                            let completion =
+                                if project.IsFilteredOut then
+                                    Task.FromResult(Ok None)
+                                elif not (File.Exists project.Path.AbsolutePath.Value) then
+                                    let message =
+                                        $"Project '{project.Path.AbsolutePath.Value}' was not found."
+
+                                    Task.FromResult(
+                                        Error(RpcErrors.create "not_found" message None)
+                                    )
+                                else
+                                    task {
+                                        let! evaluated =
+                                            evaluateWith
+                                                session.Value.EvaluateAsync
+                                                current.Workspace
+                                                project
+                                                projectCancellation.Token
+
+                                        return evaluated |> Result.map Some
+                                    }
+
+                            let admission =
+                                { Cancellation = projectCancellation
+                                  Completion = completion }
+
+                            lock admissionGate (fun () -> admissions.Add(ordinal, admission))
+
+                            completion.ContinueWith(
+                                (fun (completed: Task<Result<HydratedProject option, RpcError>>) ->
+                                    match completed.Result with
+                                    | Error _ -> recordFailure ordinal
+                                    | Ok _ -> ()),
+                                CancellationToken.None,
+                                TaskContinuationOptions.ExecuteSynchronously,
+                                TaskScheduler.Default
+                            )
+                            |> ignore
+
+                        let fillWindow () =
+                            let admissionOpen () =
+                                lock admissionGate (fun () -> earliestFailure = Int32.MaxValue)
+
+                            let canAdmit () =
+                                nextAdmission < projects.Length
+                                && admissions.Count < options.ExportCapacity
+                                && admissionOpen ()
+                                && not cancellationToken.IsCancellationRequested
+
+                            while canAdmit () do
+                                admit nextAdmission
+                                nextAdmission <- nextAdmission + 1
+
+                        let runScheduler =
+                            task {
+                                fillWindow ()
+                                let mutable result = Ok()
+
+                                while nextEmission < projects.Length && result.IsOk do
+                                    if cancellationToken.IsCancellationRequested then
+                                        result <- Error cancelledError
+                                    else
+                                        let admission = admissions[nextEmission]
+                                        let! completed = admission.Completion
+
+                                        match completed with
+                                        | Error error -> result <- Error error
+                                        | Ok snapshot ->
+                                            cancellationToken.ThrowIfCancellationRequested()
+
+                                            do!
+                                                writeBatch
+                                                    { Nodes =
+                                                        WorkspaceStatePure.exportProjectNodes
+                                                            current.Workspace.WorkspaceDescriptor
+                                                            projects[nextEmission]
+                                                            snapshot
+                                                      IsFinal = nextEmission = projects.Length - 1 }
+
+                                            lock admissionGate (fun () ->
+                                                admissions.Remove nextEmission |> ignore)
+
+                                            admission.Cancellation.Dispose()
+                                            nextEmission <- nextEmission + 1
+                                            fillWindow ()
+
+                                return result
+                            }
+
+                        let! schedulerAttempt =
+                            task {
+                                try
+                                    let! result = runScheduler
+                                    return Choice1Of2 result
+                                with exceptionValue ->
+                                    return Choice2Of2 exceptionValue
+                            }
+
+                        cancelAll ()
+
+                        let pending =
+                            lock admissionGate (fun () ->
+                                admissions.Values |> Seq.map _.Completion |> Seq.toArray)
+
+                        let! settlementException =
+                            task {
+                                try
+                                    if pending.Length > 0 then
+                                        do! Task.WhenAll pending :> Task
+
+                                    return None
+                                with exceptionValue ->
+                                    return Some exceptionValue
+                            }
+
+                        for admission in admissions.Values do
+                            admission.Cancellation.Dispose()
+
+                        admissions.Clear()
+
+                        let! disposalException =
+                            task {
+                                try
+                                    match session with
+                                    | Some active -> do! active.DisposeAsync()
+                                    | None -> ()
+
+                                    return None
+                                with exceptionValue ->
+                                    return Some exceptionValue
+                            }
+
+                        match schedulerAttempt, settlementException, disposalException with
+                        | Choice1Of2 result, None, None -> return result
+                        | Choice2Of2(:? OperationCanceledException), _, _ ->
+                            return Error cancelledError
+                        | Choice2Of2 exceptionValue, _, _ -> return raise exceptionValue
+                        | _, Some exceptionValue, _ -> return raise exceptionValue
+                        | _, _, Some exceptionValue -> return raise exceptionValue
             finally
                 gate.Release() |> ignore
         }
@@ -884,12 +1086,13 @@ type internal WorkspaceState
     static member Create(target, workspace, services, options) =
         if
             options.HydrationLimit <= 0
+            || options.ExportCapacity <= 0
             || isNull (box options.TokenSecret)
             || options.TokenSecret.Length < 16
         then
             invalidArg
                 (nameof options)
-                "Workspace options require a positive hydration limit and a token secret."
+                "Workspace options require positive hydration and export limits and a token secret."
 
         WorkspaceState(
             target,
@@ -902,7 +1105,7 @@ type internal WorkspaceState
               NeedsRebase = false }
         )
 
-    static member CreateProduction(target, workspace) =
+    static member CreateProduction(target, workspace, exportCapacity) =
         let evaluator = new MsBuildEvaluationClient()
 
         let services =
@@ -913,13 +1116,37 @@ type internal WorkspaceState
                     evaluator.EvaluateAsync(project, workspace, cancellationToken)
               InvalidateAsync =
                 fun paths cancellationToken -> evaluator.InvalidateAsync(paths, cancellationToken)
+              OpenExportSessionAsync =
+                fun workspacePath capacity cancellationToken ->
+                    task {
+                        let! opened =
+                            evaluator.OpenExportSessionAsync(
+                                workspacePath,
+                                capacity,
+                                cancellationToken
+                            )
+
+                        return
+                            match opened with
+                            | Success session ->
+                                Success
+                                    { EvaluateAsync =
+                                        fun projectPath token ->
+                                            session.EvaluateAsync(projectPath, token)
+                                      DisposeAsync = fun () -> session.DisposeAsync().AsTask() }
+                            | Failure failure -> Failure failure
+                    }
               RefreshAsync = evaluator.RefreshAsync
               DisposeAsync = fun () -> evaluator.DisposeAsync().AsTask() }
+
+        if exportCapacity <= 0 then
+            invalidArg (nameof exportCapacity) "Export capacity must be positive."
 
         WorkspaceState.Create(
             target,
             workspace,
             services,
             { HydrationLimit = 32
+              ExportCapacity = exportCapacity
               TokenSecret = RandomNumberGenerator.GetBytes 32 }
         )

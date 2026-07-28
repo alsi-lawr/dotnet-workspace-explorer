@@ -4,6 +4,7 @@ namespace Dotnet.CLI.Plus
 
 open System
 open System.Collections.Concurrent
+open System.Globalization
 open System.IO
 open System.Threading
 open Dotnet.CLI.Plus.Core
@@ -11,6 +12,12 @@ open Dotnet.CLI.Plus.Solution
 open Dotnet.CLI.Plus.Transport
 
 module internal Pipe =
+    [<RequireQualifiedAccess>]
+    type Invocation =
+        | NotPipeRelated
+        | InvalidPipeStartup
+        | ValidPipeStartup of target: string * exportCapacity: int
+
     let private openWorkspace target cancellationToken =
         task {
             let! outcome = SolutionStore.OpenAsync(target, cancellationToken)
@@ -21,13 +28,25 @@ module internal Pipe =
                 | Failure failure -> Error(PublicProtocol.failureError failure)
         }
 
-    let isPipeInvocation (arguments: string array) =
+    let private reservedStartupToken (argument: string) =
+        argument = "--pipe"
+        || argument = "--export-workers"
+        || argument.StartsWith("--pipe=", StringComparison.Ordinal)
+        || argument.StartsWith("--export-workers=", StringComparison.Ordinal)
+
+    let parseInvocation (arguments: string array) =
         match arguments with
-        | [| "solution" | "sln"; target; "--pipe" |] -> Some target
-        | _ -> None
+        | [| "solution" | "sln"; target; "--pipe" |] -> Invocation.ValidPipeStartup(target, 3)
+        | [| "solution" | "sln"; target; "--pipe"; "--export-workers"; value |] ->
+            match Int32.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture) with
+            | true, capacity when capacity > 0 -> Invocation.ValidPipeStartup(target, capacity)
+            | _ -> Invocation.InvalidPipeStartup
+        | _ when arguments |> Array.exists reservedStartupToken -> Invocation.InvalidPipeStartup
+        | _ -> Invocation.NotPipeRelated
 
     let runAsync
         (target: string)
+        (exportCapacity: int)
         (input: Stream)
         (output: Stream)
         (error: TextWriter)
@@ -42,7 +61,7 @@ module internal Pipe =
                 do! error.FlushAsync()
                 return 64
             | Ok workspace ->
-                let state = WorkspaceState.CreateProduction(target, workspace)
+                let state = WorkspaceState.CreateProduction(target, workspace, exportCapacity)
                 let mutable watcherStarted = false
                 let mutable maximumFrameBytes = RpcCodec.secureLimits.MaximumValueBytes
                 let mutable maximumPageSize = 256

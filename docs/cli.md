@@ -13,11 +13,20 @@ Every direct form may begin with `--json`:
 [--json] new [<template-name>|create|list|search|details|install|uninstall|update] [options]
 [--json] restore|build|test|run [options]
 [--json] solution <SLN_FILE> launch list|set|remove [options]
+solution|sln <SLN_FILE> --pipe
+solution|sln <SLN_FILE> --pipe --export-workers <positive-integer>
 ```
 
 `solution` and `sln` are aliases. The legacy `solution <solution> add directory <path>` import form remains available for adding an existing directory hierarchy as nested solution folders.
 
 Targets may be classic `.sln` or XML `.slnx`. A `.slnf` filter resolves its backing solution for inspection but is read-only: mutation requests against the selected filter are rejected.
+
+Pipe startup uses three export workers by default. `--export-workers` sets a positive, process-local
+logical concurrency bound for that invocation only. The product does not impose another maximum or
+derive the value from processor count; actual workers are created lazily from admitted export work.
+Overrides retain the same graph, ordering, cancellation, failure, freshness, and cleanup contracts
+but carry no time or memory-usage promise. The option is valid only in the final position shown
+above and cannot be combined with `--json`.
 
 ## JSON results and failures
 

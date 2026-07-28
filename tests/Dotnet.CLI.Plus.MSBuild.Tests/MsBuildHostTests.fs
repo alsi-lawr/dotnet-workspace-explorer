@@ -6,6 +6,9 @@ open System
 open System.Collections.Generic
 open System.Diagnostics
 open System.IO
+open System.Threading
+open Dotnet.CLI.Plus.Core
+open Dotnet.CLI.Plus.MSBuild
 open Dotnet.CLI.Plus.Transport
 open FsUnit.Xunit
 open Xunit
@@ -423,6 +426,75 @@ module private Test =
         |> Option.defaultWith (fun () -> failwith "The hydration delta was not observed.")
 
 type MsBuildHostTests() =
+    [<Fact>]
+    member _.``should isolate export evaluation and invalidate before reusing a worker lane``() =
+        let directory = Test.temporaryDirectory "export-session"
+
+        try
+            let project = Test.simpleProject directory "Exported" ".csproj"
+            let solution = Test.writeSolution directory [ project ]
+
+            let writeMarker value =
+                Test.write
+                    project
+                    $"""
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ExportMarker>{value}</ExportMarker>
+  </PropertyGroup>
+</Project>
+"""
+
+            let marker (snapshot: EvaluationSnapshot) =
+                snapshot.Dimensions
+                |> Seq.collect _.Properties
+                |> Seq.find (fun property -> property.Name = "ExportMarker")
+                |> _.Value
+
+            writeMarker "before"
+
+            let settings = WorkerLaunchSettings(Test.apphost, null, "dotnet")
+            let evaluator = new MsBuildEvaluationClient(settings)
+
+            try
+                let opened =
+                    evaluator
+                        .OpenExportSessionAsync(
+                            WorkspaceArtifactPath.Create solution,
+                            1,
+                            CancellationToken.None
+                        )
+                        .Result
+
+                let session =
+                    match opened with
+                    | Success value -> value
+                    | Failure failure -> failwithf "Could not open export session: %A" failure
+
+                try
+                    let evaluate () =
+                        match
+                            session
+                                .EvaluateAsync(
+                                    WorkspaceArtifactPath.Create project,
+                                    CancellationToken.None
+                                )
+                                .Result
+                        with
+                        | Success snapshot -> snapshot
+                        | Failure failure -> failwithf "Export evaluation failed: %A" failure
+
+                    Assert.Equal("before", evaluate () |> marker)
+                    writeMarker "after"
+                    Assert.Equal("after", evaluate () |> marker)
+                finally
+                    session.DisposeAsync().AsTask().GetAwaiter().GetResult()
+            finally
+                evaluator.DisposeAsync().AsTask().GetAwaiter().GetResult()
+        finally
+            Directory.Delete(directory, true)
+
     [<Fact>]
     member _.``should retain CPM owner paths and exact item-group conditions``() =
         let directory = Test.temporaryDirectory "package-ownership"

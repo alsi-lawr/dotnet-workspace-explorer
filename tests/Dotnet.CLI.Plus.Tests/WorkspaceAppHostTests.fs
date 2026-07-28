@@ -4,11 +4,16 @@ namespace Dotnet.CLI.Plus.Tests
 
 open System
 open System.Collections.Generic
+open System.Collections.Immutable
 open System.Diagnostics
 open System.IO
 open System.Text
 open System.Threading
 open System.Threading.Tasks
+open Dotnet.CLI.Plus
+open Dotnet.CLI.Plus.Core
+open Dotnet.CLI.Plus.MSBuild
+open Dotnet.CLI.Plus.Solution
 open Dotnet.CLI.Plus.Transport
 open FsUnit.Xunit
 open Microsoft.VisualStudio.SolutionPersistence.Model
@@ -90,11 +95,12 @@ module internal PipeTest =
     let fixturePath name =
         Path.Combine(AppContext.BaseDirectory, "ConformanceFixtures", name)
 
-    let startPipeWithEnvironment alias solution environment =
+    let startApphost arguments environment =
         let start = ProcessStartInfo apphost
-        start.ArgumentList.Add alias
-        start.ArgumentList.Add solution
-        start.ArgumentList.Add "--pipe"
+
+        for argument in arguments do
+            start.ArgumentList.Add argument
+
         start.UseShellExecute <- false
         start.RedirectStandardInput <- true
         start.RedirectStandardOutput <- true
@@ -110,6 +116,9 @@ module internal PipeTest =
             failwith "Failed to start the built apphost."
 
         child
+
+    let startPipeWithEnvironment alias solution environment =
+        startApphost [ alias; solution; "--pipe" ] environment
 
     let startPipeWithDataHome alias solution dataHome =
         let environment =
@@ -468,6 +477,219 @@ module internal PipeTest =
         names |> Seq.toArray
 
 type WorkspaceAppHostTests() =
+    [<Fact>]
+    member _.``should accept only the reserved export worker startup grammar``() =
+        let directory = PipeTest.temporaryDirectory "export-worker-cli"
+
+        try
+            let solution = Path.Combine(directory, "Demo.slnx")
+            PipeTest.save solution (SolutionModel())
+
+            use valid =
+                PipeTest.startApphost [ "solution"; solution; "--pipe"; "--export-workers"; "1" ] []
+
+            PipeTest.send valid false (PipeTest.request 1u "initialize" PipeTest.initialize)
+            let initializeError, _ = PipeTest.readFrame valid |> PipeTest.response 1u
+            Assert.True initializeError.IsNone
+            PipeTest.shutdown valid 2u
+
+            let invalidForms =
+                [ [ "solution"; solution; "--export-workers"; "1" ]
+                  [ "solution"; solution; "--pipe"; "--export-workers" ]
+                  [ "solution"; solution; "--pipe"; "--export-workers"; "0" ]
+                  [ "solution"; solution; "--pipe"; "--export-workers"; "-1" ]
+                  [ "solution"; solution; "--pipe"; "--export-workers"; "+1" ]
+                  [ "solution"; solution; "--pipe"; "--export-workers"; "1.0" ]
+                  [ "solution"; solution; "--pipe"; "--export-workers"; "one" ]
+                  [ "solution"; solution; "--pipe"; "--export-workers"; "" ]
+                  [ "solution"; solution; "--pipe"; "--export-workers"; "2147483648" ]
+                  [ "solution"; solution; "--export-workers"; "1"; "--pipe" ]
+                  [ "solution"; solution; "--pipe"; "--export-workers=1" ]
+                  [ "solution"; solution; "--pipe=true" ]
+                  [ "solution"
+                    solution
+                    "--pipe"
+                    "--export-workers"
+                    "1"
+                    "--export-workers"
+                    "2" ]
+                  [ "solution"; solution; "--pipe"; "--export-workers"; "1"; "extra" ]
+                  [ "solution"; solution; "--pipe"; "--pipe" ]
+                  [ "--json"; "solution"; solution; "--pipe" ] ]
+
+            for arguments in invalidForms do
+                use invalid = PipeTest.startApphost arguments []
+                invalid.StandardInput.Close()
+                Assert.True(invalid.WaitForExit 5000, "Invalid startup did not terminate.")
+                Assert.Equal(64, invalid.ExitCode)
+                Assert.Empty(PipeTest.readRemaining invalid.StandardOutput.BaseStream)
+
+                Assert.Equal(
+                    "dotnet-plus pipe startup failure: invalid pipe invocation.",
+                    invalid.StandardError.ReadToEnd().Trim()
+                )
+        finally
+            if Directory.Exists directory then
+                Directory.Delete(directory, true)
+
+    [<Fact>]
+    member _.``should bound export admission and release reverse completions canonically``() =
+        let runScenario capacity projectCount =
+            let directory = PipeTest.temporaryDirectory "export-scheduler"
+
+            try
+                let solution = Path.Combine(directory, "Demo.slnx")
+                let model = SolutionModel()
+
+                let projects =
+                    [| for index in 1..projectCount do
+                           let name = $"{char (int 'A' + index - 1)}"
+                           let path = Path.Combine(directory, $"{name}.fsproj")
+                           PipeTest.writeProject path
+                           model.AddProject(Path.GetFileName path, name, null) |> ignore
+                           yield path |]
+
+                PipeTest.save solution model
+
+                let workspace =
+                    match SolutionStore.OpenAsync(solution).Result with
+                    | Success value -> value
+                    | Failure failure -> failwithf "Could not open scheduler fixture: %A" failure
+
+                let gates =
+                    projects
+                    |> Seq.map (fun path ->
+                        path,
+                        TaskCompletionSource<unit>
+                            TaskCreationOptions.RunContinuationsAsynchronously)
+                    |> dict
+
+                use started = new SemaphoreSlim 0
+                use completed = new SemaphoreSlim 0
+                let metricsGate = obj ()
+                let mutable active = 0
+                let mutable maximumActive = 0
+                let mutable disposedSessions = 0
+                let emitted = ResizeArray<string>()
+
+                let snapshot path =
+                    EvaluationSnapshot(
+                        WorkspaceArtifactPath.Create path,
+                        ImmutableArray<EvaluationDimensionSnapshot>.Empty,
+                        ImmutableArray<WorkspaceArtifactPath>.Empty,
+                        ImmutableArray<WorkspaceArtifactPath>.Empty,
+                        ImmutableArray<WorkspaceArtifactPath>.Empty,
+                        WorkspaceCapabilityProfile.Full,
+                        ImmutableArray<WorkspaceCapabilityId>.Empty,
+                        ImmutableArray<WorkspaceDiagnostic>.Empty
+                    )
+
+                let services =
+                    { OpenAsync =
+                        fun _ _ ->
+                            Task.FromResult<WorkspaceOutcome<SolutionWorkspace>>(Success workspace)
+                      EvaluateAsync =
+                        fun _ _ _ -> failwith "Interactive evaluation was not expected."
+                      InvalidateAsync =
+                        fun _ _ ->
+                            Task.FromResult<WorkspaceOutcome<MsBuildInvalidationKind>>(
+                                Success MsBuildInvalidationKind.None
+                            )
+                      OpenExportSessionAsync =
+                        fun _ observedCapacity _ ->
+                            Assert.Equal(capacity, observedCapacity)
+
+                            Task.FromResult<WorkspaceOutcome<WorkspaceExportSession>>(
+                                Success
+                                    { EvaluateAsync =
+                                        fun projectPath _ ->
+                                            task {
+                                                lock metricsGate (fun () ->
+                                                    active <- active + 1
+                                                    maximumActive <- max maximumActive active)
+
+                                                started.Release() |> ignore
+                                                do! gates[projectPath.Value].Task
+
+                                                lock metricsGate (fun () -> active <- active - 1)
+                                                completed.Release() |> ignore
+                                                return Success(snapshot projectPath.Value)
+                                            }
+                                      DisposeAsync =
+                                        fun () ->
+                                            Interlocked.Increment(&disposedSessions) |> ignore
+                                            Task.CompletedTask }
+                            )
+                      RefreshAsync = fun () -> Task.CompletedTask
+                      DisposeAsync = fun () -> Task.CompletedTask }
+
+                let state =
+                    WorkspaceState.Create(
+                        solution,
+                        workspace,
+                        services,
+                        { HydrationLimit = 32
+                          ExportCapacity = capacity
+                          TokenSecret = Array.create 32 1uy }
+                    )
+
+                let writeBatch (batch: WorkspaceExportBatch) =
+                    lock emitted (fun () ->
+                        batch.Nodes
+                        |> Seq.filter (fun node -> node.NodeKind = WorkspaceNodeKind.Project)
+                        |> Seq.iter (fun node -> emitted.Add node.Name))
+
+                    Task.FromResult()
+
+                let export =
+                    state.ExportAsync(
+                        workspace.WorkspaceDescriptor.WorkspaceRevision.Value,
+                        writeBatch,
+                        CancellationToken.None
+                    )
+
+                let initiallyAdmitted = min capacity projectCount
+
+                for _ in 1..initiallyAdmitted do
+                    Assert.True(started.Wait 5000, "An admitted evaluation did not start.")
+
+                Assert.Equal(initiallyAdmitted, maximumActive)
+
+                if capacity = 2 && projectCount = 4 then
+                    gates[projects[1]].SetResult()
+                    Assert.True(completed.Wait 5000, "The reverse completion did not settle.")
+                    Assert.Empty emitted
+                    gates[projects[0]].SetResult()
+
+                    for _ in 1..2 do
+                        Assert.True(
+                            started.Wait 5000,
+                            "The bounded window did not admit more work."
+                        )
+
+                    gates[projects[3]].SetResult()
+                    gates[projects[2]].SetResult()
+                else
+                    projects |> Array.rev |> Array.iter (fun path -> gates[path].SetResult())
+
+                match export.GetAwaiter().GetResult() with
+                | Ok() -> ()
+                | Error error -> failwithf "Export scheduler failed: %s" error.Message
+
+                emitted
+                |> Seq.toArray
+                |> should equal (projects |> Array.map Path.GetFileNameWithoutExtension)
+
+                Assert.Equal(1, disposedSessions)
+                Assert.True(maximumActive <= min capacity projectCount)
+                state.DisposeAsync().GetAwaiter().GetResult()
+            finally
+                if Directory.Exists directory then
+                    Directory.Delete(directory, true)
+
+        runScenario 2 4
+        runScenario Int32.MaxValue 2
+
     [<Fact>]
     member _.``should honor Worker default Content items without redundant declarations``() =
         let session =
@@ -1599,7 +1821,8 @@ type WorkspaceAppHostTests() =
 
         if not nvimAvailable then
             raise (
-                Sdk.SkipException.ForSkip "Neovim is not available; native editor coverage is unavailable."
+                Sdk.SkipException.ForSkip
+                    "Neovim is not available; native editor coverage is unavailable."
 
             )
 

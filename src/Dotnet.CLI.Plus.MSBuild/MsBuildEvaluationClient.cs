@@ -142,6 +142,32 @@ public sealed class MsBuildEvaluationClient : IAsyncDisposable
             }
         );
 
+    internal Task<WorkspaceOutcome<MsBuildExportEvaluationSession>> OpenExportSessionAsync(
+        WorkspaceArtifactPath workspacePath,
+        int capacity,
+        CancellationToken cancellationToken
+    ) =>
+        RunLockedAsync(
+            cancellationToken,
+            async () =>
+            {
+                var canonicalWorkspace = WorkspaceArtifactPath.Create(workspacePath.Value);
+                var discovery = await DotnetSdkDiscovery.DiscoverAsync(
+                    canonicalWorkspace,
+                    launchSettings.DotnetExecutable,
+                    cancellationToken
+                );
+                if (!CoreOutcomes.TrySuccess(discovery, out var selection, out var failure))
+                {
+                    return CoreOutcomes.Failure<MsBuildExportEvaluationSession>(failure!);
+                }
+
+                return CoreOutcomes.Success(
+                    new MsBuildExportEvaluationSession(launchSettings, selection!, capacity)
+                );
+            }
+        );
+
     public Task RefreshAsync() => ResetAsync(false);
 
     public ValueTask DisposeAsync() => new(ResetAsync(true));
@@ -242,6 +268,143 @@ public sealed class MsBuildEvaluationClient : IAsyncDisposable
                     StringComparison.Ordinal
                 )
             );
+    }
+}
+
+internal sealed class MsBuildExportEvaluationSession : IAsyncDisposable
+{
+    private static readonly StringComparer PathComparer = OperatingSystem.IsWindows()
+        ? StringComparer.OrdinalIgnoreCase
+        : StringComparer.Ordinal;
+
+    private readonly object sync = new();
+    private readonly WorkerLaunchSettings launchSettings;
+    private readonly ToolsetSelection selection;
+    private readonly int capacity;
+    private readonly SemaphoreSlim admission;
+    private readonly List<ExportWorkerLane> lanes = [];
+    private bool closed;
+
+    internal MsBuildExportEvaluationSession(
+        WorkerLaunchSettings launchSettings,
+        ToolsetSelection selection,
+        int capacity
+    )
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(capacity);
+        this.launchSettings = launchSettings;
+        this.selection = selection;
+        this.capacity = capacity;
+        admission = new SemaphoreSlim(capacity, capacity);
+    }
+
+    internal async Task<WorkspaceOutcome<EvaluationSnapshot>> EvaluateAsync(
+        WorkspaceArtifactPath projectPath,
+        CancellationToken cancellationToken
+    )
+    {
+        try
+        {
+            await admission.WaitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            return CoreOutcomes.Cancelled<EvaluationSnapshot>(
+                "The MSBuild operation was cancelled."
+            );
+        }
+
+        ExportWorkerLane? lane = null;
+        try
+        {
+            lock (sync)
+            {
+                if (closed)
+                {
+                    return CoreOutcomes.WorkerClosed<EvaluationSnapshot>();
+                }
+
+                lane = lanes.FirstOrDefault(candidate => !candidate.Leased);
+                if (lane is null)
+                {
+                    if (lanes.Count >= capacity)
+                    {
+                        throw new InvalidOperationException(
+                            "Export worker admission did not reserve an available lane."
+                        );
+                    }
+
+                    lane = new ExportWorkerLane(new WorkerClient(launchSettings, selection));
+                    lanes.Add(lane);
+                }
+
+                lane.Leased = true;
+            }
+
+            var canonicalProject = WorkspaceArtifactPath.Create(projectPath.Value);
+            var evaluated = await lane.Worker.EvaluateAsync(canonicalProject, cancellationToken);
+            if (!CoreOutcomes.TrySuccess(evaluated, out var snapshot, out _))
+            {
+                return evaluated;
+            }
+
+            var invalidated = await lane.Worker.InvalidateAsync(
+                ImmutableArray.Create(canonicalProject),
+                cancellationToken
+            );
+            if (!CoreOutcomes.TrySuccess(invalidated, out _, out var failure))
+            {
+                return CoreOutcomes.Failure<EvaluationSnapshot>(failure!);
+            }
+
+            var watchInputs = selection.GlobalJsonPath is { } globalJson
+                ? snapshot!
+                    .WatchInputs.Append(globalJson)
+                    .DistinctBy(path => path.Value, PathComparer)
+                    .OrderBy(path => path.Value, PathComparer)
+                    .ToImmutableArray()
+                : snapshot!.WatchInputs;
+
+            return CoreOutcomes.Success(snapshot with { WatchInputs = watchInputs });
+        }
+        finally
+        {
+            if (lane is not null)
+            {
+                lock (sync)
+                {
+                    lane.Leased = false;
+                }
+            }
+
+            admission.Release();
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        ExportWorkerLane[] activeLanes;
+        lock (sync)
+        {
+            if (closed)
+            {
+                return;
+            }
+
+            closed = true;
+            activeLanes = lanes.ToArray();
+            lanes.Clear();
+        }
+
+        await Task.WhenAll(activeLanes.Select(lane => lane.Worker.DisposeAsync().AsTask()));
+
+        admission.Dispose();
+    }
+
+    private sealed class ExportWorkerLane(WorkerClient worker)
+    {
+        internal WorkerClient Worker { get; } = worker;
+        internal bool Leased { get; set; }
     }
 }
 

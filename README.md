@@ -41,6 +41,9 @@ For editor and automation clients, start the framed MessagePack-RPC endpoint wit
 
 ```console
 dotnet-plus solution ./Demo.slnx --pipe
+
+# Optional process-local export concurrency; the default is 3.
+dotnet-plus solution ./Demo.slnx --pipe --export-workers 4
 ```
 
 The public profile is `dotnet-cli-plus/workspace` v1.0. It is initialized before other requests and supports workspace discovery, command preview/execution, operation progress, and orderly shutdown. See the repository-only protocol reference:

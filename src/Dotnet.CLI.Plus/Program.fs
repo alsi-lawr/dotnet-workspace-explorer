@@ -19,17 +19,22 @@ module Program =
         | [| "internal"; "msbuild-host"; "--toolset"; toolsetPath |] ->
             MsBuildHost.RunAsync(toolsetPath, cancellation.Token).GetAwaiter().GetResult()
         | _ ->
-            match Pipe.isPipeInvocation arguments with
-            | Some target ->
+            match Pipe.parseInvocation arguments with
+            | Pipe.Invocation.ValidPipeStartup(target, exportCapacity) ->
                 Pipe.runAsync
                     target
+                    exportCapacity
                     (Console.OpenStandardInput())
                     (Console.OpenStandardOutput())
                     Console.Error
                     cancellation.Token
                 |> _.GetAwaiter()
                 |> _.GetResult()
-            | None ->
+            | Pipe.Invocation.InvalidPipeStartup ->
+                Console.Error.WriteLine "dotnet-plus pipe startup failure: invalid pipe invocation."
+
+                64
+            | Pipe.Invocation.NotPipeRelated ->
                 let jsonMode = arguments |> Array.tryHead = Some "--json"
 
                 let result =

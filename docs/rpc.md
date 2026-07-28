@@ -1,6 +1,13 @@
 # `dotnet-cli-plus/workspace` v1.0
 
-Start the public endpoint with `dotnet-plus solution <target> --pipe` (or `sln`). The stream is a sequence of framed MessagePack-RPC values. A client sends `initialize` first; it supplies protocol version `{ major: 1, minor: ... }`, non-empty `clientInfo.name`, capabilities, and optional limits. Only major version 1 is supported. The initialization result reports protocol version 1.0, server and workspace descriptors, negotiated capabilities, and limits.
+Start the public endpoint with `dotnet-plus solution <target> --pipe` (or `sln`). Export evaluation
+defaults to three workers; a client may select a process-local positive bound with
+`--pipe --export-workers <positive-integer>`. This startup option does not add an initialization or
+RPC field. The stream is a sequence of framed MessagePack-RPC values. A client sends `initialize`
+first; it supplies protocol version `{ major: 1, minor: ... }`, non-empty `clientInfo.name`,
+capabilities, and optional limits. Only major version 1 is supported. The initialization result
+reports protocol version 1.0, server and workspace descriptors, negotiated capabilities, and
+limits.
 
 ## Requests
 
