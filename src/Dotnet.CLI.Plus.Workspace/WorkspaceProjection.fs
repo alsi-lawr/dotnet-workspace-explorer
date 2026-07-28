@@ -378,6 +378,44 @@ module internal WorkspaceStatePure =
         |> Seq.map snd
         |> ImmutableArray.CreateRange
 
+    let exportStaticNodes (workspace: SolutionWorkspace) =
+        let root = workspace.RootProjection
+
+        seq {
+            yield! root.BuildTypes
+            yield! root.Dependencies |> Seq.map _.Node
+            yield! root.Folders |> Seq.map _.Node
+            yield! root.Platforms
+            yield! root.Items |> Seq.map _.Node
+        }
+
+    let exportProjectNodes
+        (descriptor: WorkspaceDescriptor)
+        (project: SolutionProjectProjection)
+        (hydrated: HydratedProject option)
+        =
+        match hydrated with
+        | None -> [| project.Node |]
+        | Some value ->
+            let header =
+                WorkspaceNode.CreateWithLoadState(
+                    descriptor,
+                    WorkspaceNodeKind.Project,
+                    project.Node.Identity,
+                    project.Node.Name,
+                    value.Snapshot.CapabilityProfile,
+                    WorkspaceNodeLoadState.Hydrated
+                )
+
+            let body = projectBodyEntries descriptor project value
+            let nodes = Array.zeroCreate<WorkspaceNode> (body.Length + 1)
+            nodes[0] <- header
+
+            for index in 0 .. body.Length - 1 do
+                nodes[index + 1] <- snd body[index]
+
+            nodes
+
     let snapshotSemanticValues (descriptor: WorkspaceDescriptor) (hydrated: HydratedProject) =
         seq {
             let snapshot = hydrated.Snapshot

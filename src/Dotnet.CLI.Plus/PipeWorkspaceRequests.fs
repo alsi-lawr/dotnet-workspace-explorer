@@ -215,14 +215,17 @@ module internal PipeWorkspaceRequests =
                     task {
                         let mutable sequence = 0
                         let mutable outcome = PublicOperationOutcome.Succeeded
+                        let mutable completionReserved = false
 
                         let reserveFailure failure =
                             task {
-                                if operation.TryReserveCompletion() then
-                                    outcome <- failure
-                                else
-                                    do! operation.WaitForCancellationResponseAsync()
-                                    outcome <- PublicOperationOutcome.Cancelled
+                                let! completed =
+                                    PipeOperations.completedOutcome
+                                        operation
+                                        completionReserved
+                                        failure
+
+                                outcome <- completed
                             }
 
                         try
@@ -233,8 +236,48 @@ module internal PipeWorkspaceRequests =
                                         sessionToken
                                     )
 
+                                let ensureActive () =
+                                    if operation.IsCancellationReserved then
+                                        raise (OperationCanceledException())
+
+                                    linked.Token.ThrowIfCancellationRequested()
+
+                                let reserveFinal () =
+                                    task {
+                                        ensureActive ()
+
+                                        if operation.TryReserveCompletion() then
+                                            completionReserved <- true
+                                            return true
+                                        else
+                                            do! operation.WaitForCancellationResponseAsync()
+                                            return false
+                                    }
+
+                                let writeBatch (batch: WorkspaceExportBatch) =
+                                    task {
+                                        let! next =
+                                            PipeOperations.writeExportBatch
+                                                (context.MaximumFrameBytes())
+                                                descriptor
+                                                operationId
+                                                snapshotRevision
+                                                sequence
+                                                batch.Nodes
+                                                batch.IsFinal
+                                                ensureActive
+                                                reserveFinal
+                                                sink
+
+                                        sequence <- next
+                                    }
+
                                 let! exported =
-                                    context.State.ExportAsync(snapshotRevision, linked.Token)
+                                    context.State.ExportAsync(
+                                        snapshotRevision,
+                                        writeBatch,
+                                        linked.Token
+                                    )
 
                                 match exported with
                                 | Error rpcError when rpcError.Code = "cancelled" ->
@@ -247,39 +290,12 @@ module internal PipeWorkspaceRequests =
                                                 rpcError.Message
                                             )
                                         )
-                                | Ok snapshot ->
-                                    let chunks =
-                                        PipeOperations.chunkExportNodes
-                                            (context.MaximumFrameBytes())
-                                            snapshot.Descriptor
-                                            operationId
-                                            snapshot.Revision
-                                            (snapshot.Nodes |> Seq.toArray)
-
-                                    for index in 0 .. chunks.Length - 1 do
-                                        if operation.IsCancellationReserved then
-                                            raise (OperationCanceledException())
-
-                                        linked.Token.ThrowIfCancellationRequested()
-
-                                        do!
-                                            sink.WriteAsync(
-                                                PublicProtocol.exportChunk
-                                                    snapshot.Descriptor
-                                                    operationId
-                                                    sequence
-                                                    snapshot.Revision
-                                                    chunks[index]
-                                                    (index = chunks.Length - 1)
-                                            )
-
-                                        sequence <- sequence + 1
-
-                                    if operation.TryReserveCompletion() then
-                                        outcome <- PublicOperationOutcome.Succeeded
-                                    else
-                                        do! operation.WaitForCancellationResponseAsync()
-                                        outcome <- PublicOperationOutcome.Cancelled
+                                | Ok() ->
+                                    if not completionReserved then
+                                        raise (
+                                            InvalidOperationException
+                                                "A successful export did not emit a final chunk."
+                                        )
                             with
                             | :? OperationCanceledException ->
                                 if operation.IsCancellationReserved then

@@ -179,6 +179,38 @@ type private FailingWriteStream() =
     override _.WriteAsync(_: ReadOnlyMemory<byte>, _: CancellationToken) =
         ValueTask(Task.FromException(IOException "write failed"))
 
+type private BlockingNotificationWriteStream(notificationStarted: TaskCompletionSource) =
+    inherit Stream()
+    let bytes = new MemoryStream()
+    let mutable writes = 0
+    override _.CanRead = false
+    override _.CanSeek = false
+    override _.CanWrite = true
+    override _.Length = bytes.Length
+
+    override _.Position
+        with get () = bytes.Position
+        and set _ = raise (NotSupportedException())
+
+    member _.ToArray() = bytes.ToArray()
+    override _.Flush() = ()
+    override _.FlushAsync(_: CancellationToken) = Task.CompletedTask
+    override _.Read(_, _, _) = raise (NotSupportedException())
+    override _.Seek(_, _) = raise (NotSupportedException())
+    override _.SetLength _ = raise (NotSupportedException())
+    override _.Write(_, _, _) = raise (NotSupportedException())
+
+    override _.WriteAsync(buffer: ReadOnlyMemory<byte>, cancellationToken: CancellationToken) =
+        let write = Interlocked.Increment(&writes)
+
+        if write <= 2 then
+            bytes.Write buffer.Span
+            ValueTask()
+        else
+            notificationStarted.TrySetResult() |> ignore
+
+            ValueTask(task { do! Task.Delay(Timeout.Infinite, cancellationToken) })
+
 type TransportTests() =
     [<Fact>]
     member _.``should retain golden wire shapes for shared standard and public protocol frames``() =
@@ -843,3 +875,159 @@ type TransportTests() =
                 RpcValue.tryField "code" parameters = Some(RpcValue.String "response_too_large")
             | _ -> false
         )
+
+    [<Fact>]
+    member _.``should synchronize and limit prepared notification writes without re-encoding``() =
+        let limit = 512
+        let profile = Test.profile "prepared" [ "start", Read ]
+        use cancellation = new CancellationTokenSource()
+
+        let completed =
+            TaskCompletionSource TaskCreationOptions.RunContinuationsAsynchronously
+
+        let dispatch _ _ _ _ =
+            let background (sink: RpcNotificationSink) _ =
+                task {
+                    let notifications =
+                        [| for index in 0..31 ->
+                               Notification(
+                                   "prepared/value",
+                                   Test.map
+                                       [ "index", RpcValue.Integer(int64 index)
+                                         "payload",
+                                         RpcValue.String(String(char (65 + index % 26), 80)) ]
+                               )
+                               |> RpcEncodedNotification.Create |]
+
+                    let! _ = notifications |> Array.map sink.WriteEncodedAsync |> Task.WhenAll
+
+                    ()
+
+                    let oversized =
+                        Notification(
+                            "prepared/oversized",
+                            Test.map [ "payload", RpcValue.String(String('x', 5000)) ]
+                        )
+                        |> RpcEncodedNotification.Create
+
+                    try
+                        do! sink.WriteEncodedAsync oversized
+                    with :? RpcOutboundFrameTooLargeException as failure ->
+                        Assert.Equal(limit, failure.Limit)
+                        Assert.Equal(oversized.Length, failure.Actual)
+
+                    do!
+                        Notification(
+                            "prepared/completed",
+                            Test.map [ "count", RpcValue.Integer(int64 notifications.Length) ]
+                        )
+                        |> RpcEncodedNotification.Create
+                        |> sink.WriteEncodedAsync
+
+                    completed.TrySetResult() |> ignore
+                }
+
+            Task.FromResult(
+                Ok
+                    { Test.dispatchResult Test.empty false with
+                        BackgroundWork = Some background }
+            )
+
+        let input =
+            Array.concat
+                [ Test.request 1u "initialize" Test.empty; Test.request 2u "start" Test.empty ]
+
+        use source = new BlockingAfterDataStream(input)
+
+        let configuration =
+            Test.configurationWithLimit
+                profile
+                (fun () -> limit)
+                (fun _ _ -> Task.FromResult(Ok Test.empty))
+                dispatch
+
+        let running = Test.runStream configuration source cancellation.Token
+        Assert.True(completed.Task.Wait(TimeSpan.FromSeconds 10.0))
+        cancellation.Cancel()
+        let exitCode, stdout, stderr = running.Result
+        Assert.Equal(130, exitCode)
+        Assert.Equal(String.Empty, stderr)
+
+        let decoded = Test.decode stdout
+        decoded |> List.iter (fun (_, size) -> Assert.True(size <= limit))
+
+        let indices =
+            decoded
+            |> List.choose (function
+                | Notification("prepared/value", parameters), _ ->
+                    Some(
+                        RpcValue.tryField "index" parameters
+                        |> Option.map (RpcValue.requireInteger "index")
+                        |> Option.defaultWith (fun () -> failwith "Prepared index was absent.")
+                    )
+                | _ -> None)
+            |> List.sort
+
+        Assert.Equal<int64 list>([ 0L .. 31L ], indices)
+
+        Assert.Contains(
+            decoded,
+            function
+            | Notification("prepared/completed", parameters), _ ->
+                RpcValue.tryField "count" parameters
+                |> Option.exists (fun value -> RpcValue.requireInteger "count" value = 32L)
+            | _ -> false
+        )
+
+        Assert.DoesNotContain(
+            decoded,
+            function
+            | Notification("prepared/oversized", _), _ -> true
+            | _ -> false
+        )
+
+    [<Fact>]
+    member _.``should cancel a prepared notification write without partial-frame success``() =
+        let profile = Test.profile "prepared-cancel" [ "start", Read ]
+        use cancellation = new CancellationTokenSource()
+
+        let notificationStarted =
+            TaskCompletionSource TaskCreationOptions.RunContinuationsAsynchronously
+
+        let dispatch _ _ _ _ =
+            let background (sink: RpcNotificationSink) _ =
+                Notification(
+                    "prepared/blocked",
+                    Test.map [ "payload", RpcValue.String(String('z', 128)) ]
+                )
+                |> RpcEncodedNotification.Create
+                |> sink.WriteEncodedAsync
+
+            Task.FromResult(
+                Ok
+                    { Test.dispatchResult Test.empty false with
+                        BackgroundWork = Some background }
+            )
+
+        let input =
+            Array.concat
+                [ Test.request 1u "initialize" Test.empty; Test.request 2u "start" Test.empty ]
+
+        use source = new BlockingAfterDataStream(input)
+        use output = new BlockingNotificationWriteStream(notificationStarted)
+        use errors = new StringWriter()
+
+        let configuration =
+            Test.configuration profile (fun _ _ -> Task.FromResult(Ok Test.empty)) dispatch
+
+        let running =
+            RpcSession.runAsync configuration source output errors cancellation.Token
+
+        Assert.True(notificationStarted.Task.Wait(TimeSpan.FromSeconds 10.0))
+        cancellation.Cancel()
+        Assert.Equal(130, running.Result)
+        Assert.Equal(String.Empty, errors.ToString())
+
+        match Test.frames (output.ToArray()) with
+        | [ Response(1u, None, _); Response(2u, None, _) ] -> ()
+        | frames -> failwithf "A cancelled prepared write produced partial output: %A" frames

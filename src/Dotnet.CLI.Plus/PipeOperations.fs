@@ -72,58 +72,110 @@ module internal PipeOperations =
                     | _ -> PublicOperationOutcome.Cancelled
         }
 
-    let chunkExportNodes
+    let writeExportBatch
         maximumFrameBytes
         descriptor
         operationId
         revision
+        sequence
         (nodes: WorkspaceNode array)
+        isFinalBatch
+        ensureActive
+        reserveFinal
+        (sink: RpcNotificationSink)
         =
-        let chunks = ResizeArray<WorkspaceNode array>()
-
-        let encodedSize offset count =
-            let candidate =
-                ArraySegment<WorkspaceNode>(nodes, offset, count) :> seq<WorkspaceNode>
-
-            PublicProtocol.exportChunk descriptor operationId chunks.Count revision candidate false
-            |> RpcCodec.encodeFrame
-            |> _.Length
-
-        if nodes.Length = 0 then
-            chunks.Add Array.empty
-        else
+        task {
+            let mutable nextSequence = sequence
             let mutable offset = 0
+            let mutable emptyPending = nodes.Length = 0
 
-            while offset < nodes.Length do
+            let encode count last =
+                ensureActive ()
+
+                let candidate =
+                    ArraySegment<WorkspaceNode>(nodes, offset, count) :> seq<WorkspaceNode>
+
+                PublicProtocol.exportChunk
+                    descriptor
+                    operationId
+                    nextSequence
+                    revision
+                    candidate
+                    last
+                |> RpcEncodedNotification.Create
+
+            while emptyPending || offset < nodes.Length do
                 let remaining = nodes.Length - offset
-                let firstSize = encodedSize offset 1
 
-                if firstSize > maximumFrameBytes then
-                    raise (RpcOutboundFrameTooLargeException(maximumFrameBytes, firstSize))
-
-                let mutable accepted = 1
-                let mutable probe = 2
-
-                while probe <= remaining && encodedSize offset probe <= maximumFrameBytes do
-                    accepted <- probe
-                    probe <- probe * 2
-
-                let mutable low = accepted + 1
-                let mutable high = min remaining (probe - 1)
-
-                while low <= high do
-                    let middle = low + (high - low) / 2
-
-                    if encodedSize offset middle <= maximumFrameBytes then
-                        accepted <- middle
-                        low <- middle + 1
+                let count, encoded =
+                    if emptyPending then
+                        let value = encode 0 isFinalBatch
+                        0, value
                     else
-                        high <- middle - 1
+                        let whole = encode remaining isFinalBatch
 
-                chunks.Add(nodes[offset .. offset + accepted - 1])
-                offset <- offset + accepted
+                        if whole.Length <= maximumFrameBytes then
+                            remaining, whole
+                        else
+                            let first = encode 1 false
 
-        chunks.ToArray()
+                            if first.Length > maximumFrameBytes then
+                                raise (
+                                    RpcOutboundFrameTooLargeException(
+                                        maximumFrameBytes,
+                                        first.Length
+                                    )
+                                )
+
+                            let mutable accepted = 1
+                            let mutable selected = first
+                            let mutable probe = 2
+
+                            while probe < remaining do
+                                let candidate = encode probe false
+
+                                if candidate.Length <= maximumFrameBytes then
+                                    accepted <- probe
+                                    selected <- candidate
+                                    probe <- probe * 2
+                                else
+                                    probe <- remaining
+
+                            let mutable low = accepted + 1
+                            let mutable high = min (remaining - 1) (probe - 1)
+
+                            while low <= high do
+                                let middle = low + (high - low) / 2
+                                let candidate = encode middle false
+
+                                if candidate.Length <= maximumFrameBytes then
+                                    accepted <- middle
+                                    selected <- candidate
+                                    low <- middle + 1
+                                else
+                                    high <- middle - 1
+
+                            accepted, selected
+
+                if encoded.Length > maximumFrameBytes then
+                    raise (RpcOutboundFrameTooLargeException(maximumFrameBytes, encoded.Length))
+
+                let isFinalChunk = isFinalBatch && (emptyPending || offset + count = nodes.Length)
+
+                if isFinalChunk then
+                    let! reserved = reserveFinal ()
+
+                    if not reserved then
+                        raise (OperationCanceledException())
+
+                ensureActive ()
+                do! sink.WriteEncodedAsync encoded
+                nextSequence <- nextSequence + 1
+                emptyPending <- false
+                offset <- offset + count
+
+            return nextSequence
+        }
 
     let createOutputPublisher
         maximumFrameBytes

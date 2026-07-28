@@ -43,10 +43,9 @@ type internal WorkspaceRefreshResult =
       ResetEvent: WorkspaceReset option
       Diagnostics: ImmutableArray<WorkspaceDiagnostic> }
 
-type internal WorkspaceExportSnapshot =
-    { Descriptor: WorkspaceDescriptor
-      Revision: int64
-      Nodes: ImmutableArray<WorkspaceNode> }
+type internal WorkspaceExportBatch =
+    { Nodes: WorkspaceNode array
+      IsFinal: bool }
 
 [<RequireQualifiedAccess>]
 type internal WorkspaceInvalidationResult =
@@ -774,7 +773,12 @@ type internal WorkspaceState
                 gate.Release() |> ignore
         }
 
-    member _.ExportAsync(expectedRevision: int64, cancellationToken: CancellationToken) =
+    member _.ExportAsync
+        (
+            expectedRevision: int64,
+            writeBatch: WorkspaceExportBatch -> Task<unit>,
+            cancellationToken: CancellationToken
+        ) =
         task {
             do! gate.WaitAsync cancellationToken
 
@@ -782,10 +786,41 @@ type internal WorkspaceState
                 if current.NeedsRebase || current.Revision <> expectedRevision then
                     return Error(PublicProtocol.workspaceConflict current.Revision)
                 else
-                    let mutable hydrated = Map.empty
+                    let projects =
+                        current.Workspace.RootProjection.Projects
+                        |> Seq.sortBy (fun project -> pathKey project.Path.AbsolutePath.Value)
+                        |> Seq.toArray
+
+                    let staticBatchSize = 256
+                    let staticBatch = ResizeArray<WorkspaceNode> staticBatchSize
+
+                    for node in WorkspaceStatePure.exportStaticNodes current.Workspace do
+                        cancellationToken.ThrowIfCancellationRequested()
+
+                        if staticBatch.Count = staticBatchSize then
+                            do!
+                                writeBatch
+                                    { Nodes = staticBatch.ToArray()
+                                      IsFinal = false }
+
+                            staticBatch.Clear()
+
+                        staticBatch.Add node
+
+                    if staticBatch.Count > 0 then
+                        do!
+                            writeBatch
+                                { Nodes = staticBatch.ToArray()
+                                  IsFinal = projects.Length = 0 }
+
+                    if staticBatch.Count = 0 && projects.Length = 0 then
+                        do! writeBatch { Nodes = Array.empty; IsFinal = true }
+
                     let mutable failure = None
 
-                    for project in current.Workspace.RootProjection.Projects do
+                    for index in 0 .. projects.Length - 1 do
+                        let project = projects[index]
+
                         if failure.IsNone && not project.IsFilteredOut then
                             if not (File.Exists project.Path.AbsolutePath.Value) then
                                 let message =
@@ -798,34 +833,28 @@ type internal WorkspaceState
 
                                 match evaluated with
                                 | Ok snapshot ->
-                                    hydrated <-
-                                        hydrated.Add(
-                                            pathKey project.Path.AbsolutePath.Value,
-                                            snapshot
-                                        )
+                                    do!
+                                        writeBatch
+                                            { Nodes =
+                                                WorkspaceStatePure.exportProjectNodes
+                                                    current.Workspace.WorkspaceDescriptor
+                                                    project
+                                                    (Some snapshot)
+                                              IsFinal = index = projects.Length - 1 }
                                 | Error error -> failure <- Some error
+                        elif failure.IsNone then
+                            do!
+                                writeBatch
+                                    { Nodes =
+                                        WorkspaceStatePure.exportProjectNodes
+                                            current.Workspace.WorkspaceDescriptor
+                                            project
+                                            None
+                                      IsFinal = index = projects.Length - 1 }
 
                     match failure with
                     | Some error -> return Error error
-                    | None ->
-                        cancellationToken.ThrowIfCancellationRequested()
-
-                        let exportData =
-                            { current with
-                                Hydrated = hydrated
-                                Recency =
-                                    hydrated
-                                    |> Seq.map (fun (KeyValue(key, _)) -> key)
-                                    |> Seq.toList }
-
-                        return
-                            Ok
-                                { Descriptor = current.Workspace.WorkspaceDescriptor
-                                  Revision = current.Revision
-                                  Nodes =
-                                    WorkspaceStatePure.placements insensitive exportData
-                                    |> Seq.map _.Node
-                                    |> ImmutableArray.CreateRange }
+                    | None -> return Ok()
             finally
                 gate.Release() |> ignore
         }

@@ -214,6 +214,95 @@ module internal PipeTest =
         Assert.Equal(0, child.ExitCode)
         Assert.Equal(String.Empty, child.StandardError.ReadToEnd())
 
+    type ExportCapture =
+        { Revision: int64
+          Nodes: RpcValue array
+          ChunkSizes: int array
+          LastValues: bool array
+          CompletionSequence: int64
+          Outcome: string
+          DiagnosticCodes: string array }
+
+    let readExport child operationId expectedRevision =
+        let nodes = ResizeArray<RpcValue>()
+        let chunkSizes = ResizeArray<int>()
+        let lastValues = ResizeArray<bool>()
+        let mutable sequence = 0L
+        let mutable completed = None
+
+        while completed.IsNone do
+            let frame, size = readFrameWithSize child
+            Assert.True(size <= 1024, $"Export emitted a {size}-byte frame.")
+
+            match frame with
+            | Notification("workspace/exportChunk", parameters) ->
+                Assert.Equal(RpcValue.String operationId, field "operationId" parameters)
+
+                Assert.Equal(
+                    expectedRevision,
+                    field "revision" parameters |> RpcValue.requireInteger "revision"
+                )
+
+                Assert.Equal(
+                    sequence,
+                    field "sequence" parameters |> RpcValue.requireInteger "sequence"
+                )
+
+                field "nodes" parameters |> RpcValue.requireArray "nodes" |> Seq.iter nodes.Add
+
+                let last =
+                    match field "last" parameters with
+                    | RpcValue.Boolean value -> value
+                    | value -> failwithf "Unexpected export last value: %A" value
+
+                chunkSizes.Add size
+                lastValues.Add last
+                sequence <- sequence + 1L
+            | Notification("operation/completed", parameters) ->
+                Assert.Equal(RpcValue.String operationId, field "operationId" parameters)
+
+                Assert.Equal(
+                    expectedRevision,
+                    field "revision" parameters |> RpcValue.requireInteger "revision"
+                )
+
+                let completionSequence =
+                    field "sequence" parameters |> RpcValue.requireInteger "sequence"
+
+                Assert.Equal(sequence, completionSequence)
+
+                let diagnosticCodes =
+                    field "diagnostics" parameters
+                    |> RpcValue.requireArray "diagnostics"
+                    |> Seq.map (field "code" >> RpcValue.requireString "code")
+                    |> Seq.toArray
+
+                completed <-
+                    Some(
+                        completionSequence,
+                        field "outcome" parameters |> RpcValue.requireString "outcome",
+                        diagnosticCodes
+                    )
+            | value -> failwithf "Unexpected export frame: %A" value
+
+        let completionSequence, outcome, diagnosticCodes = completed.Value
+
+        { Revision = expectedRevision
+          Nodes = nodes.ToArray()
+          ChunkSizes = chunkSizes.ToArray()
+          LastValues = lastValues.ToArray()
+          CompletionSequence = completionSequence
+          Outcome = outcome
+          DiagnosticCodes = diagnosticCodes }
+
+    let startExport child requestId =
+        send child false (request requestId "workspace/export" RpcValue.emptyMap)
+        let error, result = readFrame child |> response requestId
+        Assert.True error.IsNone
+
+        field "operationId" result |> RpcValue.requireString "operationId",
+        field "revision" result |> RpcValue.requireInteger "revision"
+
     let disposeProcess (child: Process) =
         if not child.HasExited then
             child.Kill true
@@ -1239,6 +1328,255 @@ type WorkspaceAppHostTests() =
                 let workerError, _ = PipeTest.readFrame child |> PipeTest.response 7u
                 Assert.Equal("unknown_method", workerError.Value.Code)
                 PipeTest.shutdown child 8u
+            finally
+                PipeTest.disposeProcess child
+        finally
+            if Directory.Exists directory then
+                Directory.Delete(directory, true)
+
+    [<Fact>]
+    member _.``should stream repeatable bounded exports with stable identity cardinality and order``
+        ()
+        =
+        let directory = PipeTest.temporaryDirectory "pipe-bounded-export-order"
+
+        let projectContents prefix =
+            let items =
+                [ for index in 1..48 ->
+                      $"<Compile Include=\"{prefix}/{String('x', 48)}-{index:D3}.cs\" />" ]
+                |> String.concat String.Empty
+
+            "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup>"
+            + "<TargetFramework>net10.0</TargetFramework>"
+            + "<EnableDefaultCompileItems>false</EnableDefaultCompileItems>"
+            + $"</PropertyGroup><ItemGroup>{items}</ItemGroup></Project>"
+
+        try
+            let solution = Path.Combine(directory, "Demo.slnx")
+            let model = SolutionModel()
+
+            for name in [ "Zulu"; "Alpha"; "Middle" ] do
+                model.AddProject($"{name}.csproj", name, null) |> ignore
+                File.WriteAllText(Path.Combine(directory, $"{name}.csproj"), projectContents name)
+
+            PipeTest.save solution model
+            use child = PipeTest.startPipe "solution" solution
+
+            try
+                PipeTest.send child false (PipeTest.request 1u "initialize" PipeTest.initialize)
+                PipeTest.readFrame child |> PipeTest.response 1u |> ignore
+
+                let firstId, firstRevision = PipeTest.startExport child 2u
+                let first = PipeTest.readExport child firstId firstRevision
+                let secondId, secondRevision = PipeTest.startExport child 3u
+                let second = PipeTest.readExport child secondId secondRevision
+
+                Assert.Equal(firstRevision, secondRevision)
+                Assert.Equal("succeeded", first.Outcome)
+                Assert.Equal("succeeded", second.Outcome)
+                Assert.True(first.ChunkSizes.Length > 1)
+                Assert.True(first.ChunkSizes |> Array.max >= 768)
+                Assert.Equal<bool array>([| true |], first.LastValues |> Array.filter id)
+                Assert.True(first.LastValues[first.LastValues.Length - 1])
+                Assert.Equal(first.Nodes.Length, second.Nodes.Length)
+                Assert.Equal<int array>(first.ChunkSizes, second.ChunkSizes)
+
+                let nodeShape node =
+                    let capabilities =
+                        PipeTest.field "capabilities" node
+                        |> RpcValue.requireArray "capabilities"
+                        |> Seq.map (RpcValue.requireString "capability")
+                        |> String.concat ","
+
+                    String.concat
+                        "\u001f"
+                        [ PipeTest.field "id" node |> RpcValue.requireString "id"
+                          PipeTest.field "kind" node |> RpcValue.requireString "kind"
+                          PipeTest.field "name" node |> RpcValue.requireString "name"
+                          PipeTest.field "loadState" node |> RpcValue.requireString "loadState"
+                          capabilities ]
+
+                let firstShapes = first.Nodes |> Array.map nodeShape
+                let secondShapes = second.Nodes |> Array.map nodeShape
+                Assert.Equal<string array>(firstShapes, secondShapes)
+
+                let nodeIds =
+                    first.Nodes |> Array.map (PipeTest.field "id" >> RpcValue.requireString "id")
+
+                Assert.Equal(nodeIds.Length, nodeIds |> Array.distinct |> Array.length)
+
+                let projectNames =
+                    first.Nodes
+                    |> Array.filter (fun node ->
+                        PipeTest.field "kind" node = RpcValue.String "project")
+                    |> Array.map (PipeTest.field "name" >> RpcValue.requireString "name")
+
+                Assert.Equal<string array>([| "Alpha"; "Middle"; "Zulu" |], projectNames)
+                PipeTest.shutdown child 4u
+            finally
+                PipeTest.disposeProcess child
+        finally
+            if Directory.Exists directory then
+                Directory.Delete(directory, true)
+
+    [<Fact>]
+    member _.``should fail a later export evaluation after non-final chunks exactly once``() =
+        let directory = PipeTest.temporaryDirectory "pipe-bounded-export-failure"
+
+        try
+            let solution = Path.Combine(directory, "Demo.slnx")
+            let first = Path.Combine(directory, "Alpha.csproj")
+            let missing = Path.Combine(directory, "Zulu.csproj")
+            let model = SolutionModel()
+            model.AddProject("Alpha.csproj", "Alpha", null) |> ignore
+            model.AddProject("Zulu.csproj", "Zulu", null) |> ignore
+            PipeTest.writeProject first
+            PipeTest.writeProject missing
+            PipeTest.save solution model
+            use child = PipeTest.startPipe "solution" solution
+
+            try
+                PipeTest.send child false (PipeTest.request 1u "initialize" PipeTest.initialize)
+                PipeTest.readFrame child |> PipeTest.response 1u |> ignore
+                File.Delete missing
+
+                let operationId, revision = PipeTest.startExport child 2u
+                let exported = PipeTest.readExport child operationId revision
+
+                Assert.Equal("failed", exported.Outcome)
+                Assert.Contains("not_found", exported.DiagnosticCodes)
+                Assert.True(exported.ChunkSizes.Length > 0)
+                Assert.DoesNotContain(true, exported.LastValues)
+                Assert.Equal(int64 exported.ChunkSizes.Length, exported.CompletionSequence)
+
+                PipeTest.send
+                    child
+                    false
+                    (PipeTest.request
+                        3u
+                        "operation/cancel"
+                        (PipeTest.map [ "operationId", RpcValue.String operationId ]))
+
+                let cancelError, cancelResult = PipeTest.readFrame child |> PipeTest.response 3u
+
+                Assert.True cancelError.IsNone
+                Assert.Equal(RpcValue.Boolean false, PipeTest.field "accepted" cancelResult)
+                PipeTest.shutdown child 4u
+            finally
+                PipeTest.disposeProcess child
+        finally
+            if Directory.Exists directory then
+                Directory.Delete(directory, true)
+
+    [<Fact>]
+    member _.``should cancel a streaming export without a final chunk and release its operation``
+        ()
+        =
+        let directory = PipeTest.temporaryDirectory "pipe-bounded-export-cancel"
+
+        try
+            let solution = Path.Combine(directory, "Demo.slnx")
+            let project = Path.Combine(directory, "Demo.csproj")
+            let model = SolutionModel()
+            model.AddProject("Demo.csproj", "Demo", null) |> ignore
+
+            let items =
+                [ for index in 1..2500 ->
+                      $"<Compile Include=\"generated/{String('y', 48)}-{index:D4}.cs\" />" ]
+                |> String.concat String.Empty
+
+            File.WriteAllText(
+                project,
+                "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup>"
+                + "<TargetFramework>net10.0</TargetFramework>"
+                + "<EnableDefaultCompileItems>false</EnableDefaultCompileItems>"
+                + $"</PropertyGroup><ItemGroup>{items}</ItemGroup></Project>"
+            )
+
+            PipeTest.save solution model
+            use child = PipeTest.startPipe "solution" solution
+
+            try
+                PipeTest.send child false (PipeTest.request 1u "initialize" PipeTest.initialize)
+                PipeTest.readFrame child |> PipeTest.response 1u |> ignore
+                let operationId, revision = PipeTest.startExport child 2u
+
+                let firstFrame, firstSize = PipeTest.readFrameWithSize child
+                Assert.True(firstSize <= 1024)
+
+                match firstFrame with
+                | Notification("workspace/exportChunk", parameters) ->
+                    Assert.Equal(RpcValue.Boolean false, PipeTest.field "last" parameters)
+
+                    Assert.Equal(
+                        0L,
+                        PipeTest.field "sequence" parameters |> RpcValue.requireInteger "sequence"
+                    )
+                | frame -> failwithf "Expected the first non-final export chunk, got %A" frame
+
+                PipeTest.send
+                    child
+                    false
+                    (PipeTest.request
+                        3u
+                        "operation/cancel"
+                        (PipeTest.map [ "operationId", RpcValue.String operationId ]))
+
+                let mutable sequence = 1L
+                let mutable cancelResult = None
+
+                while cancelResult.IsNone do
+                    match PipeTest.readFrame child with
+                    | Notification("workspace/exportChunk", parameters) ->
+                        Assert.Equal(RpcValue.Boolean false, PipeTest.field "last" parameters)
+
+                        Assert.Equal(
+                            sequence,
+                            PipeTest.field "sequence" parameters
+                            |> RpcValue.requireInteger "sequence"
+                        )
+
+                        sequence <- sequence + 1L
+                    | Response(3u, error, result) ->
+                        Assert.True error.IsNone
+                        cancelResult <- Some result
+                    | frame -> failwithf "Unexpected frame before cancellation response: %A" frame
+
+                Assert.Equal(RpcValue.Boolean true, PipeTest.field "accepted" cancelResult.Value)
+
+                match PipeTest.readFrame child with
+                | Notification("operation/completed", parameters) ->
+                    Assert.Equal(
+                        RpcValue.String operationId,
+                        PipeTest.field "operationId" parameters
+                    )
+
+                    Assert.Equal(RpcValue.String "cancelled", PipeTest.field "outcome" parameters)
+
+                    Assert.Equal(
+                        revision,
+                        PipeTest.field "revision" parameters |> RpcValue.requireInteger "revision"
+                    )
+
+                    Assert.Equal(
+                        sequence,
+                        PipeTest.field "sequence" parameters |> RpcValue.requireInteger "sequence"
+                    )
+                | frame -> failwithf "Expected one cancelled completion, got %A" frame
+
+                PipeTest.send
+                    child
+                    false
+                    (PipeTest.request
+                        4u
+                        "operation/cancel"
+                        (PipeTest.map [ "operationId", RpcValue.String operationId ]))
+
+                let retryError, retryResult = PipeTest.readFrame child |> PipeTest.response 4u
+
+                Assert.True retryError.IsNone
+                Assert.Equal(RpcValue.Boolean false, PipeTest.field "accepted" retryResult)
+                PipeTest.shutdown child 5u
             finally
                 PipeTest.disposeProcess child
         finally

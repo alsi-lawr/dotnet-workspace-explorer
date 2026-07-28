@@ -16,8 +16,24 @@ type RpcOutboundFrameTooLargeException(limit: int, actual: int) =
     member _.Limit = limit
     member _.Actual = actual
 
-type RpcNotificationSink internal (write: RpcFrame -> Task<unit>) =
+/// An encoded notification whose bytes can only be created from a notification frame.
+[<Sealed>]
+type RpcEncodedNotification private (bytes: byte array) =
+    member internal _.Bytes = bytes
+    member _.Length = bytes.Length
+
+    static member Create(frame: RpcFrame) =
+        match frame with
+        | Notification _ -> RpcEncodedNotification(RpcCodec.encodeFrame frame)
+        | _ ->
+            invalidArg
+                (nameof frame)
+                "Only notification frames can be prepared for notification output."
+
+type RpcNotificationSink
+    internal (write: RpcFrame -> Task<unit>, writeEncoded: RpcEncodedNotification -> Task<unit>) =
     member _.WriteAsync(frame: RpcFrame) = write frame
+    member _.WriteEncodedAsync(notification: RpcEncodedNotification) = writeEncoded notification
 
 type RpcDispatchResult =
     { Result: RpcValue
@@ -140,6 +156,21 @@ module RpcSession =
                     gate.Release() |> ignore
             }
 
+        member _.WriteEncodedNotificationAsync(notification: RpcEncodedNotification) =
+            task {
+                do! gate.WaitAsync cancellationToken
+
+                try
+                    let limit = outboundLimit ()
+
+                    if notification.Length > limit then
+                        raise (RpcOutboundFrameTooLargeException(limit, notification.Length))
+
+                    do! writeBytes notification.Bytes
+                finally
+                    gate.Release() |> ignore
+            }
+
         interface IDisposable with
             member _.Dispose() = gate.Dispose()
 
@@ -198,7 +229,12 @@ module RpcSession =
                     cancellationToken
                 )
 
-            let sink = RpcNotificationSink writer.WriteNotificationAsync
+            let sink =
+                RpcNotificationSink(
+                    writer.WriteNotificationAsync,
+                    writer.WriteEncodedNotificationAsync
+                )
+
             let backgroundTasks = ResizeArray<Task>()
 
             let backgroundFault =
