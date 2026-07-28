@@ -1261,7 +1261,7 @@ type WorkspaceAppHostTests() =
 
         if not nvimAvailable then
             raise (
-                Sdk.SkipException.ForSkip "Neovim is not available; T-014 will provision it for CI."
+                Sdk.SkipException.ForSkip "Neovim is not available; native editor coverage is unavailable."
 
             )
 
