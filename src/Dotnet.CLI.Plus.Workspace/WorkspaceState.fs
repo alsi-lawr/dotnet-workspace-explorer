@@ -69,6 +69,11 @@ type internal WorkspaceInvalidationResult =
     | Delta of WorkspaceDelta
     | Reset of WorkspaceReset
 
+type private MaterializedRetryFailure =
+    | StageFailure of RpcError
+    | InvalidationFailure of WorkspaceFailure
+    | ToolsetChanged
+
 
 type internal WorkspaceState
     private
@@ -175,6 +180,54 @@ type internal WorkspaceState
 
             return result
         }
+
+    let stageMaterializedAfterProjectInvalidation
+        (source: WorkspaceData)
+        (workspace: SolutionWorkspace)
+        (cancellationToken: CancellationToken)
+        =
+        let retryPaths =
+            source.Hydrated.Keys
+            |> Seq.choose (projectByKey workspace)
+            |> Seq.map _.Path.AbsolutePath
+            |> ImmutableArray.CreateRange
+
+        let rec stage retriesRemaining =
+            task {
+                try
+                    let! staged = stageMaterialized source workspace cancellationToken
+
+                    match staged with
+                    | Error error when
+                        (error.Code = WorkspaceErrorCode.InternalError.Value
+                         || error.Code = WorkspaceErrorCode.InvalidInput.Value)
+                        && retriesRemaining > 0
+                        ->
+                        if cancellationToken.IsCancellationRequested then
+                            return Error(StageFailure cancelledError)
+                        else
+                            do! Task.Delay(10, cancellationToken)
+
+                            let! invalidated = services.InvalidateAsync retryPaths cancellationToken
+
+                            if cancellationToken.IsCancellationRequested then
+                                return Error(StageFailure cancelledError)
+                            else
+                                match invalidated with
+                                | Success MsBuildInvalidationKind.None
+                                | Success MsBuildInvalidationKind.ProjectOrImport ->
+                                    return! stage (retriesRemaining - 1)
+                                | Success _ -> return Error ToolsetChanged
+                                | Failure failure when failure.Code = WorkspaceErrorCode.Cancelled ->
+                                    return Error(StageFailure cancelledError)
+                                | Failure failure -> return Error(InvalidationFailure failure)
+                    | Error error -> return Error(StageFailure error)
+                    | Ok values -> return Ok values
+                with :? OperationCanceledException ->
+                    return Error(StageFailure cancelledError)
+            }
+
+        stage 20
 
     let applyCandidate (candidate: WorkspaceData) =
         let oldPlacements = WorkspaceStatePure.placements insensitive current
@@ -730,12 +783,41 @@ type internal WorkspaceState
                                 return WorkspaceInvalidationResult.Reset reset
                             | Success workspace ->
                                 let! hydrated =
-                                    stageMaterialized current workspace cancellationToken
+                                    if
+                                        kind = MsBuildInvalidationKind.ProjectOrImport
+                                        && not touchesSolution
+                                    then
+                                        stageMaterializedAfterProjectInvalidation
+                                            current
+                                            workspace
+                                            cancellationToken
+                                    else
+                                        task {
+                                            let! staged =
+                                                stageMaterialized
+                                                    current
+                                                    workspace
+                                                    cancellationToken
+
+                                            return staged |> Result.mapError StageFailure
+                                        }
 
                                 match hydrated with
-                                | Error error when error.Code = "cancelled" ->
+                                | Error(StageFailure error) when error.Code = "cancelled" ->
                                     return WorkspaceInvalidationResult.None
-                                | Error _ ->
+                                | Error(InvalidationFailure failure) ->
+                                    let! reset = resetUnsafe failure.Diagnostic
+                                    return WorkspaceInvalidationResult.Reset reset
+                                | Error ToolsetChanged ->
+                                    let! reset =
+                                        resetUnsafe (
+                                            uncertainty
+                                                "workspace.toolset_changed"
+                                                "The selected SDK changed; request a fresh workspace graph."
+                                        )
+
+                                    return WorkspaceInvalidationResult.Reset reset
+                                | Error(StageFailure _) ->
                                     let! reset =
                                         resetUnsafe (
                                             uncertainty

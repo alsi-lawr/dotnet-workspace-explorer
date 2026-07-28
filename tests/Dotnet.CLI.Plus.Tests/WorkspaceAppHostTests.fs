@@ -769,6 +769,507 @@ type WorkspaceAppHostTests() =
                 Directory.Delete(directory, true)
 
     [<Fact>]
+    member _.``should restage all materialized projects after a transient shared import failure``
+        ()
+        =
+        let directory = PipeTest.temporaryDirectory "workspace-state-shared-import-retry"
+
+        try
+            let solution = Path.Combine(directory, "Demo.slnx")
+            let sharedImport = Path.Combine(directory, "Shared.props")
+            let model = SolutionModel()
+
+            let projects =
+                [| for name in [ "Alpha"; "Beta" ] do
+                       let path = Path.Combine(directory, $"{name}.csproj")
+                       PipeTest.writeProject path
+                       model.AddProject(Path.GetFileName path, name, null) |> ignore
+                       yield path |]
+
+            PipeTest.save solution model
+            File.WriteAllText(sharedImport, "<Project />")
+
+            let workspace =
+                match SolutionStore.OpenAsync(solution).Result with
+                | Success value -> value
+                | Failure failure -> failwithf "Could not open retry fixture: %A" failure
+
+            let snapshot (project: string) (visible: string) =
+                let item =
+                    EvaluatedItem(
+                        "Compile",
+                        $"Items/{Path.GetFileNameWithoutExtension project}.cs",
+                        null,
+                        ImmutableArray.Create(EvaluatedMetadata("Visible", visible))
+                    )
+
+                let dimension =
+                    EvaluationDimensionSnapshot(
+                        Nullable(),
+                        ImmutableArray<EvaluatedProperty>.Empty,
+                        ImmutableArray.Create item,
+                        ImmutableArray<EvaluatedReference>.Empty,
+                        ImmutableArray<EvaluatedReference>.Empty,
+                        ImmutableArray<EvaluatedPackage>.Empty,
+                        ImmutableArray<WorkspaceArtifactPath>.Empty
+                    )
+
+                EvaluationSnapshot(
+                    WorkspaceArtifactPath.Create project,
+                    ImmutableArray.Create dimension,
+                    ImmutableArray.Create(WorkspaceArtifactPath.Create sharedImport),
+                    ImmutableArray<WorkspaceArtifactPath>.Empty,
+                    ImmutableArray<WorkspaceArtifactPath>.Empty,
+                    WorkspaceCapabilityProfile.Full,
+                    ImmutableArray<WorkspaceCapabilityId>.Empty,
+                    ImmutableArray<WorkspaceDiagnostic>.Empty
+                )
+
+            let internalFailure () =
+                Failure(
+                    Internal(
+                        WorkspaceDiagnostic.CreateSimple(
+                            WorkspaceDiagnosticSeverity.Error,
+                            WorkspaceDiagnosticCode.Create "workspace.test_internal",
+                            "The test evaluation failed internally.",
+                            true,
+                            CorrelationId.New()
+                        )
+                    )
+                )
+
+            let cache = Dictionary<string, EvaluationSnapshot> StringComparer.Ordinal
+            let evaluations = ResizeArray<string * string>()
+            let invalidations = ResizeArray<string array>()
+            let mutable phase = "hydrate"
+            let mutable openCount = 0
+            let mutable refreshCount = 0
+
+            let services =
+                { OpenAsync =
+                    fun _ _ ->
+                        openCount <- openCount + 1
+                        Task.FromResult<WorkspaceOutcome<SolutionWorkspace>>(Success workspace)
+                  EvaluateAsync =
+                    fun projectPath _ _ ->
+                        let project = projectPath.Value
+
+                        match cache.TryGetValue project with
+                        | true, cached ->
+                            evaluations.Add(project, $"cached-{phase}")
+
+                            Task.FromResult<WorkspaceOutcome<EvaluationSnapshot>>(Success cached)
+                        | false, _ ->
+                            evaluations.Add(project, phase)
+
+                            match phase, Array.findIndex ((=) project) projects with
+                            | "first-stage", 0 ->
+                                let intermediate = snapshot project "intermediate"
+                                cache[project] <- intermediate
+
+                                Task.FromResult<WorkspaceOutcome<EvaluationSnapshot>>(
+                                    Success intermediate
+                                )
+                            | "first-stage", 1 ->
+                                phase <- "final"
+
+                                Task.FromResult<WorkspaceOutcome<EvaluationSnapshot>>(
+                                    internalFailure ()
+                                )
+                            | "final", _ ->
+                                let final =
+                                    snapshot
+                                        project
+                                        $"final-{Path.GetFileNameWithoutExtension project}"
+
+                                cache[project] <- final
+                                Task.FromResult<WorkspaceOutcome<EvaluationSnapshot>>(Success final)
+                            | _ ->
+                                let initial = snapshot project "initial"
+                                cache[project] <- initial
+
+                                Task.FromResult<WorkspaceOutcome<EvaluationSnapshot>>(
+                                    Success initial
+                                )
+                  InvalidateAsync =
+                    fun paths _ ->
+                        let values = paths |> Seq.map _.Value |> Seq.toArray
+                        invalidations.Add values
+
+                        if invalidations.Count = 1 then
+                            Assert.Equal<string array>([| sharedImport |], values)
+                            cache.Clear()
+                            phase <- "first-stage"
+                        else
+                            values |> Array.iter (cache.Remove >> ignore)
+
+                        Task.FromResult<WorkspaceOutcome<MsBuildInvalidationKind>>(
+                            Success MsBuildInvalidationKind.ProjectOrImport
+                        )
+                  OpenExportSessionAsync = fun _ _ _ -> failwith "Export was not expected."
+                  RefreshAsync =
+                    fun () ->
+                        refreshCount <- refreshCount + 1
+                        Task.CompletedTask
+                  DisposeAsync = fun () -> Task.CompletedTask }
+
+            let state =
+                WorkspaceState.Create(
+                    solution,
+                    workspace,
+                    services,
+                    { HydrationLimit = 32
+                      ExportCapacity = 3
+                      TokenSecret = Array.create 32 1uy }
+                )
+
+            let mutable hydratedRevision = 0L
+
+            for project in workspace.RootProjection.Projects do
+                let hydrated =
+                    state
+                        .ChildrenAsync(
+                            project.Node.NodeId.Value,
+                            Some 100,
+                            100,
+                            None,
+                            CancellationToken.None
+                        )
+                        .GetAwaiter()
+                        .GetResult()
+
+                match hydrated with
+                | Ok page -> hydratedRevision <- page.Revision
+                | Error error -> failwithf "Could not hydrate retry fixture: %A" error
+
+            Assert.Equal(2L, hydratedRevision)
+
+            let changed =
+                state
+                    .InvalidateAsync(
+                        ImmutableArray.Create(WorkspaceArtifactPath.Create sharedImport),
+                        CancellationToken.None
+                    )
+                    .GetAwaiter()
+                    .GetResult()
+
+            match changed with
+            | WorkspaceInvalidationResult.Delta delta ->
+                Assert.Equal(hydratedRevision, delta.BaseRevision.Value)
+                Assert.Equal(hydratedRevision + 1L, delta.NewRevision.Value)
+
+                let added =
+                    delta.Changes
+                    |> Seq.choose (function
+                        | Added(node, _, _) when node.NodeKind = WorkspaceNodeKind.ProjectItem ->
+                            Some node.Name
+                        | _ -> None)
+                    |> Seq.sort
+                    |> Seq.toArray
+
+                Assert.Equal<string array>(
+                    [| "Compile: Items/Alpha.cs (Visible=final-Alpha)"
+                       "Compile: Items/Beta.cs (Visible=final-Beta)" |],
+                    added
+                )
+
+                Assert.DoesNotContain(
+                    delta.Changes,
+                    fun change ->
+                        match change with
+                        | Added(node, _, _) -> node.Name.Contains "intermediate"
+                        | _ -> false
+                )
+            | result -> failwithf "Expected one complete final-state delta, got %A" result
+
+            Assert.Equal(2, invalidations.Count)
+
+            invalidations[1]
+            |> Seq.sort
+            |> Seq.toArray
+            |> should equal (projects |> Array.sort)
+
+            Assert.Equal(0, openCount)
+            Assert.Equal(0, refreshCount)
+            Assert.Equal(6, evaluations.Count)
+            state.DisposeAsync().GetAwaiter().GetResult()
+        finally
+            if Directory.Exists directory then
+                Directory.Delete(directory, true)
+
+    [<Fact>]
+    member _.``should bound retryable project staging failures and cancellation``() =
+        let runScenario
+            (name: string)
+            (stageFactory:
+                CancellationTokenSource
+                    -> int
+                    -> EvaluationSnapshot
+                    -> WorkspaceOutcome<EvaluationSnapshot>)
+            (cancellationFactory: unit -> CancellationTokenSource)
+            =
+            let directory = PipeTest.temporaryDirectory $"workspace-state-{name}"
+
+            try
+                let solution = Path.Combine(directory, "Demo.slnx")
+                let project = Path.Combine(directory, "Demo.csproj")
+                let import = Path.Combine(directory, "Shared.props")
+                let model = SolutionModel()
+                model.AddProject("Demo.csproj", "Demo", null) |> ignore
+                PipeTest.save solution model
+                PipeTest.writeProject project
+                File.WriteAllText(import, "<Project />")
+
+                let workspace =
+                    match SolutionStore.OpenAsync(solution).Result with
+                    | Success value -> value
+                    | Failure failure -> failwithf "Could not open retry-bound fixture: %A" failure
+
+                let snapshot visible =
+                    let item =
+                        EvaluatedItem(
+                            "Compile",
+                            "Items/Demo.cs",
+                            null,
+                            ImmutableArray.Create(EvaluatedMetadata("Visible", visible))
+                        )
+
+                    let dimension =
+                        EvaluationDimensionSnapshot(
+                            Nullable(),
+                            ImmutableArray<EvaluatedProperty>.Empty,
+                            ImmutableArray.Create item,
+                            ImmutableArray<EvaluatedReference>.Empty,
+                            ImmutableArray<EvaluatedReference>.Empty,
+                            ImmutableArray<EvaluatedPackage>.Empty,
+                            ImmutableArray<WorkspaceArtifactPath>.Empty
+                        )
+
+                    EvaluationSnapshot(
+                        WorkspaceArtifactPath.Create project,
+                        ImmutableArray.Create dimension,
+                        ImmutableArray.Create(WorkspaceArtifactPath.Create import),
+                        ImmutableArray<WorkspaceArtifactPath>.Empty,
+                        ImmutableArray<WorkspaceArtifactPath>.Empty,
+                        WorkspaceCapabilityProfile.Full,
+                        ImmutableArray<WorkspaceCapabilityId>.Empty,
+                        ImmutableArray<WorkspaceDiagnostic>.Empty
+                    )
+
+                use cancellation = cancellationFactory ()
+                let mutable hydrated = false
+                let mutable stageEvaluations = 0
+                let mutable retryInvalidations = 0
+                let mutable refreshCount = 0
+
+                let services =
+                    { OpenAsync =
+                        fun _ _ ->
+                            Task.FromResult<WorkspaceOutcome<SolutionWorkspace>>(Success workspace)
+                      EvaluateAsync =
+                        fun _ _ _ ->
+                            if not hydrated then
+                                hydrated <- true
+
+                                Task.FromResult<WorkspaceOutcome<EvaluationSnapshot>>(
+                                    Success(snapshot "initial")
+                                )
+                            else
+                                stageEvaluations <- stageEvaluations + 1
+
+                                Task.FromResult<WorkspaceOutcome<EvaluationSnapshot>>(
+                                    stageFactory cancellation stageEvaluations (snapshot "final")
+                                )
+                      InvalidateAsync =
+                        fun paths _ ->
+                            if paths |> Seq.exists (fun path -> path.Value = project) then
+                                retryInvalidations <- retryInvalidations + 1
+
+                            Task.FromResult<WorkspaceOutcome<MsBuildInvalidationKind>>(
+                                Success MsBuildInvalidationKind.ProjectOrImport
+                            )
+                      OpenExportSessionAsync = fun _ _ _ -> failwith "Export was not expected."
+                      RefreshAsync =
+                        fun () ->
+                            refreshCount <- refreshCount + 1
+                            Task.CompletedTask
+                      DisposeAsync = fun () -> Task.CompletedTask }
+
+                let state =
+                    WorkspaceState.Create(
+                        solution,
+                        workspace,
+                        services,
+                        { HydrationLimit = 32
+                          ExportCapacity = 3
+                          TokenSecret = Array.create 32 1uy }
+                    )
+
+                let projectNode = workspace.RootProjection.Projects |> Seq.exactlyOne
+
+                match
+                    state
+                        .ChildrenAsync(
+                            projectNode.Node.NodeId.Value,
+                            Some 100,
+                            100,
+                            None,
+                            CancellationToken.None
+                        )
+                        .GetAwaiter()
+                        .GetResult()
+                with
+                | Ok page -> Assert.Equal(1L, page.Revision)
+                | Error error -> failwithf "Could not hydrate retry-bound fixture: %A" error
+
+                let changed =
+                    state
+                        .InvalidateAsync(
+                            ImmutableArray.Create(WorkspaceArtifactPath.Create import),
+                            cancellation.Token
+                        )
+                        .GetAwaiter()
+                        .GetResult()
+
+                let revision = state.Revision
+                state.DisposeAsync().GetAwaiter().GetResult()
+                changed, stageEvaluations, retryInvalidations, refreshCount, revision
+            finally
+                if Directory.Exists directory then
+                    Directory.Delete(directory, true)
+
+        let diagnostic (code: string) (message: string) =
+            WorkspaceDiagnostic.CreateSimple(
+                WorkspaceDiagnosticSeverity.Error,
+                WorkspaceDiagnosticCode.Create code,
+                message,
+                false,
+                CorrelationId.New()
+            )
+
+        let (invalidRecovered,
+             invalidRecoveryEvaluations,
+             invalidRecoveryRetries,
+             invalidRecoveryRefreshes,
+             invalidRecoveryRevision) =
+            runScenario
+                "invalid-recovered"
+                (fun _ evaluation final ->
+                    if evaluation = 1 then
+                        Failure(
+                            InvalidInput(
+                                "project",
+                                diagnostic
+                                    "msbuild.project_malformed"
+                                    "The project is transiently malformed."
+                            )
+                        )
+                    else
+                        Success final)
+                (fun () -> new CancellationTokenSource())
+
+        match invalidRecovered with
+        | WorkspaceInvalidationResult.Delta delta ->
+            Assert.Equal(1L, delta.BaseRevision.Value)
+            Assert.Equal(2L, delta.NewRevision.Value)
+
+            Assert.Contains(
+                delta.Changes,
+                fun change ->
+                    match change with
+                    | Added(node, _, _) ->
+                        node.NodeKind = WorkspaceNodeKind.ProjectItem
+                        && node.Name = "Compile: Items/Demo.cs (Visible=final)"
+                    | _ -> false
+            )
+        | result -> failwithf "Expected an invalid-input recovery delta, got %A" result
+
+        Assert.Equal(2, invalidRecoveryEvaluations)
+        Assert.Equal(1, invalidRecoveryRetries)
+        Assert.Equal(0, invalidRecoveryRefreshes)
+        Assert.Equal(2L, invalidRecoveryRevision)
+
+        let (internalExhausted,
+             internalExhaustedEvaluations,
+             internalExhaustedRetries,
+             internalExhaustedRefreshes,
+             internalExhaustedRevision) =
+            runScenario
+                "internal-exhausted"
+                (fun _ _ _ ->
+                    Failure(
+                        Internal(
+                            diagnostic
+                                "workspace.test_internal"
+                                "The project evaluation failed internally."
+                        )
+                    ))
+                (fun () -> new CancellationTokenSource())
+
+        match internalExhausted with
+        | WorkspaceInvalidationResult.Reset reset ->
+            Assert.Equal(2L, reset.Revision.Value)
+            Assert.Equal("workspace.watch_unverified", reset.Diagnostics[0].DiagnosticCode.Value)
+        | result -> failwithf "Expected an internal-error exhaustion reset, got %A" result
+
+        Assert.Equal(21, internalExhaustedEvaluations)
+        Assert.Equal(20, internalExhaustedRetries)
+        Assert.Equal(1, internalExhaustedRefreshes)
+        Assert.Equal(2L, internalExhaustedRevision)
+
+        let (invalidExhausted,
+             invalidExhaustedEvaluations,
+             invalidExhaustedRetries,
+             invalidExhaustedRefreshes,
+             invalidExhaustedRevision) =
+            runScenario
+                "invalid-exhausted"
+                (fun _ _ _ ->
+                    Failure(
+                        InvalidInput(
+                            "project",
+                            diagnostic "msbuild.project_malformed" "The project is malformed."
+                        )
+                    ))
+                (fun () -> new CancellationTokenSource())
+
+        match invalidExhausted with
+        | WorkspaceInvalidationResult.Reset reset ->
+            Assert.Equal(2L, reset.Revision.Value)
+            Assert.Equal("workspace.watch_unverified", reset.Diagnostics[0].DiagnosticCode.Value)
+        | result -> failwithf "Expected an invalid-input exhaustion reset, got %A" result
+
+        Assert.Equal(21, invalidExhaustedEvaluations)
+        Assert.Equal(20, invalidExhaustedRetries)
+        Assert.Equal(1, invalidExhaustedRefreshes)
+        Assert.Equal(2L, invalidExhaustedRevision)
+
+        let (cancelled,
+             cancelledEvaluations,
+             cancelledRetries,
+             cancelledRefreshes,
+             cancelledRevision) =
+            runScenario
+                "cancelled"
+                (fun cancellation _ _ ->
+                    cancellation.Cancel()
+
+                    Failure(
+                        Internal(
+                            diagnostic
+                                "workspace.test_internal"
+                                "The project evaluation failed internally."
+                        )
+                    ))
+                (fun () -> new CancellationTokenSource())
+
+        Assert.Equal(WorkspaceInvalidationResult.None, cancelled)
+        Assert.Equal(1, cancelledEvaluations)
+        Assert.Equal(0, cancelledRetries)
+        Assert.Equal(0, cancelledRefreshes)
+        Assert.Equal(1L, cancelledRevision)
+
+    [<Fact>]
     member _.``should bound export admission release canonically and recover after cancellation``
         ()
         =
