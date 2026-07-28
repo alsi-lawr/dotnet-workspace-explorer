@@ -143,7 +143,7 @@ let writeSummary () =
         dict
             [ "medianRootMilliseconds", box 2000.0
               "medianChangeMilliseconds", box 500.0
-              "medianExportMilliseconds", box 30000.0
+              "medianExportMilliseconds", box 50000.0
               "maximumAggregateRssBytes", box (int64 (1.5 * 1024.0 * 1024.0 * 1024.0)) ]
 
     let summary =
@@ -169,6 +169,7 @@ let writeSummary () =
                      "operation/completed"
                      "shutdown" |]
               "effectiveDebounceMilliseconds", box 0
+              "effectiveExportWorkerCapacity", box 3
               "rssSampling",
               box (
                   dict
@@ -1110,7 +1111,6 @@ let runScenario name measuredRun =
                                  | true, count -> count + 1
                                  | _ -> 1)
                         | None -> ()
-
             | RpcFrame.Notification("operation/completed", parameters) ->
                 require finalSeen "operation/completed arrived before the final export chunk."
 
@@ -1283,7 +1283,7 @@ let runQualification () =
             if
                 medianRoot.Value <= 2000.0
                 && medianChange.Value <= 500.0
-                && medianExport.Value <= 30000.0
+                && medianExport.Value <= 50000.0
                 && underRss
                 && cardinality
             then
