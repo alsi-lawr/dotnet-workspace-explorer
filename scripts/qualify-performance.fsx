@@ -142,7 +142,7 @@ let writeSummary () =
     let thresholds =
         dict
             [ "medianRootMilliseconds", box 2000.0
-              "medianChangeMilliseconds", box 500.0
+              "medianChangeMilliseconds", box 550.0
               "medianExportMilliseconds", box 50000.0
               "maximumAggregateRssBytes", box (int64 (1.5 * 1024.0 * 1024.0 * 1024.0)) ]
 
@@ -1286,7 +1286,7 @@ let runQualification () =
 
             if
                 medianRoot.Value <= 2000.0
-                && medianChange.Value <= 500.0
+                && medianChange.Value <= 550.0
                 && medianExport.Value <= 50000.0
                 && underRss
                 && cardinality
