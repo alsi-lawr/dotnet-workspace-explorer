@@ -533,7 +533,9 @@ type WorkspaceAppHostTests() =
                 Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``should bound export admission and release reverse completions canonically``() =
+    member _.``should bound export admission release canonically and recover after cancellation``
+        ()
+        =
         let runScenario capacity projectCount =
             let directory = PipeTest.temporaryDirectory "export-scheduler"
 
@@ -689,6 +691,181 @@ type WorkspaceAppHostTests() =
 
         runScenario 2 4
         runScenario Int32.MaxValue 2
+
+        let runCancellationScenario () =
+            let directory = PipeTest.temporaryDirectory "export-scheduler-cancellation"
+
+            try
+                let solution = Path.Combine(directory, "Demo.slnx")
+                let model = SolutionModel()
+
+                let projects =
+                    [| for name in [ "Alpha"; "Middle"; "Zulu" ] do
+                           let path = Path.Combine(directory, $"{name}.fsproj")
+                           PipeTest.writeProject path
+                           model.AddProject(Path.GetFileName path, name, null) |> ignore
+                           yield path |]
+
+                PipeTest.save solution model
+
+                let workspace =
+                    match SolutionStore.OpenAsync(solution).Result with
+                    | Success value -> value
+                    | Failure failure -> failwithf "Could not open cancellation fixture: %A" failure
+
+                let snapshot path =
+                    EvaluationSnapshot(
+                        WorkspaceArtifactPath.Create path,
+                        ImmutableArray<EvaluationDimensionSnapshot>.Empty,
+                        ImmutableArray<WorkspaceArtifactPath>.Empty,
+                        ImmutableArray<WorkspaceArtifactPath>.Empty,
+                        ImmutableArray<WorkspaceArtifactPath>.Empty,
+                        WorkspaceCapabilityProfile.Full,
+                        ImmutableArray<WorkspaceCapabilityId>.Empty,
+                        ImmutableArray<WorkspaceDiagnostic>.Empty
+                    )
+
+                let cancelled () =
+                    Failure(
+                        Cancelled(
+                            OperationId.New(),
+                            WorkspaceDiagnostic.CreateSimple(
+                                WorkspaceDiagnosticSeverity.Error,
+                                WorkspaceDiagnosticCode.Create "workspace.test_cancelled",
+                                "The test export was cancelled.",
+                                false,
+                                CorrelationId.New()
+                            )
+                        )
+                    )
+
+                use started = new SemaphoreSlim 0
+                let mutable openedSessions = 0
+                let mutable settledEvaluations = 0
+                let mutable disposedSessions = 0
+
+                let services =
+                    { OpenAsync =
+                        fun _ _ ->
+                            Task.FromResult<WorkspaceOutcome<SolutionWorkspace>>(Success workspace)
+                      EvaluateAsync =
+                        fun _ _ _ -> failwith "Interactive evaluation was not expected."
+                      InvalidateAsync =
+                        fun _ _ ->
+                            Task.FromResult<WorkspaceOutcome<MsBuildInvalidationKind>>(
+                                Success MsBuildInvalidationKind.None
+                            )
+                      OpenExportSessionAsync =
+                        fun _ observedCapacity _ ->
+                            Assert.Equal(3, observedCapacity)
+                            let sessionNumber = Interlocked.Increment(&openedSessions)
+
+                            Task.FromResult<WorkspaceOutcome<WorkspaceExportSession>>(
+                                Success
+                                    { EvaluateAsync =
+                                        if sessionNumber = 1 then
+                                            fun _ cancellationToken ->
+                                                task {
+                                                    let cancelledSignal =
+                                                        TaskCompletionSource<unit>
+                                                            TaskCreationOptions.RunContinuationsAsynchronously
+
+                                                    use _registration =
+                                                        cancellationToken.Register(fun () ->
+                                                            cancelledSignal.TrySetResult()
+                                                            |> ignore)
+
+                                                    started.Release() |> ignore
+                                                    do! cancelledSignal.Task
+
+                                                    Interlocked.Increment(&settledEvaluations)
+                                                    |> ignore
+
+                                                    return cancelled ()
+                                                }
+                                        else
+                                            fun projectPath _ ->
+                                                Task.FromResult<WorkspaceOutcome<EvaluationSnapshot>>(
+                                                    Success(snapshot projectPath.Value)
+                                                )
+                                      DisposeAsync =
+                                        fun () ->
+                                            if sessionNumber = 1 then
+                                                Assert.Equal(projects.Length, settledEvaluations)
+
+                                            Interlocked.Increment(&disposedSessions) |> ignore
+                                            Task.CompletedTask }
+                            )
+                      RefreshAsync = fun () -> Task.CompletedTask
+                      DisposeAsync = fun () -> Task.CompletedTask }
+
+                let state =
+                    WorkspaceState.Create(
+                        solution,
+                        workspace,
+                        services,
+                        { HydrationLimit = 32
+                          ExportCapacity = 3
+                          TokenSecret = Array.create 32 1uy }
+                    )
+
+                use cancellation = new CancellationTokenSource()
+                let firstLastValues = ResizeArray<bool>()
+
+                let firstExport =
+                    state.ExportAsync(
+                        workspace.WorkspaceDescriptor.WorkspaceRevision.Value,
+                        (fun batch ->
+                            firstLastValues.Add batch.IsFinal
+                            Task.FromResult()),
+                        cancellation.Token
+                    )
+
+                for _ in projects do
+                    Assert.True(started.Wait 5000, "A default-capacity lane did not start.")
+
+                Assert.False firstExport.IsCompleted
+                Assert.Equal(0, settledEvaluations)
+                cancellation.Cancel()
+
+                match firstExport.GetAwaiter().GetResult() with
+                | Error error -> Assert.Equal("cancelled", error.Code)
+                | Ok() -> failwith "The blocked export unexpectedly succeeded."
+
+                Assert.Equal(3, settledEvaluations)
+                Assert.Equal(1, openedSessions)
+                Assert.Equal(1, disposedSessions)
+                Assert.DoesNotContain(true, firstLastValues)
+
+                let secondLastValues = ResizeArray<bool>()
+
+                let secondExport =
+                    state.ExportAsync(
+                        workspace.WorkspaceDescriptor.WorkspaceRevision.Value,
+                        (fun batch ->
+                            secondLastValues.Add batch.IsFinal
+                            Task.FromResult()),
+                        CancellationToken.None
+                    )
+
+                match secondExport.GetAwaiter().GetResult() with
+                | Ok() -> ()
+                | Error error -> failwithf "The fresh export failed: %s" error.Message
+
+                Assert.Equal(2, openedSessions)
+                Assert.Equal(2, disposedSessions)
+
+                Assert.Equal<bool array>(
+                    [| true |],
+                    secondLastValues |> Seq.filter id |> Seq.toArray
+                )
+
+                state.DisposeAsync().GetAwaiter().GetResult()
+            finally
+                if Directory.Exists directory then
+                    Directory.Delete(directory, true)
+
+        runCancellationScenario ()
 
     [<Fact>]
     member _.``should honor Worker default Content items without redundant declarations``() =
