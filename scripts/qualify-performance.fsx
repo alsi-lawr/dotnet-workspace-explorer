@@ -397,6 +397,22 @@ let integerField name value =
 let arrayField name value =
     field name value |> RpcValue.requireArray name
 
+let watcherResetFailure parameters =
+    let diagnostics = arrayField "diagnostics" parameters
+
+    let detail =
+        if diagnostics.IsEmpty then
+            "no diagnostic was supplied."
+        else
+            diagnostics
+            |> Seq.map (fun diagnostic ->
+                let code = stringField "code" diagnostic
+                let message = stringField "message" diagnostic
+                $"{code}: {message}")
+            |> String.concat "; "
+
+    fail $"Watcher reset while awaiting the materialized change delta: {detail}"
+
 let map values = RpcValue.map values
 
 let request id name parameters =
@@ -995,8 +1011,7 @@ let runScenario name measuredRun =
                             float (Stopwatch.GetTimestamp() - changeStart) * 1000.0
                             / float Stopwatch.Frequency
                         )
-            | RpcFrame.Notification("workspace/reset", parameters) ->
-                revision <- integerField "revision" parameters
+            | RpcFrame.Notification("workspace/reset", parameters) -> watcherResetFailure parameters
             | frame ->
                 fail
                     $"Expected a watcher delta after the flushed in-place metadata edit, got {frame}."
