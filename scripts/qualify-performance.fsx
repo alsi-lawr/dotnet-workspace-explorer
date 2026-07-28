@@ -1,7 +1,10 @@
+#r "../src/Dotnet.CLI.Plus/bin/Release/net10.0/MessagePack.Annotations.dll"
+#r "../src/Dotnet.CLI.Plus/bin/Release/net10.0/MessagePack.dll"
 #r "../src/Dotnet.CLI.Plus.Core/bin/Release/net10.0/Dotnet.CLI.Plus.Core.dll"
 #r "../src/Dotnet.CLI.Plus.Transport/bin/Release/net10.0/Dotnet.CLI.Plus.Transport.dll"
 
 open System
+open System.Buffers
 open System.Collections.Generic
 open System.Diagnostics
 open System.Globalization
@@ -12,6 +15,7 @@ open System.Text.Json
 open System.Threading
 open System.Threading.Tasks
 open Dotnet.CLI.Plus.Transport
+open MessagePack
 
 let fail message =
     raise (InvalidOperationException(message))
@@ -397,49 +401,178 @@ let map values = RpcValue.map values
 let request id name parameters =
     RpcCodec.encodeFrame (RpcFrame.Request(id, name, parameters))
 
-let readFrame (stream: Stream) timeoutMilliseconds =
-    let pending = ResizeArray<byte>()
-    let buffer = Array.zeroCreate<byte> 1
+let tryReplacementItemId projectId itemId changes =
+    let removed =
+        changes
+        |> Seq.exists (fun change ->
+            field "kind" change = RpcValue.String "remove"
+            && field "id" change = RpcValue.String itemId
+            && field "parentId" change = RpcValue.String projectId)
 
-    let deadline =
-        Stopwatch.GetTimestamp()
-        + int64 timeoutMilliseconds * Stopwatch.Frequency / 1000L
+    if removed then
+        changes
+        |> Seq.tryPick (fun change ->
+            if
+                field "kind" change = RpcValue.String "add"
+                && field "parentId" change = RpcValue.String projectId
+            then
+                match RpcValue.tryField "node" change with
+                | Some node when
+                    stringField "kind" node = "projectItem"
+                    && stringField "name" node = "Compile: Items/N0001.cs (Visible=false)"
+                    ->
+                    Some(stringField "id" node)
+                | _ -> None
+            else
+                None)
+    else
+        None
 
-    let remaining () =
-        max 1 (int ((deadline - Stopwatch.GetTimestamp()) * 1000L / Stopwatch.Frequency))
+let tryReadMessagePackToken (buffer: byte array) offset count =
+    let sequence = ReadOnlySequence<byte>(ReadOnlyMemory<byte>(buffer, offset, count))
+    let mutable reader = MessagePackReader(&sequence)
 
-    let mutable decoded = None
+    try
+        let mutable complete = true
+        let mutable children = 0L
 
-    while decoded.IsNone do
-        use cancellation = new CancellationTokenSource()
-        let read = stream.ReadAsync(buffer.AsMemory(), cancellation.Token).AsTask()
+        match reader.NextMessagePackType with
+        | MessagePackType.Array ->
+            let mutable count = 0
 
-        if not (read.Wait(remaining ())) then
-            cancellation.Cancel()
-            fail "Timed out while waiting for an RPC frame."
+            if reader.TryReadArrayHeader(&count) then
+                children <- int64 count
+            else
+                complete <- false
+        | MessagePackType.Map ->
+            let mutable count = 0
 
-        if read.Result = 0 then
-            fail "The apphost closed stdout before completing an RPC frame."
+            if reader.TryReadMapHeader(&count) then
+                children <- int64 count * 2L
+            else
+                complete <- false
+        | _ -> reader.Skip()
 
-        pending.Add(buffer[0])
+        if complete then
+            Some(int reader.Consumed, children)
+        else
+            None
+    with :? EndOfStreamException ->
+        None
 
-        match RpcCodec.tryReadValueLength RpcCodec.secureLimits (pending.ToArray()) with
-        | Error RpcDecodeError.Incomplete -> ()
-        | Error error -> fail $"Invalid apphost RPC frame length: {error}"
-        | Ok length when length <> pending.Count ->
-            fail "The apphost RPC frame reader consumed an unexpected byte count."
-        | Ok _ ->
-            match RpcCodec.decodeFrame RpcCodec.secureLimits (pending.ToArray()) with
-            | Ok(RpcFrameDecodeResult.Frame frame) -> decoded <- Some frame
-            | Ok(RpcFrameDecodeResult.RecoverableError _) ->
-                fail "The apphost returned a recoverable RPC request error."
-            | Error error -> fail $"Invalid apphost RPC frame: {error}"
+type BufferedFrameReader(stream: Stream) =
+    let readSize = 65536
+    let maximumBufferedBytes = RpcCodec.secureLimits.MaximumValueBytes + 1
+    let mutable buffer = Array.zeroCreate<byte> readSize
+    let mutable frameStart = 0
+    let mutable scanOffset = 0
+    let mutable bufferedEnd = 0
+    let mutable remainingTokens = 1L
 
-    decoded.Value
+    let compact () =
+        if frameStart > 0 then
+            let retained = bufferedEnd - frameStart
+            Buffer.BlockCopy(buffer, frameStart, buffer, 0, retained)
+            scanOffset <- scanOffset - frameStart
+            bufferedEnd <- retained
+            frameStart <- 0
+
+    let writableCount () =
+        let retained = bufferedEnd - frameStart
+        let allowed = maximumBufferedBytes - retained
+
+        require (allowed > 0) "Inbound MessagePack value exceeds the configured maximum size."
+
+        let requested = min readSize allowed
+
+        if buffer.Length - bufferedEnd < requested then
+            compact ()
+
+        if buffer.Length - bufferedEnd < requested then
+            let nextLength =
+                min maximumBufferedBytes (max (buffer.Length * 2) (bufferedEnd + requested))
+
+            Array.Resize(&buffer, nextLength)
+
+        requested
+
+    let scanAvailable () =
+        let mutable scanning = true
+
+        while scanning && remainingTokens > 0L do
+            match tryReadMessagePackToken buffer scanOffset (bufferedEnd - scanOffset) with
+            | Some(consumed, children) ->
+                require (consumed > 0) "The MessagePack runtime did not consume a token."
+                scanOffset <- scanOffset + consumed
+                remainingTokens <- remainingTokens - 1L + children
+            | None -> scanning <- false
+
+        remainingTokens = 0L
+
+    member _.Read(timeoutMilliseconds) =
+        let deadline =
+            Stopwatch.GetTimestamp()
+            + int64 timeoutMilliseconds * Stopwatch.Frequency / 1000L
+
+        let remaining () =
+            max 1 (int ((deadline - Stopwatch.GetTimestamp()) * 1000L / Stopwatch.Frequency))
+
+        let mutable decoded: RpcFrame option = None
+
+        while decoded.IsNone do
+            if scanAvailable () then
+                let length = scanOffset - frameStart
+                let frameBytes = buffer.AsSpan(frameStart, length).ToArray()
+
+                match RpcCodec.tryReadValueLength RpcCodec.secureLimits frameBytes with
+                | Ok publicLength when publicLength = length ->
+                    match RpcCodec.decodeFrame RpcCodec.secureLimits frameBytes with
+                    | Ok(RpcFrameDecodeResult.Frame frame) ->
+                        frameStart <- scanOffset
+                        remainingTokens <- 1L
+
+                        if frameStart = bufferedEnd then
+                            frameStart <- 0
+                            scanOffset <- 0
+                            bufferedEnd <- 0
+
+                        decoded <- Some frame
+                    | Ok(RpcFrameDecodeResult.RecoverableError _) ->
+                        fail "The apphost returned a recoverable RPC request error."
+                    | Error error -> fail $"Invalid apphost RPC frame: {error}"
+                | Ok publicLength ->
+                    fail
+                        $"The MessagePack runtime found a {length}-byte frame but the public decoder found {publicLength} bytes."
+                | Error error -> fail $"Invalid apphost RPC frame length: {error}"
+            else
+                use cancellation = new CancellationTokenSource()
+                let writable = writableCount ()
+
+                let read =
+                    stream
+                        .ReadAsync(buffer.AsMemory(bufferedEnd, writable), cancellation.Token)
+                        .AsTask()
+
+                if not (read.Wait(remaining ())) then
+                    cancellation.Cancel()
+                    fail $"Timed out while waiting for an RPC frame after {timeoutMilliseconds} ms."
+
+                if read.Result = 0 then
+                    fail "The apphost closed stdout before completing an RPC frame."
+
+                bufferedEnd <- bufferedEnd + read.Result
+
+        decoded.Value
 
 let send (child: Process) bytes =
     child.StandardInput.BaseStream.Write(bytes, 0, bytes.Length)
     child.StandardInput.BaseStream.Flush()
+
+let readStage stage (reader: BufferedFrameReader) timeoutMilliseconds =
+    try
+        reader.Read(timeoutMilliseconds)
+    with error ->
+        fail $"{stage}: {error.Message}"
 
 let response id =
     function
@@ -465,7 +598,7 @@ let procStat pid =
         content.Substring(close + 2).Split(' ', StringSplitOptions.RemoveEmptyEntries)
 
     require (values.Length > 1) $"Malformed /proc/{pid}/stat fields."
-    Int32.Parse(values[1], CultureInfo.InvariantCulture)
+    values[0], Int32.Parse(values[1], CultureInfo.InvariantCulture)
 
 let procRss pid =
     File.ReadLines($"/proc/{pid}/status")
@@ -484,6 +617,7 @@ let startSampler rootPid =
     let cancellation = new CancellationTokenSource()
     let samples = ResizeArray<ProcSample>()
     let known = HashSet<int>()
+    let sampledRss = HashSet<int>()
     let mutable fault: string option = None
     let started = Stopwatch.StartNew()
 
@@ -495,7 +629,8 @@ let startSampler rootPid =
                     match Int32.TryParse(Path.GetFileName path) with
                     | true, pid ->
                         try
-                            Some(pid, procStat pid)
+                            let state, ppid = procStat pid
+                            Some(pid, state, ppid)
                         with _ ->
                             None
                     | _ -> None)
@@ -503,7 +638,7 @@ let startSampler rootPid =
 
             let children = Dictionary<int, ResizeArray<int>>()
 
-            for pid, ppid in stats do
+            for pid, _, ppid in stats do
                 match children.TryGetValue ppid with
                 | true, values -> values.Add pid
                 | _ -> children[ppid] <- ResizeArray [ pid ]
@@ -524,8 +659,22 @@ let startSampler rootPid =
             let processes =
                 descendants
                 |> Seq.map (fun pid ->
-                    let ppid = stats |> Array.find (fun (candidate, _) -> candidate = pid) |> snd
-                    let rss = procRss pid
+                    let state, ppid =
+                        stats
+                        |> Array.find (fun (candidate, _, _) -> candidate = pid)
+                        |> fun (_, state, ppid) -> state, ppid
+
+                    let rss =
+                        if state = "Z" then
+                            0L
+                        else
+                            try
+                                let value = procRss pid
+                                sampledRss.Add pid |> ignore
+                                value
+                            with _ when sampledRss.Contains pid ->
+                                0L
+
                     known.Add pid |> ignore
                     pid, ppid, rss)
                 |> Seq.toArray
@@ -558,20 +707,21 @@ let rec discoverTree roots =
             match Int32.TryParse(Path.GetFileName path) with
             | true, pid ->
                 try
-                    Some(pid, procStat pid)
+                    let state, ppid = procStat pid
+                    Some(pid, state, ppid)
                 with _ ->
                     None
             | false, _ -> None)
         |> Seq.toArray
 
-    let children = all |> Array.groupBy snd |> dict
+    let children = all |> Array.groupBy (fun (_, _, ppid) -> ppid) |> dict
     let found = HashSet<int>()
 
     let rec visit pid =
         if found.Add pid then
             match children.TryGetValue pid with
             | true, values ->
-                for child, _ in values do
+                for child, _, _ in values do
                     visit child
             | _ -> ()
 
@@ -605,7 +755,7 @@ let reap (root: Process) (known: int array) =
             if value = root.Id then
                 0
             elif Directory.Exists($"/proc/{value}") then
-                count (procStat value) + 1
+                count (procStat value |> snd) + 1
             else
                 0
 
@@ -651,7 +801,7 @@ let writeMetadata project =
     let original = File.ReadAllText project
 
     let marker =
-        "<Compile Include=\"Items/N0001.cs\"><T024Performance>qualified</T024Performance></Compile>"
+        "<Compile Include=\"Items/N0001.cs\"><Visible>false</Visible></Compile>"
 
     require
         (original.Contains("<Compile Include=\"Items/N0001.cs\" />", StringComparison.Ordinal))
@@ -660,18 +810,13 @@ let writeMetadata project =
     let replacement =
         original.Replace("<Compile Include=\"Items/N0001.cs\" />", marker, StringComparison.Ordinal)
 
-    let temporary = project + ".t024.tmp"
-
     use stream =
-        new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None)
+        new FileStream(project, FileMode.Create, FileAccess.Write, FileShare.None)
 
     use writer = new StreamWriter(stream, new UTF8Encoding(false))
     writer.Write(replacement)
     writer.Flush()
     stream.Flush(true)
-    writer.Close()
-    stream.Close()
-    File.Move(temporary, project, true)
 
 let median values =
     let sorted = values |> Array.sort
@@ -706,17 +851,16 @@ let runScenario name measuredRun =
     try
         let rootStart = Stopwatch.GetTimestamp()
         require (child.Start()) "Could not start the Release apphost."
+        let frames = BufferedFrameReader(child.StandardOutput.BaseStream)
         sampler <- Some(startSampler child.Id)
         send child (request 1u "initialize" initialize)
 
-        let initializeError, _ =
-            readFrame child.StandardOutput.BaseStream 30000 |> response 1u
+        let initializeError, _ = frames.Read(30000) |> response 1u
 
         requireNoError "initialize" initializeError
         send child (request 2u "workspace/root" RpcValue.emptyMap)
 
-        let rootError, rootResult =
-            readFrame child.StandardOutput.BaseStream 30000 |> response 2u
+        let rootError, rootResult = frames.Read(30000) |> response 2u
 
         requireNoError "workspace/root" rootError
 
@@ -733,125 +877,112 @@ let runScenario name measuredRun =
             |> Seq.map (fun (id, _, name) -> name, id)
             |> Map.ofSeq
 
-        require (projects.Count = 500) "workspace/root did not expose exactly 500 projects."
+        let expectedProjects = [ for number in 1..500 -> $"P{number:D4}" ] |> Set.ofList
 
-        let projectId =
-            projects
-            |> Map.tryFind "P0001"
-            |> Option.defaultWith (fun () -> fail "workspace/root did not expose P0001.")
+        require
+            ((projects |> Map.keys |> Set.ofSeq) = expectedProjects)
+            "workspace/root did not expose exactly P0001 through P0500."
 
+        let projectId = projects["P0001"]
         let mutable requestId = 3u
-        let materialized = Dictionary<string, string>(StringComparer.Ordinal)
+        let mutable continuation: string option = None
+        let mutable paging = true
+        let mutable itemId: string option = None
+        let mutable p0001GeneratedItems = 0
+        let mutable hydrationObserved = false
 
-        let readPage id =
-            let mutable result: (RpcError option * RpcValue) option = None
+        while paging do
+            let values =
+                ResizeArray
+                    [ "parentId", RpcValue.String projectId; "pageSize", RpcValue.Integer 500L ]
 
-            while result.IsNone do
-                match readFrame child.StandardOutput.BaseStream 30000 with
-                | RpcFrame.Response(actual, error, value) when actual = id ->
-                    result <- Some(error, value)
-                | RpcFrame.Notification("workspace/delta", _)
-                | RpcFrame.Notification("workspace/reset", _) -> ()
-                | frame -> fail $"Expected workspace/children response {id}, got {frame}."
+            continuation
+            |> Option.iter (fun token -> values.Add("continuationToken", RpcValue.String token))
 
-            result.Value
+            send child (request requestId "workspace/children" (map values))
+            let mutable page: (RpcError option * RpcValue) option = None
 
-        let pageProject projectName parentId =
-            let mutable continuation: string option = None
-            let mutable paging = true
-            let mutable itemCount = 0
+            while page.IsNone do
+                match frames.Read(30000) with
+                | RpcFrame.Response(actual, error, value) when actual = requestId ->
+                    page <- Some(error, value)
+                | RpcFrame.Notification("workspace/delta", parameters) ->
+                    let next = integerField "newRevision" parameters
 
-            while paging do
-                let values =
-                    ResizeArray
-                        [ "parentId", RpcValue.String parentId; "pageSize", RpcValue.Integer 500L ]
+                    require
+                        (next > revision)
+                        "P0001 hydration delta did not have a higher revision."
 
-                continuation
-                |> Option.iter (fun token -> values.Add("continuationToken", RpcValue.String token))
+                    revision <- next
+                    hydrationObserved <- true
+                | RpcFrame.Notification("workspace/reset", parameters) ->
+                    revision <- integerField "revision" parameters
+                | frame -> fail $"Expected workspace/children response {requestId}, got {frame}."
 
-                send child (request requestId "workspace/children" (map values))
-                let pageError, page = readPage requestId
-                requireNoError "workspace/children" pageError
+            let pageError, pageResult = page.Value
+            requireNoError "workspace/children" pageError
 
-                for node in arrayField "nodes" page do
-                    let id, kind, nodeName = nodeFields node
+            for node in arrayField "nodes" pageResult do
+                let id, kind, nodeName = nodeFields node
 
-                    if kind = "projectItem" then
-                        require
-                            (materialized.TryAdd(id, projectName + "|" + nodeName))
-                            $"Duplicate materialized project-item id {id}."
+                if
+                    kind = "projectItem"
+                    && nodeName.StartsWith("Compile: Items/N", StringComparison.Ordinal)
+                    && nodeName.EndsWith(".cs", StringComparison.Ordinal)
+                then
+                    p0001GeneratedItems <- p0001GeneratedItems + 1
 
-                        itemCount <- itemCount + 1
+                    if nodeName = "Compile: Items/N0001.cs" then
+                        itemId <- Some id
 
-                continuation <-
-                    match RpcValue.tryField "nextToken" page with
-                    | Some(RpcValue.String token) -> Some token
-                    | Some RpcValue.Nil
-                    | None -> None
-                    | Some _ -> fail "workspace/children returned an invalid continuation token."
+            continuation <-
+                match RpcValue.tryField "nextToken" pageResult with
+                | Some(RpcValue.String token) -> Some token
+                | Some RpcValue.Nil
+                | None -> None
+                | Some _ -> fail "workspace/children returned an invalid continuation token."
 
-                requestId <- requestId + 1u
-                paging <- continuation.IsSome
+            requestId <- requestId + 1u
+            paging <- continuation.IsSome
 
-            require
-                (itemCount = 500)
-                $"{projectName} did not materialize exactly 500 project items."
+        require
+            (p0001GeneratedItems = 500)
+            "P0001 did not fully materialize its 500 generated compile items."
 
-        pageProject "P0001" projectId
+        while not hydrationObserved do
+            match readStage "P0001 hydration barrier" frames 60000 with
+            | RpcFrame.Notification("workspace/delta", parameters) ->
+                let next = integerField "newRevision" parameters
+                require (next > revision) "P0001 hydration delta did not have a higher revision."
+                revision <- next
+                hydrationObserved <- true
+            | RpcFrame.Notification("workspace/reset", parameters) ->
+                revision <- integerField "revision" parameters
+            | frame ->
+                fail $"Expected the P0001 hydration delta before the external edit, got {frame}."
 
         let itemId =
-            materialized
-            |> Seq.tryFind (fun pair -> pair.Value = "P0001|Compile: Items/N0001.cs")
-            |> Option.map _.Key
+            itemId
             |> Option.defaultWith (fun () ->
                 fail "P0001 did not materialize Compile: Items/N0001.cs.")
-
-        for projectNumber in 2..500 do
-            let projectName = $"P{projectNumber:D4}"
-            pageProject projectName projects[projectName]
-
-        require
-            (materialized.Count = 250000)
-            "The fully materialized public graph does not contain 250000 project items."
-
-        let expectedMaterialized =
-            [ for projectNumber in 1..500 do
-                  for itemNumber in 1..500 do
-                      yield $"P{projectNumber:D4}|Compile: Items/N{itemNumber:D4}.cs" ]
-            |> Set.ofList
-
-        require
-            ((materialized.Values |> Set.ofSeq) = expectedMaterialized)
-            "The materialized public graph does not contain every expected generated identity exactly once."
 
         let project = Path.Combine(runDirectory, "src", "P0001", "P0001.csproj")
         writeMetadata project
         let changeStart = Stopwatch.GetTimestamp()
         let mutable changeMilliseconds: float option = None
         let mutable changeRevision = revision
+        let mutable changedItemId: string option = None
 
         while changeMilliseconds.IsNone do
-            match readFrame child.StandardOutput.BaseStream 60000 with
+            match readStage "watcher change delta" frames 60000 with
             | RpcFrame.Notification("workspace/delta", parameters) ->
                 let next = integerField "newRevision" parameters
                 require (next > revision) "workspace/delta did not have a higher revision."
 
-                let matches =
-                    arrayField "changes" parameters
-                    |> Seq.exists (fun change ->
-                        let parentMatches =
-                            RpcValue.tryField "parentId" change = Some(RpcValue.String projectId)
-
-                        let oldMatches =
-                            RpcValue.tryField "oldId" change = Some(RpcValue.String itemId)
-
-                        match RpcValue.tryField "node" change with
-                        | Some node ->
-                            parentMatches
-                            && stringField "kind" node = "projectItem"
-                            && stringField "name" node = "Compile: Items/N0001.cs"
-                            && (stringField "id" node = itemId || oldMatches)
-                        | None -> false)
+                let changes = arrayField "changes" parameters
+                let replacementId = tryReplacementItemId projectId itemId changes
+                let matches = replacementId.IsSome
+                replacementId |> Option.iter (fun id -> changedItemId <- Some id)
 
                 revision <- next
 
@@ -865,27 +996,57 @@ let runScenario name measuredRun =
                         )
             | RpcFrame.Notification("workspace/reset", parameters) ->
                 revision <- integerField "revision" parameters
-            | frame -> fail $"Expected a watcher delta after the atomic metadata edit, got {frame}."
+            | frame ->
+                fail
+                    $"Expected a watcher delta after the flushed in-place metadata edit, got {frame}."
+
+        let changedItemId =
+            changedItemId
+            |> Option.defaultWith (fun () ->
+                fail "The watcher delta did not expose the replacement item id.")
 
         let exportStart = Stopwatch.GetTimestamp()
         send child (request requestId "workspace/export" RpcValue.emptyMap)
 
         let exportError, exportResult =
-            readFrame child.StandardOutput.BaseStream 60000 |> response requestId
+            readStage "workspace/export response" frames 60000 |> response requestId
 
         requireNoError "workspace/export" exportError
         let operationId = stringField "operationId" exportResult
         let exportRevision = integerField "revision" exportResult
         require (exportRevision >= changeRevision) "workspace/export returned a stale revision."
         let ids = HashSet<string>(StringComparer.Ordinal)
-        let expected = HashSet<string>(StringComparer.Ordinal)
 
-        for projectNumber in 1..500 do
-            for itemNumber in 1..500 do
-                expected.Add($"P{projectNumber:D4}|Compile: Items/N{itemNumber:D4}.cs")
-                |> ignore
+        let expected =
+            [ for itemNumber in 1..500 -> $"Compile: Items/N{itemNumber:D4}.cs" ]
+            |> Set.ofList
 
-        let observed = HashSet<string>(StringComparer.Ordinal)
+        let generatedNameCounts = Dictionary<string, int>(StringComparer.Ordinal)
+        let generatedIds = HashSet<string>(StringComparer.Ordinal)
+        let mutable modifiedDisplayCount = 0
+
+        let generatedName (nodeName: string) =
+            if nodeName.StartsWith("Compile: Items/N", StringComparison.Ordinal) then
+                let prefix = "Compile: Items/N"
+
+                if
+                    not (nodeName.EndsWith(".cs", StringComparison.Ordinal))
+                    || nodeName.Length <> prefix.Length + 7
+                then
+                    fail $"workspace/export contained malformed generated item name {nodeName}."
+
+                let digits = nodeName.Substring(prefix.Length, 4)
+
+                match Int32.TryParse(digits, NumberStyles.None, CultureInfo.InvariantCulture) with
+                | true, number when
+                    number >= 1 && number <= 500 && nodeName = $"Compile: Items/N{number:D4}.cs"
+                    ->
+                    Some nodeName
+                | _ ->
+                    fail $"workspace/export contained out-of-range generated item name {nodeName}."
+            else
+                None
+
         let kinds = Dictionary<string, int>(StringComparer.Ordinal)
         let mutable sequence = 0L
         let mutable finals = 0
@@ -894,7 +1055,7 @@ let runScenario name measuredRun =
         let mutable total = 0
 
         while completed = 0 do
-            match readFrame child.StandardOutput.BaseStream 180000 with
+            match readStage "workspace/export stream" frames 600000 with
             | RpcFrame.Notification("workspace/exportChunk", parameters) ->
                 require (not finalSeen) "workspace/export emitted a chunk after its final chunk."
 
@@ -927,17 +1088,28 @@ let runScenario name measuredRun =
                          | _ -> 1)
 
                     if kind = "projectItem" then
-                        let identity =
-                            materialized.TryGetValue id
-                            |> function
-                                | true, knownIdentity -> knownIdentity
-                                | false, _ ->
-                                    fail
-                                        $"workspace/export contained an unmaterialized project-item id {id}."
+                        let normalized =
+                            if nodeName = "Compile: Items/N0001.cs (Visible=false)" then
+                                require
+                                    (id = changedItemId)
+                                    "workspace/export used an unexpected replacement item id."
 
-                        require
-                            (observed.Add identity)
-                            $"workspace/export repeated generated identity {identity}."
+                                modifiedDisplayCount <- modifiedDisplayCount + 1
+                                Some "Compile: Items/N0001.cs"
+                            else
+                                generatedName nodeName
+
+                        match normalized with
+                        | Some name ->
+                            require
+                                (generatedIds.Add id)
+                                $"workspace/export repeated generated project-item id {id}."
+
+                            generatedNameCounts[name] <-
+                                (match generatedNameCounts.TryGetValue name with
+                                 | true, count -> count + 1
+                                 | _ -> 1)
+                        | None -> ()
 
             | RpcFrame.Notification("operation/completed", parameters) ->
                 require finalSeen "operation/completed arrived before the final export chunk."
@@ -967,23 +1139,36 @@ let runScenario name measuredRun =
 
         require (completed = 1) "workspace/export did not produce exactly one completion."
 
-        let projectItems =
-            match kinds.TryGetValue "projectItem" with
-            | true, count -> count
-            | _ -> 0
+        let projectItems = generatedIds.Count
 
         require
             (projectItems = 250000)
-            $"workspace/export reported {projectItems} project items instead of 250000."
+            $"workspace/export reported {projectItems} generated project items instead of 250000."
 
         require
-            (observed.Count = expected.Count)
-            "Generated project-item identity inventory is incomplete."
+            (modifiedDisplayCount = 1)
+            "workspace/export did not contain exactly one modified Visible=false item display."
 
-        for identity in expected do
+        require
+            (generatedNameCounts.Count = expected.Count)
+            "workspace/export did not report every expected generated item name."
+
+        for name in expected do
+            let count =
+                match generatedNameCounts.TryGetValue name with
+                | true, value -> value
+                | _ -> 0
+
             require
-                (observed.Contains identity)
-                $"workspace/export omitted generated identity {identity}."
+                (count = 500)
+                $"workspace/export reported generated name {name} {count} times instead of 500."
+
+        let samples, samplerFault, sampled = sampler.Value.Stop()
+        sampler <- None
+        known <- Array.append known sampled |> Array.distinct
+        require samplerFault.IsNone (samplerFault |> Option.defaultValue "RSS sampler failed.")
+        let peak = samples |> Array.maxBy _.AggregateRssBytes
+        maxAggregateRss <- max maxAggregateRss peak.AggregateRssBytes
 
         let exportMilliseconds =
             float (Stopwatch.GetTimestamp() - exportStart) * 1000.0
@@ -991,22 +1176,16 @@ let runScenario name measuredRun =
 
         send child (request (requestId + 1u) "shutdown" RpcValue.emptyMap)
 
-        let shutdownError, shutdown =
-            readFrame child.StandardOutput.BaseStream 30000 |> response (requestId + 1u)
+        let shutdownError, shutdown = frames.Read(30000) |> response (requestId + 1u)
 
         requireNoError "shutdown" shutdownError
         require (field "accepted" shutdown = RpcValue.Boolean true) "shutdown was not accepted."
         child.StandardInput.Close()
         require (child.WaitForExit 30000) "The apphost did not exit after shutdown."
         require (child.ExitCode = 0) $"The apphost exited with {child.ExitCode}."
-        let samples, samplerFault, sampled = sampler.Value.Stop()
-        known <- sampled
-        require samplerFault.IsNone (samplerFault |> Option.defaultValue "RSS sampler failed.")
-        let peak = samples |> Array.maxBy _.AggregateRssBytes
-        maxAggregateRss <- max maxAggregateRss peak.AggregateRssBytes
         totalNodes <- total
         generatedObserved <- projectItems
-        generatedUnique <- observed.Count
+        generatedUnique <- generatedIds.Count
         publicKinds <- kinds
 
         let run =
@@ -1021,9 +1200,9 @@ let runScenario name measuredRun =
                   "exportRevision", box exportRevision
                   "totalPublicNodes", box total
                   "publicKindCounts", box kinds
-                  "generatedExpected", box expected.Count
+                  "generatedExpected", box 250000
                   "generatedObserved", box projectItems
-                  "generatedUnique", box observed.Count
+                  "generatedUnique", box generatedIds.Count
                   "peakAggregateRssBytes", box peak.AggregateRssBytes
                   "peakSample",
                   box (
