@@ -1231,11 +1231,15 @@ let runScenario name measuredRun =
 
         cleanupEvidence <-
             dict
-                [ "knownPids", box reaped
+                [ "name", box name
+                  "measured", box measuredRun
+                  "knownPids", box reaped
                   "residualPids", box residue
                   "processExited", box child.HasExited ]
             :> obj
 
+        processRuns.Add(cleanupEvidence)
+        processSummary <- processRuns.ToArray() :> obj
         let residualText = String.Join(",", residue)
         require (residue.Length = 0) $"Measured child residue remained: {residualText}."
 
