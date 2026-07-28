@@ -1,6 +1,20 @@
+<div align="center">
+
+<img src="assets/dotnet-cli-plus.svg" width="128" height="128" alt="dotnet-cli-plus logo">
+
 # dotnet-cli-plus
 
-`dotnet-cli-plus` is a .NET tool for solution and project operations that complement the standard `dotnet` CLI. It selects and verifies workspace targets, supports `.sln` and `.slnx` solutions, treats `.slnf` filters as read-only views, and delegates ordinary lifecycle commands to `dotnet`.
+**Solution operations beyond the standard .NET CLI.**
+
+[![Status: experimental](https://img.shields.io/badge/status-experimental-f59e0b)](#development)
+[![Runtime: .NET 10](https://img.shields.io/badge/runtime-.NET_10-512bd4?logo=dotnet&logoColor=white)](#development)
+
+</div>
+
+`dotnet-cli-plus` is an experimental .NET tool for solution and project operations that complement
+the standard `dotnet` CLI. It selects and verifies workspace targets, supports `.sln` and `.slnx`
+solutions, treats `.slnf` filters as read-only views, and delegates ordinary lifecycle commands to
+`dotnet`.
 
 ## Install
 
