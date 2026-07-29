@@ -3,7 +3,6 @@ namespace Dotnet.WorkspaceExplorer.WorkspaceEditing
 open Dotnet.WorkspaceExplorer.Workspaces
 open Dotnet.WorkspaceExplorer.Solutions
 open Dotnet.WorkspaceExplorer.ProjectEvaluation
-open Dotnet.WorkspaceExplorer.WorkspaceIndex
 
 #nowarn "3261"
 
@@ -25,51 +24,6 @@ module internal ProjectItemInclusion =
               "Generator"
               "LastGenOutput"
               "CustomToolNamespace" ]
-
-    let validateProperty projectDirectory name value =
-        if
-            not (ExploredProjectProperties.Names.Contains name)
-            || String.IsNullOrWhiteSpace value
-        then
-            Error "The property name or value is not in the curated registry."
-        elif
-            Set.contains
-                name
-                (Set.ofList
-                    [ "TreatWarningsAsErrors"
-                      "IsPackable"
-                      "SignAssembly"
-                      "SelfContained"
-                      "PublishSingleFile"
-                      "PublishTrimmed"
-                      "PublishAot" ])
-            && not (
-                String.Equals(value, "true", StringComparison.OrdinalIgnoreCase)
-                || String.Equals(value, "false", StringComparison.OrdinalIgnoreCase)
-            )
-        then
-            Error $"'{name}' requires a boolean value."
-        elif
-            name = "OutputType"
-            && not (Set.contains value (Set.ofList [ "Exe"; "Library"; "WinExe"; "Module" ]))
-        then
-            Error "OutputType must be Exe, Library, WinExe, or Module."
-        elif name = "AssemblyOriginatorKeyFile" then
-            let keyPath = Path.GetFullPath(value, projectDirectory)
-            let relative = Path.GetRelativePath(projectDirectory, keyPath)
-
-            let outside =
-                Path.IsPathRooted relative
-                || relative = ".."
-                || relative.StartsWith $"..{Path.DirectorySeparatorChar}"
-                || relative.StartsWith $"..{Path.AltDirectorySeparatorChar}"
-
-            if Path.IsPathRooted value || outside then
-                Error "AssemblyOriginatorKeyFile must stay within the project directory."
-            else
-                Ok()
-        else
-            Ok()
 
     let projectDirectory (project: SolutionProject) =
         Path.GetDirectoryName project.Path.AbsolutePath.Value

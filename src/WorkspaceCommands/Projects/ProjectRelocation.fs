@@ -12,6 +12,38 @@ open System.IO
 open System.Threading.Tasks
 
 module internal ProjectRelocation =
+    let private parameter id parameterType required name =
+        CommandParameterDescriptor.Create(
+            CommandParameterId.Create id,
+            parameterType,
+            required,
+            name
+        )
+
+    let descriptor =
+        CommandDescriptor.Create(
+            CommandId.Create "project.relocate",
+            "Move project directory",
+            CommandAccess.Write,
+            [ parameter "destination" CommandParameterType.Path true "New destination directory"
+              parameter "folder" CommandParameterType.NodeId false "Solution folder" ],
+            [ WorkspaceNodeKind.Project ]
+        )
+
+    let tryDescribe id =
+        if descriptor.Id = id then Some descriptor else None
+
+    let discover (workspace: SolutionWorkspace) targetNodeId =
+        if workspace.Descriptor.IsReadOnly then
+            ImmutableArray<CommandDescriptor>.Empty
+        else
+            targetNodeId
+            |> Option.bind (fun id ->
+                workspace.Contents.Projects
+                |> Seq.tryFind (fun project -> project.Node.Id = id)
+                |> Option.map (fun _ -> ImmutableArray.Create descriptor))
+            |> Option.defaultValue ImmutableArray<CommandDescriptor>.Empty
+
     let private diagnostic code message =
         WorkspaceDiagnostic.CreateSimple(
             WorkspaceDiagnosticSeverity.Error,

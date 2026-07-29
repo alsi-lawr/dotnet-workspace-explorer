@@ -17,10 +17,6 @@
         <Compile Include="Rendering/TerminalOutputSanitizer.fs" />
         <Compile Include="DirectCommandFailures.fs" />
         <Compile Include="Parsing/CommandOptionScanner.fs" />
-        <Compile Include="Parsing/SolutionCommandParser.fs" />
-        <Compile Include="Parsing/PackageCommandParser.fs" />
-        <Compile Include="Parsing/ReferenceCommandParser.fs" />
-        <Compile Include="Parsing/TemplateCommandParser.fs" />
         <Compile Include="Parsing/DirectCommandParser.fs" />
         <Compile Include="Targets/CommandTargetDiscovery.fs" />
         <Compile Include="Packages/FilePackageDirectives.fs" />

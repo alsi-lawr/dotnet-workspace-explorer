@@ -20,7 +20,10 @@ module internal WorkspaceCommandCatalog =
             let id = CommandId.Create commandId
 
             SolutionEditor.TryDescribe id
-            |> Option.orElseWith (fun () -> ProjectEditing.tryDescribe id)
+            |> Option.orElseWith (fun () -> ProjectEditing.tryDescribeItem id)
+            |> Option.orElseWith (fun () -> ProjectRelocation.tryDescribe id)
+            |> Option.orElseWith (fun () -> ProjectEditing.tryDescribeProperty id)
+            |> Option.orElseWith (fun () -> ProjectEditing.tryDescribeFolder id)
             |> Option.orElseWith (fun () -> DotnetCommandCatalog.tryDescribe id)
             |> Option.orElseWith (fun () -> DotnetLifecycleCommands.tryDescribe id)
             |> Option.orElseWith (fun () -> SolutionLaunchProfileCommands.tryDescribe id)

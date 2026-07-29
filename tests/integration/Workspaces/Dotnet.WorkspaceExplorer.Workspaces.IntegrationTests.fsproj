@@ -14,12 +14,6 @@
         <Compile Include="Testing/WorkspaceRpcScenario.fs" />
         <Compile Include="Testing/WorkspaceCommandScenario.fs" />
         <Compile Include="Testing/LaunchProfileScenario.fs" />
-        <Compile Include="Testing/ScriptedDotnetClient.fs" />
-        <Compile Include="Testing/WorkspaceRpcClient.fs" />
-        <Compile Include="Testing/WorkspaceCommandClient.fs" />
-        <Compile Include="FixtureGeneration/SolutionFileFixtures.fs" />
-        <Compile Include="FixtureGeneration/ProjectEvaluationFixtures.fs" />
-        <Compile Include="FixtureGeneration/LargeWorkspaceFixture.fs" />
         <Compile Include="Fixtures/SharedFixtureReproducibilityTests.fs" />
         <Compile Include="DotnetCommands/DotnetArgumentForwardingTests.fs" />
         <Compile Include="DotnetCommands/DelegatedEditBoundaryTests.fs" />

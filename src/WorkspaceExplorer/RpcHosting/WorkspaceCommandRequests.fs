@@ -21,9 +21,16 @@ module internal WorkspaceCommandRequests =
         | _ -> false
 
     let private availableCommands workspace target =
-        Seq.append
-            (SolutionEditor.Discover(workspace, target))
-            (ProjectEditing.discover workspace target)
+        let solutionAndProjectCommands =
+            seq {
+                yield! SolutionEditor.Discover(workspace, target)
+                yield! ProjectEditing.discoverItems workspace target
+                yield! ProjectRelocation.discover workspace target
+                yield! ProjectEditing.discoverProperties workspace target
+                yield! ProjectEditing.discoverFolders workspace target
+            }
+
+        solutionAndProjectCommands
         |> Seq.append (DotnetCommandCatalog.discover workspace target)
         |> Seq.append (DotnetLifecycleCommands.discover workspace target)
         |> Seq.append (SolutionLaunchProfileCommands.discover workspace target)
