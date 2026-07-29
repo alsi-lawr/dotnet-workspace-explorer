@@ -18,11 +18,11 @@ jobs:
       matrix:
         os: [ubuntu-24.04, macos-15, windows-2025]
     steps:
-      - uses: actions/checkout@v5.1.0
-      - uses: actions/setup-dotnet@v5.4.0
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.300
-      - uses: rhysd/action-setup-vim@v1.6.1
+      - uses: rhysd/action-setup-vim@v1
         with:
           neovim: true
           version: v0.12.4
@@ -74,7 +74,7 @@ jobs:
       matrix:
         os: [ubuntu-24.04, macos-15]
     steps:
-      - uses: actions/checkout@v5.1.0
-      - uses: DeterminateSystems/determinate-nix-action@v3.9.1
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/determinate-nix-action@v3
       - name: Check locked flake tool closures
         run: nix flake check
