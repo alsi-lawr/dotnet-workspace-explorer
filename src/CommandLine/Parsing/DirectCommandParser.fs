@@ -7,6 +7,50 @@ namespace Dotnet.WorkspaceExplorer.CommandLine
 open System
 
 module internal DirectCommandParser =
+    let private scanSolutionOptions =
+        CommandOptionScanner.scan
+            (Set.ofList [ "--solution-folder"; "-s" ])
+            (Set.ofList [ "--in-root" ])
+            (Set.ofList [ "--include-references" ])
+
+    let private scanPackageOptions =
+        CommandOptionScanner.scan
+            (Set.ofList
+                [ "--project"
+                  "--file"
+                  "--version"
+                  "-v"
+                  "--framework"
+                  "-f"
+                  "--source"
+                  "-s"
+                  "--configfile"
+                  "--package-directory"
+                  "--verbosity" ])
+            (Set.ofList [ "--prerelease"; "--vulnerable"; "--no-restore"; "-n"; "--interactive" ])
+            Set.empty
+
+    let private scanReferenceOptions =
+        CommandOptionScanner.scan
+            (Set.ofList [ "--project"; "--framework"; "-f" ])
+            (Set.ofList [ "--interactive"; "--no-restore" ])
+            Set.empty
+
+    let private scanTemplateOptions =
+        CommandOptionScanner.scan
+            (Set.ofList
+                [ "--output"
+                  "-o"
+                  "--name"
+                  "-n"
+                  "--project"
+                  "--verbosity"
+                  "-v"
+                  "--add-source"
+                  "--nuget-source" ])
+            (Set.ofList [ "--force"; "--no-update-check"; "--diagnostics"; "-d" ])
+            (Set.ofList [ "--dry-run"; "--check-only" ])
+
     let private help tokens =
         tokens
         |> List.exists (fun token -> token = "--help" || token = "-h" || token = "-?")
@@ -36,7 +80,7 @@ module internal DirectCommandParser =
                 match command with
                 | "solution"
                 | "sln" ->
-                    let _, positions, unknown = SolutionCommandParser.scan beforeSentinel.Tail
+                    let _, positions, unknown = scanSolutionOptions beforeSentinel.Tail
 
                     match positions, unknown, sentinelOperands with
                     | target :: "launch" :: "list" :: [], [], [] ->
@@ -91,7 +135,7 @@ module internal DirectCommandParser =
                         else
                             Ok(Solution(target, operation, operands, help beforeSentinel))
                 | "package" ->
-                    let options, positions, unknown = PackageCommandParser.scan beforeSentinel.Tail
+                    let options, positions, unknown = scanPackageOptions beforeSentinel.Tail
 
                     let operation, operands =
                         match positions with
@@ -132,8 +176,7 @@ module internal DirectCommandParser =
                         )
                     )
                 | "reference" ->
-                    let options, positions, unknown =
-                        ReferenceCommandParser.scan beforeSentinel.Tail
+                    let options, positions, unknown = scanReferenceOptions beforeSentinel.Tail
 
                     let operation, operands =
                         match positions with
@@ -161,7 +204,7 @@ module internal DirectCommandParser =
                         )
                     )
                 | "new" ->
-                    let options, positions, _ = TemplateCommandParser.scan beforeSentinel.Tail
+                    let options, positions, _ = scanTemplateOptions beforeSentinel.Tail
 
                     let optionEnabled name =
                         options

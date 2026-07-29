@@ -4,19 +4,18 @@ open Dotnet.WorkspaceExplorer.Workspaces
 open Dotnet.WorkspaceExplorer.Solutions
 
 module internal ProjectEditing =
-    let all =
-        Seq.append ProjectItemCommands.all ProjectFolderCommands.all
-        |> System.Collections.Immutable.ImmutableArray.CreateRange
+    let tryDescribeItem id = ProjectItemCommands.tryDescribe id
+    let tryDescribeProperty id = ProjectPropertyCommands.tryDescribe id
+    let tryDescribeFolder id = ProjectFolderCommands.tryDescribe id
 
-    let tryDescribe id =
-        ProjectItemCommands.tryDescribe id
-        |> Option.orElseWith (fun () -> ProjectFolderCommands.tryDescribe id)
+    let discoverItems workspace targetNodeId =
+        ProjectItemCommands.discover workspace targetNodeId
 
-    let discover (workspace: SolutionWorkspace) targetNodeId =
-        Seq.append
-            (ProjectItemCommands.discover workspace targetNodeId)
-            (ProjectFolderCommands.discover workspace targetNodeId)
-        |> System.Collections.Immutable.ImmutableArray.CreateRange
+    let discoverProperties workspace targetNodeId =
+        ProjectPropertyCommands.discover workspace targetNodeId
+
+    let discoverFolders workspace targetNodeId =
+        ProjectFolderCommands.discover workspace targetNodeId
 
     let readDocument path =
         MsBuildProjectDocument.readDocument path
@@ -31,7 +30,12 @@ module internal ProjectEditing =
         (command: CommandMutationRequest)
         cancellationToken
         =
-        match ProjectFolderCommands.tryDescribe command.CommandId with
+        match ProjectPropertyCommands.tryDescribe command.CommandId with
         | Some _ ->
-            ProjectFolderEditPlanning.plan workspace project snapshot command cancellationToken
-        | None -> ProjectItemEditPlanning.plan workspace project snapshot command cancellationToken
+            ProjectPropertyEditPlanning.plan workspace project snapshot command cancellationToken
+        | None ->
+            match ProjectFolderCommands.tryDescribe command.CommandId with
+            | Some _ ->
+                ProjectFolderEditPlanning.plan workspace project snapshot command cancellationToken
+            | None ->
+                ProjectItemEditPlanning.plan workspace project snapshot command cancellationToken

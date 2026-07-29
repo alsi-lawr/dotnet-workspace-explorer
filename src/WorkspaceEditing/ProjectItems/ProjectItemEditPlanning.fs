@@ -3,7 +3,6 @@ namespace Dotnet.WorkspaceExplorer.WorkspaceEditing
 #nowarn "3261"
 
 open System
-open System.Collections.Immutable
 open System.IO
 open System.Text
 open System.Threading
@@ -11,128 +10,11 @@ open System.Xml.Linq
 open Dotnet.WorkspaceExplorer.Workspaces
 open Dotnet.WorkspaceExplorer.ProjectEvaluation
 open Dotnet.WorkspaceExplorer.Solutions
-open Dotnet.WorkspaceExplorer.WorkspaceIndex
 
 module internal ProjectItemEditPlanning =
+    open ProjectEditPlanning
     open ProjectItemInclusion
     open MsBuildProjectDocument
-
-    let private diagnostic code message =
-        WorkspaceDiagnostic.CreateSimple(
-            WorkspaceDiagnosticSeverity.Error,
-            WorkspaceDiagnosticCode.Create code,
-            message,
-            false,
-            CorrelationId.New()
-        )
-
-    let private invalid name message =
-        Failure(InvalidInput(name, diagnostic "invalid_input" message))
-
-    let private unsupported message =
-        Failure(
-            UnsupportedCapability(
-                WorkspaceCapabilityId.Write,
-                diagnostic "unsupported_capability" message
-            )
-        )
-
-    let private missing name message =
-        Failure(NotFound(name, diagnostic "not_found" message))
-
-    let private value (name: string) (arguments: CommandArguments) =
-        arguments.Values
-        |> Seq.tryPick (fun argument ->
-            if argument.ParameterId.Value = name then
-                Some argument.Value
-            else
-                None)
-
-    let private requiredPath name arguments =
-        match value name arguments with
-        | Some(Path path) -> Ok path
-        | _ -> Error $"'{name}' is required."
-
-    let private requiredText name arguments =
-        match value name arguments with
-        | Some(Text text) when not (String.IsNullOrWhiteSpace text) -> Ok text
-        | _ -> Error $"'{name}' is required."
-
-    let private optionalText name arguments =
-        match value name arguments with
-        | None -> Ok None
-        | Some(Text text) -> Ok(Some text)
-        | _ -> Error $"'{name}' must be text."
-
-    let private requiredChoice name arguments =
-        match value name arguments with
-        | Some(Choice choice) -> Ok choice.Value
-        | _ -> Error $"'{name}' is required."
-
-    let private optionalBoolean name arguments =
-        match value name arguments with
-        | None -> Ok false
-        | Some(Boolean choice) -> Ok choice
-        | _ -> Error $"'{name}' must be a boolean."
-
-    let private request
-        (workspace: SolutionWorkspace)
-        (command: CommandMutationRequest)
-        (targets: WorkspaceArtifactPath list)
-        (intents: WorkspaceEditIntent list)
-        =
-        let solutionDirectory =
-            Path.GetDirectoryName workspace.SolutionPath.Value
-            |> Option.ofObj
-            |> Option.defaultValue (Directory.GetCurrentDirectory())
-
-        let externalTargets =
-            targets
-            |> Seq.filter (fun path -> external solutionDirectory path.Value)
-            |> Seq.toArray
-
-        let roots =
-            seq {
-                yield WorkspaceArtifactPath.Create solutionDirectory
-
-                for target in externalTargets do
-                    yield
-                        WorkspaceArtifactPath.Create(
-                            Path.GetDirectoryName target.Value
-                            |> Option.ofObj
-                            |> Option.defaultValue solutionDirectory
-                        )
-            }
-            |> Seq.distinct
-            |> ImmutableArray.CreateRange
-
-        let values =
-            [ yield WorkspaceEditIntent.Overwrite
-              if externalTargets.Length > 0 then
-                  yield WorkspaceEditIntent.AccessExternalPath
-              yield! intents ]
-            |> ImmutableHashSet.CreateRange
-
-        { CommandId = command.CommandId
-          Targets = targets |> Seq.distinct |> ImmutableArray.CreateRange
-          Arguments = command.Arguments
-          ExpectedRevision = command.ExpectedRevision
-          Intents = values
-          AuthorizedRoots = roots }
-
-    let private makePlan
-        (workspace: SolutionWorkspace)
-        (command: CommandMutationRequest)
-        (actions: WorkspaceEditAction list)
-        (paths: string list)
-        (intents: WorkspaceEditIntent list)
-        =
-        let artifacts = paths |> List.map WorkspaceArtifactPath.Create
-
-        Success
-            { Request = request workspace command artifacts intents
-              Actions = actions |> List.toArray
-              Paths = artifacts |> List.toArray }
 
     let plan
         (workspace: SolutionWorkspace)
@@ -169,11 +51,6 @@ module internal ProjectItemEditPlanning =
 
                     let updatedDocument () =
                         replaceProject projectPath document encoding preamble lineEnding
-
-                    let unwrap =
-                        function
-                        | Ok value -> value
-                        | Error message -> raise (ArgumentException message)
 
                     let item path = itemPath path |> unwrap
                     let kind () = itemType () |> unwrap
@@ -567,141 +444,6 @@ module internal ProjectItemEditPlanning =
                             | metadata -> metadata.Value <- metadataValue
 
                             [ updatedDocument () ], [ projectPath ], []
-                        | "project.property.set" ->
-                            let propertyName, propertyValue =
-                                requiredChoice "name" command.Arguments |> unwrap,
-                                requiredText "value" command.Arguments |> unwrap
-
-                            validateProperty directory propertyName propertyValue |> unwrap
-
-                            let scope =
-                                match value "scope" command.Arguments with
-                                | None ->
-                                    let importedDeclares =
-                                        ExploredProjectProperties.hasImportedProperty
-                                            workspace.SolutionPath
-                                            snapshot
-                                            propertyName
-                                        |> Result.defaultWith (fun message ->
-                                            raise (IOException message))
-
-                                    if importedDeclares then
-                                        raise (
-                                            ArgumentException(
-                                                "The property is declared in an import; "
-                                                + "supply its explicit writable scope and "
-                                                + "condition (use an empty condition for an "
-                                                + "unconditional group)."
-                                            )
-                                        )
-
-                                    projectPath
-                                | Some(Path path) ->
-                                    let full = Path.GetFullPath(path.Value, directory)
-
-                                    if
-                                        full <> projectPath
-                                        && not (
-                                            ExploredProjectProperties.isEligibleScope
-                                                workspace.SolutionPath
-                                                snapshot
-                                                (WorkspaceArtifactPath.Create full)
-                                        )
-                                    then
-                                        raise (
-                                            ArgumentException(
-                                                "The writable scope is not an eligible "
-                                                + "project import."
-                                            )
-                                        )
-
-                                    full
-                                | _ -> raise (ArgumentException "'scope' must be a path.")
-
-                            let suppliedCondition =
-                                optionalText "condition" command.Arguments |> unwrap
-
-                            let condition =
-                                suppliedCondition
-                                |> Option.bind (fun value ->
-                                    if value.Length = 0 then None else Some value)
-
-                            let scopeDocument, scopeEncoding, scopePreamble, scopeLineEnding =
-                                if scope = projectPath then
-                                    document, encoding, preamble, lineEnding
-                                else
-                                    readDocument scope
-
-                            let matches =
-                                scopeDocument.Descendants(name propertyName) |> Seq.toArray
-
-                            if
-                                matches
-                                |> Seq.exists (fun property ->
-                                    (attribute "Condition" property).IsSome)
-                            then
-                                raise (
-                                    ArgumentException "Property-level conditions are not supported."
-                                )
-
-                            let groups = matches |> Seq.map _.Parent |> Seq.distinct |> Seq.toArray
-
-                            let hasSingleConditionalGroup () =
-                                groups.Length = 1 && (attribute "Condition" groups[0]).IsSome
-
-                            if
-                                suppliedCondition.IsNone
-                                && (groups.Length > 1
-                                    || scope <> projectPath
-                                    || hasSingleConditionalGroup ())
-                            then
-                                raise (
-                                    ArgumentException(
-                                        "The property scope is ambiguous; supply an explicit "
-                                        + "condition (or an empty condition for an "
-                                        + "unconditional group)."
-                                    )
-                                )
-
-                            let group =
-                                if suppliedCondition.IsNone && groups.Length = 1 then
-                                    groups[0]
-                                else
-                                    scopeDocument.Root.Elements(name "PropertyGroup")
-                                    |> Seq.tryFind (fun element ->
-                                        attribute "Condition" element = condition)
-                                    |> Option.defaultWith (fun () ->
-                                        let value = XElement(name "PropertyGroup") in
-
-                                        condition
-                                        |> Option.iter (fun text ->
-                                            value.SetAttributeValue(name "Condition", text))
-
-                                        scopeDocument.Root.Add(
-                                            XText $"{newline scopeDocument}  ",
-                                            value,
-                                            XText(newline scopeDocument)
-                                        )
-
-                                        value)
-
-                            match group.Element(name propertyName) with
-                            | null ->
-                                group.Add(
-                                    XText $"{newline scopeDocument}    ",
-                                    XElement(name propertyName, propertyValue),
-                                    XText $"{newline scopeDocument}  "
-                                )
-                            | property -> property.Value <- propertyValue
-
-                            [ replaceProject
-                                  scope
-                                  scopeDocument
-                                  scopeEncoding
-                                  scopePreamble
-                                  scopeLineEnding ],
-                            [ scope ],
-                            []
                         | _ -> raise (ArgumentException "The command is not available.")
 
                     makePlan workspace command actions paths intents

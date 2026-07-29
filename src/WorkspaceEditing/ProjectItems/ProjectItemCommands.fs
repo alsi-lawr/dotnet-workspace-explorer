@@ -71,32 +71,7 @@ module internal ProjectItemCommands =
                   "Set project item metadata"
                   [ parameter "path" CommandParameterType.Path true "Path"
                     parameter "name" CommandParameterType.Choice true "Metadata name"
-                    parameter "value" CommandParameterType.Text true "Value" ]
-              command
-                  "project.relocate"
-                  "Move project directory"
-                  [ parameter
-                        "destination"
-                        CommandParameterType.Path
-                        true
-                        "New destination directory"
-                    parameter "folder" CommandParameterType.NodeId false "Solution folder" ]
-              command
-                  "project.property.set"
-                  "Set project property"
-                  [ parameter "name" CommandParameterType.Choice true "Property name"
-                    parameter "value" CommandParameterType.Text true "Value"
-                    parameter
-                        "scope"
-                        CommandParameterType.Path
-                        false
-                        "Writable project or import file"
-                    parameter
-                        "condition"
-                        CommandParameterType.Text
-                        false
-                        "Property group condition (empty for unconditional)" ] ]
-
+                    parameter "value" CommandParameterType.Text true "Value" ] ]
 
     let tryDescribe id =
         all |> Seq.tryFind (fun descriptor -> descriptor.Id = id)

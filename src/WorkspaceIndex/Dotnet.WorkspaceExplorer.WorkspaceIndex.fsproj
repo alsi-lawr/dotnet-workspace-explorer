@@ -21,6 +21,7 @@
         <Compile Include="Watching/WorkspaceWatchPlan.fs" />
         <Compile Include="Paging/WorkspacePageTokens.fs" />
         <Compile Include="WorkspaceIndexContracts.fs" />
+        <Compile Include="Exporting/WorkspaceExportScheduler.fs" />
         <Compile Include="WorkspaceIndex.fs" />
         <Compile Include="Watching/WorkspaceChangeBuffer.fs" />
         <Compile Include="Watching/WorkspaceIndexWatcher.fs" />

@@ -9,9 +9,6 @@
     </PropertyGroup>
     <ItemGroup>
         <Compile Include="Testing/RepositoryBuild.fs" />
-        <Compile Include="Testing/ProjectEvaluationFixtures.fs" />
-        <Compile Include="Testing/EvaluationWorkerClient.fs" />
-        <Compile Include="Testing/WorkspaceRpcClient.fs" />
         <Compile Include="Workers/EvaluationWorkerIsolationTests.fs" />
         <Compile Include="ProjectEvaluation/CentralPackageOwnershipTests.fs" />
         <Compile Include="ProjectEvaluation/ProjectCapabilityTests.fs" />

@@ -26,10 +26,13 @@
         <Compile Include="ProjectFiles/MsBuildProjectDocument.fs" />
         <Compile Include="ProjectItems/ProjectItemInclusion.fs" />
         <Compile Include="ProjectItems/ProjectItemCommands.fs" />
+        <Compile Include="ProjectProperties/ProjectPropertyCommands.fs" />
         <Compile Include="ProjectFolders/ProjectFolderCommands.fs" />
         <Compile Include="ProjectFolders/ProjectFolderDocument.fs" />
         <Compile Include="ProjectItems/PlannedProjectEdit.fs" />
+        <Compile Include="ProjectEditing/ProjectEditPlanning.fs" />
         <Compile Include="ProjectItems/ProjectItemEditPlanning.fs" />
+        <Compile Include="ProjectProperties/ProjectPropertyEditPlanning.fs" />
         <Compile Include="ProjectFolders/ProjectFolderEditPlanning.fs" />
         <Compile Include="ProjectEditing.fs" />
         <Compile Include="Packages/CentralPackageVersions.fs" />
