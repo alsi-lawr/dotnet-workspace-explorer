@@ -1,22 +1,12 @@
 namespace Dotnet.WorkspaceExplorer
 
 open Dotnet.WorkspaceExplorer.Workspaces
-open Dotnet.WorkspaceExplorer.Solutions
 open Dotnet.WorkspaceExplorer.Rpc
-open Dotnet.WorkspaceExplorer.ProjectEvaluation
 open Dotnet.WorkspaceExplorer.WorkspaceIndex
-open Dotnet.WorkspaceExplorer.WorkspaceEditing
-open Dotnet.WorkspaceExplorer.WorkspaceCommands
-open Dotnet.WorkspaceExplorer.CommandLine
 
 #nowarn "3511"
 
-open System
-open System.Collections.Concurrent
-open System.Threading
 open System.Threading.Tasks
-open Dotnet.WorkspaceExplorer.Workspaces
-open Dotnet.WorkspaceExplorer.Rpc
 
 module internal WorkspaceNavigationRequests =
     let mutationNotifications =

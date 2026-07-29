@@ -2,7 +2,6 @@ namespace Dotnet.WorkspaceExplorer.CommandLine
 
 open Dotnet.WorkspaceExplorer.Workspaces
 open Dotnet.WorkspaceExplorer.Solutions
-open Dotnet.WorkspaceExplorer.WorkspaceEditing
 
 #nowarn "3261"
 #nowarn "3511"
@@ -14,8 +13,6 @@ open System.Threading
 open System.Threading.Tasks
 open System.Xml
 open System.Xml.Linq
-open Dotnet.WorkspaceExplorer.Workspaces
-open Dotnet.WorkspaceExplorer.Solutions
 
 module internal DirectCommandRunner =
     type private PreparedDirectCommand =

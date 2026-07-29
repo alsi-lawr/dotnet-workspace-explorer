@@ -3,12 +3,9 @@ namespace Dotnet.WorkspaceExplorer.Rpc.UnitTests
 #nowarn "3261"
 
 open System
-open System.IO
 open System.Threading
 open System.Threading.Tasks
-open Dotnet.WorkspaceExplorer.Workspaces
 open Dotnet.WorkspaceExplorer.Rpc
-open FsUnit.Xunit
 open Xunit
 
 [<Collection("RPC scenarios")>]

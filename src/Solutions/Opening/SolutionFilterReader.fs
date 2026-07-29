@@ -7,8 +7,6 @@ open System
 open System.Collections.Immutable
 open System.IO
 open System.Text.Json
-open System.Threading
-open System.Threading.Tasks
 open Dotnet.WorkspaceExplorer.Workspaces
 open SolutionTargetResolution
 

@@ -3,15 +3,11 @@ namespace Dotnet.WorkspaceExplorer.WorkspaceEditing
 open Dotnet.WorkspaceExplorer.Workspaces
 open Dotnet.WorkspaceExplorer.Solutions
 open Dotnet.WorkspaceExplorer.ProjectEvaluation
-open Dotnet.WorkspaceExplorer.WorkspaceIndex
 
 open System
 open System.Collections.Immutable
 open System.IO
 open System.Threading
-open Dotnet.WorkspaceExplorer.Workspaces
-open Dotnet.WorkspaceExplorer.ProjectEvaluation
-open Dotnet.WorkspaceExplorer.Solutions
 
 module internal ProjectFolderEditPlanning =
     open ProjectFolderPaths

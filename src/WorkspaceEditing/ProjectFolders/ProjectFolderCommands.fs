@@ -2,12 +2,8 @@ namespace Dotnet.WorkspaceExplorer.WorkspaceEditing
 
 open Dotnet.WorkspaceExplorer.Workspaces
 open Dotnet.WorkspaceExplorer.Solutions
-open Dotnet.WorkspaceExplorer.ProjectEvaluation
-open Dotnet.WorkspaceExplorer.WorkspaceIndex
 
 open System.Collections.Immutable
-open Dotnet.WorkspaceExplorer.Workspaces
-open Dotnet.WorkspaceExplorer.Solutions
 
 module internal ProjectFolderCommands =
     let private parameter id parameterType required name =

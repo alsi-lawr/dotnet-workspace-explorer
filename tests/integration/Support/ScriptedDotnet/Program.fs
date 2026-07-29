@@ -7,7 +7,6 @@ open System.Diagnostics
 open System.IO
 open System.Text.Json
 open System.Threading
-open System.Xml.Linq
 
 module Program =
     [<EntryPoint>]

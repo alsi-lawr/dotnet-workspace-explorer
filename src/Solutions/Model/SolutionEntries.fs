@@ -3,8 +3,6 @@ namespace Dotnet.WorkspaceExplorer.Solutions
 open Dotnet.WorkspaceExplorer.Workspaces
 
 open System.Collections.Immutable
-open System.Collections.Generic
-open Dotnet.WorkspaceExplorer.Workspaces
 
 type SolutionProjectPath =
     { AbsolutePath: WorkspaceArtifactPath

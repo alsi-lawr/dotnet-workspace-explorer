@@ -1,12 +1,9 @@
 namespace Dotnet.WorkspaceExplorer.Rpc
 
-open Dotnet.WorkspaceExplorer.Workspaces
 
 #nowarn "3511"
 
 open System
-open System.IO
-open System.Threading
 open System.Threading.Tasks
 
 type RpcFrameLimitExceededException(limit: int, actual: int) =

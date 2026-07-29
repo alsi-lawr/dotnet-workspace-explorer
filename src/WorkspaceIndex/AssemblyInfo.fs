@@ -1,9 +1,5 @@
 namespace Dotnet.WorkspaceExplorer.WorkspaceIndex
 
-open Dotnet.WorkspaceExplorer.Workspaces
-open Dotnet.WorkspaceExplorer.Solutions
-open Dotnet.WorkspaceExplorer.Rpc
-open Dotnet.WorkspaceExplorer.ProjectEvaluation
 
 open System.Runtime.CompilerServices
 

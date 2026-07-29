@@ -2,14 +2,10 @@ namespace Dotnet.WorkspaceExplorer.WorkspaceCommands
 
 open Dotnet.WorkspaceExplorer.Workspaces
 open Dotnet.WorkspaceExplorer.Solutions
-open Dotnet.WorkspaceExplorer.ProjectEvaluation
-open Dotnet.WorkspaceExplorer.WorkspaceIndex
 open Dotnet.WorkspaceExplorer.WorkspaceEditing
 
 open System
 open System.Collections.Immutable
-open Dotnet.WorkspaceExplorer.Workspaces
-open Dotnet.WorkspaceExplorer.Solutions
 
 module internal SolutionLaunchProfileCommands =
     let private parameter id kind required name =

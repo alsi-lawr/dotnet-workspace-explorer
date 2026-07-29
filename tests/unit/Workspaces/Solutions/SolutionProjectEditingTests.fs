@@ -2,16 +2,9 @@ namespace Dotnet.WorkspaceExplorer.Workspaces.UnitTests
 
 #nowarn "3261"
 
-open System
-open System.Collections.Immutable
 open System.IO
-open System.Text
-open System.Threading
-open Microsoft.VisualStudio.SolutionPersistence.Model
-open Microsoft.VisualStudio.SolutionPersistence.Serializer
 open Dotnet.WorkspaceExplorer.Workspaces
 open Dotnet.WorkspaceExplorer.Solutions
-open Dotnet.WorkspaceExplorer.WorkspaceEditing
 open FsUnit.Xunit
 open Xunit
 

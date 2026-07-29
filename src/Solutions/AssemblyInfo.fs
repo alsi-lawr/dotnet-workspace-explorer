@@ -1,6 +1,5 @@
 namespace Dotnet.WorkspaceExplorer.Solutions
 
-open Dotnet.WorkspaceExplorer.Workspaces
 
 open System.Runtime.CompilerServices
 

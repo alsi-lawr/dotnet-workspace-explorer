@@ -1,18 +1,13 @@
 namespace Dotnet.WorkspaceExplorer.WorkspaceIndex
 
 open Dotnet.WorkspaceExplorer.Workspaces
-open Dotnet.WorkspaceExplorer.Solutions
 open Dotnet.WorkspaceExplorer.Rpc
-open Dotnet.WorkspaceExplorer.ProjectEvaluation
 
 open System
-open System.Collections.Generic
 open System.Collections.Immutable
 open System.IO
 open System.Threading
 open System.Threading.Tasks
-open Dotnet.WorkspaceExplorer.Workspaces
-open Dotnet.WorkspaceExplorer.Rpc
 
 
 [<RequireQualifiedAccess>]

@@ -10,9 +10,6 @@ open Dotnet.WorkspaceExplorer.WorkspaceIndex
 open System
 open System.IO
 open System.Text.RegularExpressions
-open Dotnet.WorkspaceExplorer.Workspaces
-open Dotnet.WorkspaceExplorer.ProjectEvaluation
-open Dotnet.WorkspaceExplorer.Solutions
 
 module internal ProjectItemInclusion =
     open MsBuildProjectDocument

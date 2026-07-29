@@ -1,21 +1,13 @@
 namespace Dotnet.WorkspaceExplorer
 
 open Dotnet.WorkspaceExplorer.Workspaces
-open Dotnet.WorkspaceExplorer.Solutions
 open Dotnet.WorkspaceExplorer.Rpc
-open Dotnet.WorkspaceExplorer.ProjectEvaluation
-open Dotnet.WorkspaceExplorer.WorkspaceIndex
-open Dotnet.WorkspaceExplorer.WorkspaceEditing
-open Dotnet.WorkspaceExplorer.WorkspaceCommands
-open Dotnet.WorkspaceExplorer.CommandLine
 
 open System
 open System.IO
 open System.Text
 open System.Threading
 open System.Threading.Tasks
-open Dotnet.WorkspaceExplorer.Workspaces
-open Dotnet.WorkspaceExplorer.Rpc
 
 type internal WorkspaceExportOperation(sessionToken: CancellationToken) =
     let cancellation = CancellationTokenSource.CreateLinkedTokenSource sessionToken

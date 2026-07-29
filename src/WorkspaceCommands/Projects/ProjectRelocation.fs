@@ -10,9 +10,6 @@ open System
 open System.Collections.Immutable
 open System.IO
 open System.Threading.Tasks
-open Dotnet.WorkspaceExplorer.Workspaces
-open Dotnet.WorkspaceExplorer.ProjectEvaluation
-open Dotnet.WorkspaceExplorer.Solutions
 
 module internal ProjectRelocation =
     let private diagnostic code message =
@@ -267,7 +264,7 @@ module internal ProjectRelocation =
         let arguments =
             [ yield
                   { ParameterId = CommandParameterId.Create "path"
-                    Value = Path(WorkspaceArtifactPath.Create path) } ]
+                    Value = CommandParameterValue.Path(WorkspaceArtifactPath.Create path) } ]
 
         { CommandId = CommandId.Create "solution.project.update-path"
           TargetWorkspaceNodeId = Some target
