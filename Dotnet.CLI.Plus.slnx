@@ -9,9 +9,18 @@
         <File Path="README.md" />
     </Folder>
     <Folder Name="/src/">
-        <Project Path="src/Dotnet.CLI.Plus/Dotnet.CLI.Plus.csproj" />
+        <Project Path="src/Dotnet.CLI.Plus.Broker/Dotnet.CLI.Plus.Broker.fsproj" />
+        <Project Path="src/Dotnet.CLI.Plus.Core/Dotnet.CLI.Plus.Core.fsproj" />
+        <Project Path="src/Dotnet.CLI.Plus.Solution/Dotnet.CLI.Plus.Solution.fsproj" />
+        <Project Path="src/Dotnet.CLI.Plus.Transport/Dotnet.CLI.Plus.Transport.fsproj" />
+        <Project Path="src/Dotnet.CLI.Plus.MSBuild/Dotnet.CLI.Plus.MSBuild.csproj" />
+        <Project Path="src/Dotnet.CLI.Plus.Workspace/Dotnet.CLI.Plus.Workspace.fsproj" />
+        <Project Path="src/Dotnet.CLI.Plus/Dotnet.CLI.Plus.fsproj" />
     </Folder>
     <Folder Name="/tests/">
-        <Project Path="tests/Dotnet.CLI.Plus.Tests/Dotnet.CLI.Plus.Tests.csproj" />
+        <Project Path="tests/Dotnet.CLI.Plus.FakeHost/Dotnet.CLI.Plus.FakeHost.fsproj" />
+        <Project Path="tests/Dotnet.CLI.Plus.MSBuild.Tests/Dotnet.CLI.Plus.MSBuild.Tests.fsproj" />
+        <Project Path="tests/Dotnet.CLI.Plus.Transport.Tests/Dotnet.CLI.Plus.Transport.Tests.fsproj" />
+        <Project Path="tests/Dotnet.CLI.Plus.Tests/Dotnet.CLI.Plus.Tests.fsproj" />
     </Folder>
 </Solution>

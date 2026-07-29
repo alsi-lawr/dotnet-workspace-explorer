@@ -5,6 +5,7 @@ charset = utf-8
 end_of_line = lf
 indent_style = space
 insert_final_newline = true
+max_line_length = 100
 trim_trailing_whitespace = true
 
 [*.{cs,csproj,props,slnx,xml}]
@@ -12,6 +13,9 @@ indent_size = 4
 
 [*.json]
 indent_size = 2
+
+[*.fs]
+fsharp_max_line_length = 100
 
 [*.md]
 trim_trailing_whitespace = false

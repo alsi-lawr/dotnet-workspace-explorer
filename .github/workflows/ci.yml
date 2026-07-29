@@ -1,0 +1,52 @@
+name: continuous integration
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: native (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.300
+      - name: Restore local tools and solution
+        run: |
+          dotnet tool restore
+          dotnet restore Dotnet.CLI.Plus.slnx
+      - name: Build Debug and Release
+        shell: pwsh
+        run: |
+          dotnet build Dotnet.CLI.Plus.slnx --configuration Debug --no-restore
+          dotnet build Dotnet.CLI.Plus.slnx --configuration Release --no-restore
+      - name: Run complete native-MTP apphosts
+        shell: pwsh
+        run: |
+          $suffix = if ($env:RUNNER_OS -eq 'Windows') { '.exe' } else { '' }
+          $projects = @(
+            'Dotnet.CLI.Plus.Transport.Tests',
+            'Dotnet.CLI.Plus.MSBuild.Tests',
+            'Dotnet.CLI.Plus.Tests'
+          )
+          foreach ($configuration in @('Debug', 'Release')) {
+            foreach ($project in $projects) {
+              & "tests/$project/bin/$configuration/net10.0/$project$suffix" --fail-skips on
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+          }
+      - name: Check formatting
+        run: |
+          dotnet fantomas --check .
+          dotnet csharpier check src/Dotnet.CLI.Plus.MSBuild

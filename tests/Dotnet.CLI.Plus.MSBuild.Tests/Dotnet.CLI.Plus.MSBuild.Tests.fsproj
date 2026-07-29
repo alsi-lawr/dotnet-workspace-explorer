@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <IsPackable>false</IsPackable>
+        <IsTestProject>true</IsTestProject>
+        <OutputType>Exe</OutputType>
+        <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
+    </PropertyGroup>
+    <ItemGroup>
+        <Compile Include="MsBuildHostTests.fs" />
+    </ItemGroup>
+    <ItemGroup>
+        <None Include="../ConformanceFixtures/MSBuild/**/*" Link="ConformanceFixtures/MSBuild/%(RecursiveDir)%(Filename)%(Extension)" Pack="false" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+    <ItemGroup>
+        <PackageReference Include="FSharp.Core" />
+        <PackageReference Include="FsUnit.Xunit" />
+        <PackageReference Include="xunit.v3" />
+    </ItemGroup>
+    <ItemGroup>
+        <ProjectReference Include="../../src/Dotnet.CLI.Plus/Dotnet.CLI.Plus.fsproj" />
+        <ProjectReference Include="../../src/Dotnet.CLI.Plus.Core/Dotnet.CLI.Plus.Core.fsproj" />
+        <ProjectReference Include="../../src/Dotnet.CLI.Plus.MSBuild/Dotnet.CLI.Plus.MSBuild.csproj" />
+        <ProjectReference Include="../../src/Dotnet.CLI.Plus.Transport/Dotnet.CLI.Plus.Transport.fsproj" />
+    </ItemGroup>
+</Project>

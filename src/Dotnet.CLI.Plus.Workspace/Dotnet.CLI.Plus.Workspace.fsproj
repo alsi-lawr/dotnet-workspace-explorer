@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <AssemblyName>Dotnet.CLI.Plus.Workspace</AssemblyName>
+        <RootNamespace>Dotnet.CLI.Plus.Workspace</RootNamespace>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../Dotnet.CLI.Plus.Core/Dotnet.CLI.Plus.Core.fsproj" />
+        <ProjectReference Include="../Dotnet.CLI.Plus.Solution/Dotnet.CLI.Plus.Solution.fsproj" />
+        <ProjectReference Include="../Dotnet.CLI.Plus.Transport/Dotnet.CLI.Plus.Transport.fsproj" />
+        <ProjectReference Include="../Dotnet.CLI.Plus.MSBuild/Dotnet.CLI.Plus.MSBuild.csproj" />
+        <PackageReference Include="FSharp.Core" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Compile Include="AssemblyInfo.fs" />
+        <Compile Include="MutationPrimitives.fs" />
+        <Compile Include="ProjectFolderPaths.fs" />
+        <Compile Include="ProjectFolderActions.fs" />
+        <Compile Include="MutationCoordinator.fs" />
+        <Compile Include="WorkspaceContinuationTokens.fs" />
+        <Compile Include="WorkspaceProjection.fs" />
+        <Compile Include="WorkspaceState.fs" />
+        <Compile Include="WorkspaceWatcher.fs" />
+        <Compile Include="ProjectXml.fs" />
+        <Compile Include="ProjectItemPolicy.fs" />
+        <Compile Include="ProjectMutationCommands.fs" />
+        <Compile Include="ProjectFolderCommands.fs" />
+        <Compile Include="ProjectFolderXml.fs" />
+        <Compile Include="ProjectMutationPlanning.fs" />
+        <Compile Include="ProjectFolderPlanning.fs" />
+        <Compile Include="ProjectMutations.fs" />
+        <Compile Include="ProjectRelocationPlanning.fs" />
+        <Compile Include="CanonicalCommands.fs" />
+        <Compile Include="LifecycleCommands.fs" />
+        <Compile Include="LaunchProfileCommands.fs" />
+        <Compile Include="CentralPackageManagement.fs" />
+        <Compile Include="CanonicalMutationPlanning.fs" />
+    </ItemGroup>
+</Project>
