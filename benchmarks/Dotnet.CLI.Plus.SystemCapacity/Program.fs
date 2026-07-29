@@ -306,6 +306,12 @@ let millisecondsSince timestamp =
     / float Stopwatch.Frequency
 
 let measure (configuration: Configuration) workerCapacity =
+    let apphost = apphostPath configuration.BuildConfiguration
+
+    require
+        (File.Exists apphost)
+        $"Build the {configuration.BuildConfiguration} apphost first: {apphost}"
+
     let corpus =
         Path.Combine(
             repositoryRoot,
@@ -316,12 +322,6 @@ let measure (configuration: Configuration) workerCapacity =
 
     let solution =
         writeCorpus corpus configuration.Projects configuration.ItemsPerProject
-
-    let apphost = apphostPath configuration.BuildConfiguration
-
-    require
-        (File.Exists apphost)
-        $"Build the {configuration.BuildConfiguration} apphost first: {apphost}"
 
     let start = ProcessStartInfo apphost
     start.WorkingDirectory <- corpus
