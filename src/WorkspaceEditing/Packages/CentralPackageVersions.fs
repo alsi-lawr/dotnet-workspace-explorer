@@ -1,9 +1,7 @@
 namespace Dotnet.WorkspaceExplorer.WorkspaceEditing
 
 open Dotnet.WorkspaceExplorer.Workspaces
-open Dotnet.WorkspaceExplorer.Solutions
 open Dotnet.WorkspaceExplorer.ProjectEvaluation
-open Dotnet.WorkspaceExplorer.WorkspaceIndex
 
 #nowarn "3261"
 
@@ -11,8 +9,6 @@ open System
 open System.IO
 open System.Text
 open System.Xml.Linq
-open Dotnet.WorkspaceExplorer.Workspaces
-open Dotnet.WorkspaceExplorer.ProjectEvaluation
 
 module internal CentralPackageVersions =
     let private name value = XName.Get value

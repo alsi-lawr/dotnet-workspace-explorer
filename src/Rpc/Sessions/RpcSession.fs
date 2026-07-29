@@ -1,6 +1,5 @@
 namespace Dotnet.WorkspaceExplorer.Rpc
 
-open Dotnet.WorkspaceExplorer.Workspaces
 
 #nowarn "3511"
 

@@ -2,11 +2,8 @@ namespace Dotnet.WorkspaceExplorer.CommandLine
 
 open Dotnet.WorkspaceExplorer.Workspaces
 open Dotnet.WorkspaceExplorer.Solutions
-open Dotnet.WorkspaceExplorer.WorkspaceEditing
 
 open System.Threading
-open Dotnet.WorkspaceExplorer.Workspaces
-open Dotnet.WorkspaceExplorer.Solutions
 
 module internal CommandLineSolutionLaunchProfiles =
     let private profileNames workspace =

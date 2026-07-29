@@ -12,10 +12,6 @@ open System.IO
 open System.Security.Cryptography
 open System.Threading
 open System.Threading.Tasks
-open Dotnet.WorkspaceExplorer.Workspaces
-open Dotnet.WorkspaceExplorer.ProjectEvaluation
-open Dotnet.WorkspaceExplorer.Solutions
-open Dotnet.WorkspaceExplorer.Rpc
 
 type private WorkspaceExportAdmission =
     { Cancellation: CancellationTokenSource

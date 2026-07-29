@@ -268,12 +268,9 @@ module WorkspaceRpcProfile =
                     "shutdown" ] do
                   { Name = name
                     Classification =
-                      if name = "initialize" || name = "shutdown" then
-                          RpcMethodClassification.Control
-                      elif name = "workspace/commands/execute" then
-                          RpcMethodClassification.Mutation
-                      else
-                          RpcMethodClassification.Read }
+                      if name = "initialize" || name = "shutdown" then Control
+                      elif name = "workspace/commands/execute" then Mutation
+                      else Read }
               for name in
                   [ "workspace/delta"
                     "workspace/reset"
@@ -282,4 +279,4 @@ module WorkspaceRpcProfile =
                     "workspace/operations/output"
                     "workspace/operations/completed" ] do
                   { Name = name
-                    Classification = RpcMethodClassification.NotificationMethod } ]
+                    Classification = NotificationMethod } ]

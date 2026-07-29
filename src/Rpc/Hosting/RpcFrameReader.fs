@@ -1,10 +1,8 @@
 namespace Dotnet.WorkspaceExplorer.Rpc
 
-open Dotnet.WorkspaceExplorer.Workspaces
 
 open System
 open System.Buffers
-open System.Collections.Generic
 open System.IO
 open System.Threading
 open System.Threading.Tasks

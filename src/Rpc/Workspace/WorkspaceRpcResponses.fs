@@ -1,7 +1,6 @@
 namespace Dotnet.WorkspaceExplorer.Rpc
 
 open System
-open System.Collections.Generic
 open System.Collections.Immutable
 open Dotnet.WorkspaceExplorer.Workspaces
 

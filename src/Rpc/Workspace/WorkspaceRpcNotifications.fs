@@ -2,10 +2,6 @@ namespace Dotnet.WorkspaceExplorer.Rpc
 
 open Dotnet.WorkspaceExplorer.Workspaces
 
-open System
-open System.Collections.Generic
-open System.Collections.Immutable
-open Dotnet.WorkspaceExplorer.Workspaces
 
 [<RequireQualifiedAccess>]
 type WorkspaceOperationCompletion =

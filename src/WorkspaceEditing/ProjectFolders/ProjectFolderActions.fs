@@ -1,12 +1,8 @@
 namespace Dotnet.WorkspaceExplorer.WorkspaceEditing
 
 open Dotnet.WorkspaceExplorer.Workspaces
-open Dotnet.WorkspaceExplorer.Solutions
-open Dotnet.WorkspaceExplorer.ProjectEvaluation
-open Dotnet.WorkspaceExplorer.WorkspaceIndex
 
 open System.IO
-open Dotnet.WorkspaceExplorer.Workspaces
 
 [<RequireQualifiedAccess>]
 type internal ProjectFolderAction =

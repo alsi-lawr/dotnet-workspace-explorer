@@ -6,10 +6,7 @@ open System
 open System.IO
 open System.Threading
 open System.Threading.Tasks
-open Dotnet.WorkspaceExplorer.Workspaces
 open Dotnet.WorkspaceExplorer.Rpc
-open FsUnit.Xunit
-open Xunit
 
 module internal Test =
     let map values = RpcValue.map values

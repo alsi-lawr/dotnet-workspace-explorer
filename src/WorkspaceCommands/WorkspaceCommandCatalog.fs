@@ -2,8 +2,6 @@ namespace Dotnet.WorkspaceExplorer.WorkspaceCommands
 
 open Dotnet.WorkspaceExplorer.Workspaces
 open Dotnet.WorkspaceExplorer.Solutions
-open Dotnet.WorkspaceExplorer.ProjectEvaluation
-open Dotnet.WorkspaceExplorer.WorkspaceIndex
 open Dotnet.WorkspaceExplorer.WorkspaceEditing
 
 open System

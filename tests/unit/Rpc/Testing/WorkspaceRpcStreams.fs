@@ -6,10 +6,6 @@ open System
 open System.IO
 open System.Threading
 open System.Threading.Tasks
-open Dotnet.WorkspaceExplorer.Workspaces
-open Dotnet.WorkspaceExplorer.Rpc
-open FsUnit.Xunit
-open Xunit
 
 type internal ChunkedReadStream(data: byte array, chunkSize: int) =
     inherit MemoryStream(data)

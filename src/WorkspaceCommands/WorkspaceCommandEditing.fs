@@ -2,16 +2,12 @@ namespace Dotnet.WorkspaceExplorer.WorkspaceCommands
 
 open Dotnet.WorkspaceExplorer.Workspaces
 open Dotnet.WorkspaceExplorer.Solutions
-open Dotnet.WorkspaceExplorer.ProjectEvaluation
 open Dotnet.WorkspaceExplorer.WorkspaceIndex
 open Dotnet.WorkspaceExplorer.WorkspaceEditing
 
-open System
 open System.Collections.Immutable
 open System.IO
 open System.Threading
-open Dotnet.WorkspaceExplorer.Workspaces
-open Dotnet.WorkspaceExplorer.Solutions
 
 module internal WorkspaceCommandEditing =
     let plannedActions =

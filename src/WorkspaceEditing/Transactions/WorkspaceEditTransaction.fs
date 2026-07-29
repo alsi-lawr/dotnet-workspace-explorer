@@ -1,20 +1,14 @@
 namespace Dotnet.WorkspaceExplorer.WorkspaceEditing
 
 open Dotnet.WorkspaceExplorer.Workspaces
-open Dotnet.WorkspaceExplorer.Solutions
-open Dotnet.WorkspaceExplorer.ProjectEvaluation
-open Dotnet.WorkspaceExplorer.WorkspaceIndex
 
 open System
 open System.Collections.Generic
 open System.Collections.Immutable
 open System.IO
-open System.Runtime.InteropServices
 open System.Security.Cryptography
 open System.Text
 open System.Threading
-open Microsoft.VisualBasic.FileIO
-open Dotnet.WorkspaceExplorer.Workspaces
 
 exception private WorkspaceEditFailed of WorkspaceFailure
 

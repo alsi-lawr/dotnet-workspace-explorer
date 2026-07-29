@@ -3,7 +3,6 @@ namespace Dotnet.WorkspaceExplorer.Workspaces.UnitTests
 #nowarn "3261"
 
 open System
-open System.Collections.Immutable
 open System.IO
 open System.Text
 open System.Threading

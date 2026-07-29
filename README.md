@@ -14,7 +14,8 @@
 `dotnet-workspace-explorer` is an experimental .NET tool for solution and project operations that complement
 the standard `dotnet` CLI. It selects and verifies workspace targets, supports `.sln` and `.slnx`
 solutions, treats `.slnf` filters as read-only views, and delegates ordinary lifecycle commands to
-`dotnet`.
+`dotnet`. Its workspace operations apply across C#, F#, and Visual Basic projects rather than being
+tied to one .NET language.
 
 ## Install
 

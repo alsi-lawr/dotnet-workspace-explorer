@@ -2,17 +2,12 @@ namespace Dotnet.WorkspaceExplorer.WorkspaceCommands
 
 open Dotnet.WorkspaceExplorer.Workspaces
 open Dotnet.WorkspaceExplorer.Solutions
-open Dotnet.WorkspaceExplorer.ProjectEvaluation
-open Dotnet.WorkspaceExplorer.WorkspaceIndex
-open Dotnet.WorkspaceExplorer.WorkspaceEditing
 
 #nowarn "3261"
 
 open System
 open System.Collections.Immutable
 open System.IO
-open Dotnet.WorkspaceExplorer.Workspaces
-open Dotnet.WorkspaceExplorer.Solutions
 
 /// Maps node-oriented workspace command arguments to direct dotnet invocations.
 /// The command-line project remains the subprocess authority.

@@ -3,18 +3,10 @@ namespace Dotnet.WorkspaceExplorer
 open Dotnet.WorkspaceExplorer.Workspaces
 open Dotnet.WorkspaceExplorer.Solutions
 open Dotnet.WorkspaceExplorer.Rpc
-open Dotnet.WorkspaceExplorer.ProjectEvaluation
-open Dotnet.WorkspaceExplorer.WorkspaceIndex
-open Dotnet.WorkspaceExplorer.WorkspaceEditing
-open Dotnet.WorkspaceExplorer.WorkspaceCommands
-open Dotnet.WorkspaceExplorer.CommandLine
 
 open System
 open System.Collections.Immutable
 open System.IO
-open Dotnet.WorkspaceExplorer.Workspaces
-open Dotnet.WorkspaceExplorer.Solutions
-open Dotnet.WorkspaceExplorer.Rpc
 
 module internal WorkspaceCommandArguments =
     let commandTarget (workspace: SolutionWorkspace) targetNodeId =
@@ -59,14 +51,14 @@ module internal WorkspaceCommandArguments =
                             | CommandParameterType.Path ->
                                 let path = RpcValue.requireString parameter.Id.Value raw
 
-                                Path(
+                                CommandParameterValue.Path(
                                     WorkspaceArtifactPath.Create(
                                         Path.GetFullPath(path, solutionDirectory)
                                     )
                                 )
                             | CommandParameterType.Boolean ->
                                 match raw with
-                                | RpcValue.Boolean value -> Boolean value
+                                | RpcValue.Boolean value -> CommandParameterValue.Boolean value
                                 | _ -> invalidArg parameter.Id.Value "Expected a boolean."
                             | CommandParameterType.NodeId ->
                                 let nodeId = RpcValue.requireString parameter.Id.Value raw

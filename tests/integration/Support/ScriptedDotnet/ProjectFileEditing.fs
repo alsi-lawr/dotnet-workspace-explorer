@@ -3,10 +3,7 @@ namespace Dotnet.WorkspaceExplorer.Testing.ScriptedDotnet
 #nowarn "3261"
 
 open System
-open System.Diagnostics
 open System.IO
-open System.Text.Json
-open System.Threading
 open System.Xml.Linq
 
 module internal ProjectFileEditing =
