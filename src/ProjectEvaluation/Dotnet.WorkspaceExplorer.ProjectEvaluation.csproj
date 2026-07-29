@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <AssemblyName>Dotnet.WorkspaceExplorer.ProjectEvaluation</AssemblyName>
+        <RootNamespace>Dotnet.WorkspaceExplorer.ProjectEvaluation</RootNamespace>
+    </PropertyGroup>
+    <ItemGroup>
+        <ProjectReference Include="../Workspaces/Dotnet.WorkspaceExplorer.Workspaces.fsproj" />
+        <ProjectReference Include="../Rpc/Dotnet.WorkspaceExplorer.Rpc.fsproj" />
+        <PackageReference Include="Microsoft.Build" ExcludeAssets="runtime" PrivateAssets="all" />
+        <PackageReference Include="Microsoft.Build.Locator" PrivateAssets="all" />
+        <PackageReference
+            Include="Microsoft.NET.StringTools"
+            ExcludeAssets="runtime"
+            PrivateAssets="all"
+        />
+    </ItemGroup>
+</Project>

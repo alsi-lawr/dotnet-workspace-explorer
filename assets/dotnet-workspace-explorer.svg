@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title description">
+  <title id="title">dotnet-workspace-explorer</title>
+  <desc id="description">A .NET terminal prompt extended with an emphatic plus.</desc>
+  <defs>
+    <linearGradient id="plus" x1="48" y1="42" x2="212" y2="218" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#a78bfa"/>
+      <stop offset="1" stop-color="#38bdf8"/>
+    </linearGradient>
+  </defs>
+  <rect x="18" y="18" width="220" height="220" rx="48" fill="#17132b"/>
+  <rect x="38" y="48" width="180" height="160" rx="28" fill="#231d3d" stroke="#4c3f73" stroke-width="6"/>
+  <circle cx="61" cy="72" r="6" fill="#a78bfa"/>
+  <circle cx="81" cy="72" r="6" fill="#38bdf8"/>
+  <path d="M67 118l29 25-29 25M111 168h37" fill="none" stroke="#f5f3ff" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="178" cy="126" r="38" fill="#17132b" stroke="url(#plus)" stroke-width="10"/>
+  <path d="M178 105v42M157 126h42" stroke="#f5f3ff" stroke-width="10" stroke-linecap="round"/>
+</svg>

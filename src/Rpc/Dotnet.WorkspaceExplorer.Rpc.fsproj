@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <AssemblyName>Dotnet.WorkspaceExplorer.Rpc</AssemblyName>
+        <RootNamespace>Dotnet.WorkspaceExplorer.Rpc</RootNamespace>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../Workspaces/Dotnet.WorkspaceExplorer.Workspaces.fsproj" />
+        <PackageReference Include="FSharp.Core" />
+        <PackageReference Include="MessagePack" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Compile Include="AssemblyInfo.fs" />
+        <Compile Include="Messages/RpcValues.fs" />
+        <Compile Include="Messages/RpcFrames.fs" />
+        <Compile Include="Profiles/RpcProfiles.fs" />
+        <Compile Include="Framing/MessagePackRpcCodec.fs" />
+        <Compile Include="Sessions/RpcNotifications.fs" />
+        <Compile Include="Sessions/RpcRequestDispatch.fs" />
+        <Compile Include="Sessions/RpcErrors.fs" />
+        <Compile Include="Sessions/RpcSession.fs" />
+        <Compile Include="Hosting/RpcFrameReader.fs" />
+        <Compile Include="Hosting/RpcHost.fs" />
+        <Compile Include="Workspace/WorkspaceRpcRequests.fs" />
+        <Compile Include="Workspace/WorkspaceRpcResponses.fs" />
+        <Compile Include="Workspace/WorkspaceRpcNotifications.fs" />
+        <Compile Include="Workspace/WorkspaceRpcProfile.fs" />
+    </ItemGroup>
+</Project>

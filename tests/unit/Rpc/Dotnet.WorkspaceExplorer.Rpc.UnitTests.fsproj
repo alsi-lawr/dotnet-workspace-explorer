@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <IsPackable>false</IsPackable>
+        <IsTestProject>true</IsTestProject>
+        <OutputType>Exe</OutputType>
+        <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
+        <AssemblyName>Dotnet.WorkspaceExplorer.Rpc.UnitTests</AssemblyName>
+        <RootNamespace>Dotnet.WorkspaceExplorer.Rpc.UnitTests</RootNamespace>
+    </PropertyGroup>
+    <ItemGroup>
+        <Compile Include="Testing/WorkspaceRpcFrames.fs" />
+        <Compile Include="Testing/WorkspaceRpcStreams.fs" />
+        <Compile Include="Framing/WorkspaceRpcGoldenFrameTests.fs" />
+        <Compile Include="Framing/RecoverableRequestTests.fs" />
+        <Compile Include="Framing/WorkspaceRpcStreamTests.fs" />
+        <Compile Include="Sessions/WorkspaceRpcInitializationTests.fs" />
+        <Compile Include="Sessions/WorkspaceRpcShutdownTests.fs" />
+        <Compile Include="Sessions/WorkspaceRpcFailureTests.fs" />
+        <Compile Include="Sessions/OutboundFrameLimitTests.fs" />
+    </ItemGroup>
+    <ItemGroup>
+        <None Include="../../Fixtures/WorkspaceRpc/**/*" Link="Fixtures/WorkspaceRpc/%(RecursiveDir)%(Filename)%(Extension)" Pack="false" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+    <ItemGroup>
+        <ProjectReference Include="../../../src/Rpc/Dotnet.WorkspaceExplorer.Rpc.fsproj" />
+    </ItemGroup>
+    <ItemGroup>
+        <PackageReference Include="FSharp.Core" />
+        <PackageReference Include="FsUnit.Xunit" />
+        <PackageReference Include="xunit.v3" />
+    </ItemGroup>
+</Project>

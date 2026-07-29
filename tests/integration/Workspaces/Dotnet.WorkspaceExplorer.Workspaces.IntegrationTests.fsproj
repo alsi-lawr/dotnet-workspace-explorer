@@ -1,0 +1,74 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <IsPackable>false</IsPackable>
+        <IsTestProject>true</IsTestProject>
+        <OutputType>Exe</OutputType>
+        <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
+        <AssemblyName>Dotnet.WorkspaceExplorer.Workspaces.IntegrationTests</AssemblyName>
+        <RootNamespace>Dotnet.WorkspaceExplorer.Workspaces.IntegrationTests</RootNamespace>
+    </PropertyGroup>
+    <ItemGroup>
+        <Compile Include="Testing/IntegrationTestCollections.fs" />
+        <Compile Include="Testing/FixtureScenario.fs" />
+        <Compile Include="Testing/DirectCommandProcess.fs" />
+        <Compile Include="Testing/WorkspaceRpcScenario.fs" />
+        <Compile Include="Testing/WorkspaceCommandScenario.fs" />
+        <Compile Include="Testing/LaunchProfileScenario.fs" />
+        <Compile Include="Testing/ScriptedDotnetClient.fs" />
+        <Compile Include="Testing/WorkspaceRpcClient.fs" />
+        <Compile Include="Testing/WorkspaceCommandClient.fs" />
+        <Compile Include="FixtureGeneration/SolutionFileFixtures.fs" />
+        <Compile Include="FixtureGeneration/ProjectEvaluationFixtures.fs" />
+        <Compile Include="FixtureGeneration/LargeWorkspaceFixture.fs" />
+        <Compile Include="Fixtures/SharedFixtureReproducibilityTests.fs" />
+        <Compile Include="DotnetCommands/DotnetArgumentForwardingTests.fs" />
+        <Compile Include="DotnetCommands/DelegatedEditBoundaryTests.fs" />
+        <Compile Include="DotnetCommands/LegacyDirectoryImportTests.fs" />
+        <Compile Include="DotnetCommands/DotnetProcessLifecycleTests.fs" />
+        <Compile Include="WorkspaceIndex/WorkspaceInvalidationTests.fs" />
+        <Compile Include="WorkspaceExport/ExportWorkerLifecycleTests.fs" />
+        <Compile Include="ProjectItems/DefaultProjectItemTests.fs" />
+        <Compile Include="ProjectItems/ProjectItemCommandTests.fs" />
+        <Compile Include="ProjectProperties/ProjectPropertyCommandTests.fs" />
+        <Compile Include="WorkspaceRpc/WorkspaceSessionTests.fs" />
+        <Compile Include="WorkspaceExport/WorkspaceExportStreamingTests.fs" />
+        <Compile Include="WorkspaceIndex/WorkspacePagingAndResetTests.fs" />
+        <Compile Include="WorkspaceRpc/WorkspaceEndpointLimitTests.fs" />
+        <Compile Include="Projects/ProjectRenameTests.fs" />
+        <Compile Include="SolutionFilters/FilteredWorkspaceCommandTests.fs" />
+        <Compile Include="ProjectFolders/ProjectFolderLifecycleTests.fs" />
+        <Compile Include="ProjectFolders/ProjectFolderSafetyTests.fs" />
+        <Compile Include="ProjectFolders/ProjectFolderCommandAvailabilityTests.fs" />
+        <Compile Include="ProjectFolders/ProjectFolderDeletionTests.fs" />
+        <Compile Include="ProjectFolders/VirtualProjectFolderTests.fs" />
+        <Compile Include="ProjectFolders/ProjectFolderDeclarationOwnershipTests.fs" />
+        <Compile Include="WorkspaceCommands/ReferenceCommandTests.fs" />
+        <Compile Include="WorkspaceCommands/PackageCommandTests.fs" />
+        <Compile Include="WorkspaceCommands/ProjectCreationCommandTests.fs" />
+        <Compile Include="WorkspaceCommands/WorkspaceCommandLifecycleTests.fs" />
+        <Compile Include="Projects/ProjectRelocationTests.fs" />
+        <Compile Include="LaunchProfiles/LaunchProfileStorageTests.fs" />
+        <Compile Include="LaunchProfiles/SolutionFilterLaunchProfileTests.fs" />
+        <Compile Include="LaunchProfiles/LaunchProfileWorkspaceCommandTests.fs" />
+        <Compile Include="Lifecycle/DotnetLifecycleWorkspaceCommandTests.fs" />
+    </ItemGroup>
+    <ItemGroup>
+        <None Include="../../Fixtures/SolutionFiles/**/*" Link="Fixtures/SolutionFiles/%(RecursiveDir)%(Filename)%(Extension)" Pack="false" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+    <ItemGroup>
+        <ProjectReference Include="../../../src/WorkspaceExplorer/Dotnet.WorkspaceExplorer.fsproj" />
+        <ProjectReference Include="../../../src/Workspaces/Dotnet.WorkspaceExplorer.Workspaces.fsproj" />
+        <ProjectReference Include="../../../src/Solutions/Dotnet.WorkspaceExplorer.Solutions.fsproj" />
+        <ProjectReference Include="../../../src/Rpc/Dotnet.WorkspaceExplorer.Rpc.fsproj" />
+        <ProjectReference Include="../../../src/ProjectEvaluation/Dotnet.WorkspaceExplorer.ProjectEvaluation.csproj" />
+        <ProjectReference Include="../../../src/WorkspaceIndex/Dotnet.WorkspaceExplorer.WorkspaceIndex.fsproj" />
+        <ProjectReference Include="../../../src/WorkspaceEditing/Dotnet.WorkspaceExplorer.WorkspaceEditing.fsproj" />
+        <ProjectReference Include="../../../src/WorkspaceCommands/Dotnet.WorkspaceExplorer.WorkspaceCommands.fsproj" />
+        <ProjectReference Include="../Support/ScriptedDotnet/Dotnet.WorkspaceExplorer.Testing.ScriptedDotnet.fsproj" />
+    </ItemGroup>
+    <ItemGroup>
+        <PackageReference Include="FSharp.Core" />
+        <PackageReference Include="FsUnit.Xunit" />
+        <PackageReference Include="xunit.v3" />
+    </ItemGroup>
+</Project>

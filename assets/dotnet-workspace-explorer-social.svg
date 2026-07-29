@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title description">
+  <title id="title">dotnet-workspace-explorer</title>
+  <desc id="description">The dotnet-workspace-explorer terminal mark and wordmark on a dark social card.</desc>
+  <defs>
+    <clipPath id="card-clip">
+      <rect x="10" y="10" width="1260" height="620" rx="56"/>
+    </clipPath>
+  </defs>
+  <rect x="10" y="10" width="1260" height="620" rx="56" fill="#17132b" fill-opacity="0.97" stroke="#a78bfa" stroke-width="4" stroke-opacity="0.7"/>
+  <g clip-path="url(#card-clip)">
+    <circle cx="1160" cy="90" r="220" fill="#a78bfa" opacity="0.055"/>
+    <circle cx="1110" cy="585" r="285" fill="#a78bfa" opacity="0.035"/>
+  </g>
+  <path d="M480 408H1136" stroke="#a78bfa" stroke-width="4" opacity="0.65"/>
+  <g transform="translate(96 160) scale(1.25) translate(-0 -0)" aria-hidden="true">
+<defs>
+    <linearGradient id="plus" x1="48" y1="42" x2="212" y2="218" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#a78bfa"/>
+      <stop offset="1" stop-color="#38bdf8"/>
+    </linearGradient>
+  </defs>
+  <rect x="18" y="18" width="220" height="220" rx="48" fill="#17132b"/>
+  <rect x="38" y="48" width="180" height="160" rx="28" fill="#231d3d" stroke="#4c3f73" stroke-width="6"/>
+  <circle cx="61" cy="72" r="6" fill="#a78bfa"/>
+  <circle cx="81" cy="72" r="6" fill="#38bdf8"/>
+  <path d="M67 118l29 25-29 25M111 168h37" fill="none" stroke="#f5f3ff" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="178" cy="126" r="38" fill="#17132b" stroke="url(#plus)" stroke-width="10"/>
+  <path d="M178 105v42M157 126h42" stroke="#f5f3ff" stroke-width="10" stroke-linecap="round"/>
+  </g>
+  <text x="480" y="325" fill="#f8fafc" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="91" font-weight="750" letter-spacing="-4">
+    <tspan>dotnet-cli</tspan><tspan fill="#38bdf8">+</tspan>
+  </text>
+  <text x="484" y="379" fill="#cbd5e1" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="19" font-weight="650" letter-spacing="2.2">
+    MORE SOLUTION OPERATIONS FOR THE .NET CLI
+  </text>
+</svg>

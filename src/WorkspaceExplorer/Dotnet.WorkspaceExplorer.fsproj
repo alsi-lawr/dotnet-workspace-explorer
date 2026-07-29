@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <AssemblyName>Dotnet.WorkspaceExplorer</AssemblyName>
+        <RootNamespace>Dotnet.WorkspaceExplorer</RootNamespace>
+        <PackAsTool>true</PackAsTool>
+        <ToolCommandName>dotnet-workspace-explorer</ToolCommandName>
+        <PackageOutputPath>../../build</PackageOutputPath>
+        <Description>Workspace exploration and editing commands for the .NET CLI.</Description>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../Workspaces/Dotnet.WorkspaceExplorer.Workspaces.fsproj" />
+        <ProjectReference Include="../Solutions/Dotnet.WorkspaceExplorer.Solutions.fsproj" />
+        <ProjectReference Include="../Rpc/Dotnet.WorkspaceExplorer.Rpc.fsproj" />
+        <ProjectReference Include="../ProjectEvaluation/Dotnet.WorkspaceExplorer.ProjectEvaluation.csproj" />
+        <ProjectReference Include="../WorkspaceIndex/Dotnet.WorkspaceExplorer.WorkspaceIndex.fsproj" />
+        <ProjectReference Include="../WorkspaceEditing/Dotnet.WorkspaceExplorer.WorkspaceEditing.fsproj" />
+        <ProjectReference Include="../WorkspaceCommands/Dotnet.WorkspaceExplorer.WorkspaceCommands.fsproj" />
+        <ProjectReference Include="../CommandLine/Dotnet.WorkspaceExplorer.CommandLine.fsproj" />
+        <PackageReference Include="FSharp.Core" />
+        <PackageReference Include="Microsoft.Build.Locator" IncludeAssets="runtime" />
+        <PackageReference Include="Microsoft.NET.StringTools" ExcludeAssets="runtime" PrivateAssets="all" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Compile Include="RpcHosting/WorkspaceOperations.fs" />
+        <Compile Include="RpcHosting/WorkspaceRpcContexts.fs" />
+        <Compile Include="RpcHosting/WorkspaceNavigationRequests.fs" />
+        <Compile Include="RpcHosting/WorkspaceExportRequests.fs" />
+        <Compile Include="RpcHosting/WorkspaceCommandArguments.fs" />
+        <Compile Include="DotnetCommands/DotnetCommandCompensation.fs" />
+        <Compile Include="DotnetCommands/DotnetCommandOperation.fs" />
+        <Compile Include="WorkspaceEditing/WorkspaceEditOperation.fs" />
+        <Compile Include="RpcHosting/DotnetLifecycleRequests.fs" />
+        <Compile Include="RpcHosting/SolutionLaunchProfileRequests.fs" />
+        <Compile Include="RpcHosting/WorkspaceCommandRequests.fs" />
+        <Compile Include="RpcHosting/WorkspaceRpcInvocation.fs" />
+        <Compile Include="RpcHosting/WorkspaceRpcServer.fs" />
+        <Compile Include="Program.fs" />
+    </ItemGroup>
+    <ItemGroup>
+        <None Include="../../README.md" Pack="true" PackagePath="/" />
+    </ItemGroup>
+</Project>

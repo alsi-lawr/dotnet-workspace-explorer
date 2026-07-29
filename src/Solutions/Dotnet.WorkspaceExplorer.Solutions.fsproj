@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <AssemblyName>Dotnet.WorkspaceExplorer.Solutions</AssemblyName>
+        <RootNamespace>Dotnet.WorkspaceExplorer.Solutions</RootNamespace>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../Workspaces/Dotnet.WorkspaceExplorer.Workspaces.fsproj" />
+        <PackageReference Include="FSharp.Core" />
+        <PackageReference Include="Microsoft.VisualStudio.SolutionPersistence" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Compile Include="AssemblyInfo.fs" />
+        <Compile Include="Model/SolutionEntries.fs" />
+        <Compile Include="Model/SolutionWorkspace.fs" />
+        <Compile Include="Model/SolutionWorkspaceCapabilities.fs" />
+        <Compile Include="Opening/SolutionTargetResolution.fs" />
+        <Compile Include="Opening/SolutionFilterReader.fs" />
+        <Compile Include="Opening/SolutionDocumentProjection.fs" />
+        <Compile Include="SolutionWorkspaceReader.fs" />
+        <Compile Include="LaunchProfiles/SolutionLaunchProfileDocument.fs" />
+        <Compile Include="LaunchProfiles/SolutionLaunchProfiles.fs" />
+        <Compile Include="Editing/PlannedSolutionEdit.fs" />
+        <Compile Include="Editing/SolutionCommandCatalog.fs" />
+        <Compile Include="Editing/SolutionEditArguments.fs" />
+        <Compile Include="SolutionEditor.fs" />
+    </ItemGroup>
+</Project>
