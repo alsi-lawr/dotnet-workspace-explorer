@@ -45,9 +45,9 @@ module private ConformanceFixture =
         |> fun lines -> writeLines path lines
 
     let private normalizeSln path =
-        File.ReadAllText path
-        |> _.Replace("/", "\\", StringComparison.Ordinal)
-        |> fun contents -> File.WriteAllText(path, contents, utf8)
+        File.ReadAllLines path
+        |> Array.map _.Replace("/", "\\", StringComparison.Ordinal)
+        |> fun lines -> writeLines path lines
 
     let generateSmall directory =
         let solutions = Path.Combine(directory, "Solutions")
