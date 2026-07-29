@@ -19,9 +19,39 @@ if vim.v.shell_error ~= 0 or #files == 0 then
   return
 end
 
+local function document_key(uri)
+  if type(uri) ~= "string" then
+    return nil
+  end
+
+  local path = vim.uri_to_fname(uri):gsub("\\", "/")
+
+  if path:match("^%a:/") then
+    return path:lower()
+  end
+
+  return path
+end
+
+if document_key("file:///D:/Repo/Source.fs") ~= document_key("file:///d%3A/repo/source.fs")
+  or document_key("file:///Repo/Source.fs") == document_key("file:///repo/source.fs")
+then
+  fail("document identity must case-fold Windows paths and preserve non-Windows path case")
+  return
+end
+
 local expected = {}
+local document_uris = {}
 for _, path in ipairs(files) do
-  expected[vim.uri_from_fname(root .. "/" .. path)] = path
+  local uri = vim.uri_from_fname(root .. "/" .. path)
+  local key = document_key(uri)
+  if expected[key] then
+    fail("tracked F# paths share a document identity: " .. expected[key] .. ", " .. path)
+    return
+  end
+
+  expected[key] = path
+  document_uris[key] = uri
 end
 
 local attached = {}
@@ -31,9 +61,11 @@ local diagnostics = {}
 local last_event = vim.uv.now()
 
 local function record(uri, kind)
-  if expected[uri] then
-    kind[uri] = true
+  local key = document_key(uri)
+  if expected[key] then
+    kind[key] = true
     last_event = vim.uv.now()
+    return key
   end
 end
 
@@ -71,9 +103,11 @@ local client_id = vim.lsp.start({
   },
   handlers = {
     ["textDocument/publishDiagnostics"] = function(_, result)
-      if result and expected[result.uri] then
-        record(result.uri, published)
-        diagnostics[result.uri] = result.diagnostics or {}
+      if result then
+        local key = record(result.uri, published)
+        if key then
+          diagnostics[key] = result.diagnostics or {}
+        end
       end
     end,
     ["fsharp/documentAnalyzed"] = function(_, result)
@@ -90,18 +124,18 @@ if not client_id then
   return
 end
 
-for uri, _ in pairs(expected) do
+for key, uri in pairs(document_uris) do
   local buffer = vim.fn.bufadd(vim.uri_to_fname(uri))
   vim.fn.bufload(buffer)
   vim.bo[buffer].filetype = "fsharp"
   vim.lsp.buf_attach_client(buffer, client_id)
-  attached[uri] = true
+  attached[key] = true
 end
 
 local function missing(events)
   local paths = {}
-  for uri, path in pairs(expected) do
-    if not events[uri] then
+  for key, path in pairs(expected) do
+    if not events[key] then
       table.insert(paths, path)
     end
   end
@@ -156,8 +190,8 @@ end
 
 local failures = {}
 local accepted_hints = 0
-for uri, path in pairs(expected) do
-  for _, diagnostic in ipairs(diagnostics[uri] or {}) do
+for key, path in pairs(expected) do
+  for _, diagnostic in ipairs(diagnostics[key] or {}) do
     if accepted_qualifier_style_hint(path, diagnostic) then
       accepted_hints = accepted_hints + 1
     else
