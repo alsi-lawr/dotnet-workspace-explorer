@@ -2,3 +2,4 @@ tests/ConformanceFixtures/** -text
 tests/ConformanceFixtures/MSBuild/** text eol=lf
 tests/ConformanceFixtures/Neovim/** text eol=lf
 tests/ConformanceFixtures/Solutions/** text eol=lf
+src/Dotnet.CLI.Plus.MSBuild/** text eol=lf
