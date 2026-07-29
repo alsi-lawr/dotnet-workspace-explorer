@@ -185,6 +185,8 @@ module internal WorkspaceStatePure =
     let private pathValue (path: WorkspaceArtifactPath | null) =
         Option.ofObj path |> Option.map _.Value |> Option.defaultValue String.Empty
 
+    let private canonicalItemInclude (value: string) = value.Replace('\\', '/')
+
     let private dimensionName (dimension: EvaluationDimensionSnapshot) =
         if dimension.TargetFramework.HasValue then
             dimension.TargetFramework.Value.Value
@@ -210,6 +212,8 @@ module internal WorkspaceStatePure =
                           Dimension = framework }
 
                 for item in dimension.Items do
+                    let includePath = canonicalItemInclude item.EvaluatedInclude
+
                     let metadata =
                         item.Metadata
                         |> Seq.collect (fun value -> [ value.Name; value.Value ])
@@ -227,13 +231,13 @@ module internal WorkspaceStatePure =
                         |> String.concat "; "
 
                     yield
-                        { Logical = [ "item"; item.ItemType; item.EvaluatedInclude ]
+                        { Logical = [ "item"; item.ItemType; includePath ]
                           Content = resolved :: metadata
                           Display =
                             if String.IsNullOrEmpty details then
-                                $"{item.ItemType}: {item.EvaluatedInclude}"
+                                $"{item.ItemType}: {includePath}"
                             else
-                                $"{item.ItemType}: {item.EvaluatedInclude} ({details})"
+                                $"{item.ItemType}: {includePath} ({details})"
                           Dimension = framework }
 
                 for reference in dimension.ProjectReferences do

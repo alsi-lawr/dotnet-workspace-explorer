@@ -44,6 +44,11 @@ module private ConformanceFixture =
             String(' ', indentation * 2) + line.TrimStart())
         |> fun lines -> writeLines path lines
 
+    let private normalizeSln path =
+        File.ReadAllText path
+        |> _.Replace("/", "\\", StringComparison.Ordinal)
+        |> fun contents -> File.WriteAllText(path, contents, utf8)
+
     let generateSmall directory =
         let solutions = Path.Combine(directory, "Solutions")
         let msbuild = Path.Combine(directory, "MSBuild")
@@ -130,6 +135,7 @@ module private ConformanceFixture =
                 .GetResult()
 
         normalizeSlnx (Path.Combine(solutions, "Canonical.slnx"))
+        normalizeSln (Path.Combine(solutions, "Canonical.sln"))
 
     let generateScale directory =
         let solution = Path.Combine(directory, "Scale.slnx")

@@ -16,7 +16,7 @@ open Xunit
 module private SolutionMutation =
     let temporaryDirectory () =
         let path =
-            Path.Combine(Path.GetTempPath(), $"dotnet-cli-plus-mutations-{Guid.NewGuid():N}")
+            Path.Combine(AppContext.BaseDirectory, $".dotnet-cli-plus-mutations-{Guid.NewGuid():N}")
 
         Directory.CreateDirectory path |> ignore
         path

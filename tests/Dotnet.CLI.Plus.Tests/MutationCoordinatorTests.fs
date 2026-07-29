@@ -41,7 +41,7 @@ module private MutationTest =
 
     let directory name =
         let path =
-            Path.Combine(Path.GetTempPath(), $"dotnet-cli-plus-{name}-{Guid.NewGuid():N}")
+            Path.Combine(AppContext.BaseDirectory, $".dotnet-cli-plus-{name}-{Guid.NewGuid():N}")
 
         Directory.CreateDirectory path |> ignore
         path

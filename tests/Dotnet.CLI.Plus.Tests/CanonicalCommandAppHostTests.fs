@@ -821,7 +821,8 @@ type CanonicalCommandAppHostTests() =
             CanonicalAppHost.openSolution session.Solution
             |> fun reopened ->
                 reopened.SolutionProjects
-                |> Seq.find (fun project -> project.FilePath = "moved/One/One.fsproj")
+                |> Seq.find (fun project ->
+                    project.FilePath.Replace('\\', '/') = "moved/One/One.fsproj")
                 |> fun project -> project.Parent.Path
                 |> should equal "/moved/"
         finally

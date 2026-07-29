@@ -1,5 +1,10 @@
 local overall_timeout_ms = 300000
 local quiet_timeout_ms = 15000
+local qualifier_script = "scripts/qualify-performance.fsx"
+local qualifier_style_hints = {
+  FSAC0002 = true,
+  FSAC0004 = true,
+}
 
 local function fail(message)
   io.stderr:write("F# diagnostics: " .. message .. "\n")
@@ -104,6 +109,32 @@ local function missing(events)
   return paths
 end
 
+local function accepted_qualifier_style_hint(path, diagnostic)
+  return path == qualifier_script
+    and diagnostic.severity == vim.diagnostic.severity.HINT
+    and qualifier_style_hints[diagnostic.code] == true
+end
+
+if not accepted_qualifier_style_hint(qualifier_script, {
+  severity = vim.diagnostic.severity.HINT,
+  code = "FSAC0002",
+}) or not accepted_qualifier_style_hint(qualifier_script, {
+  severity = vim.diagnostic.severity.HINT,
+  code = "FSAC0004",
+}) or accepted_qualifier_style_hint("src/Other.fs", {
+  severity = vim.diagnostic.severity.HINT,
+  code = "FSAC0002",
+}) or accepted_qualifier_style_hint(qualifier_script, {
+  severity = vim.diagnostic.severity.ERROR,
+  code = "FSAC0002",
+}) or accepted_qualifier_style_hint(qualifier_script, {
+  severity = vim.diagnostic.severity.HINT,
+  code = "FS0001",
+}) then
+  fail("the qualifier style-hint exception escaped its exact path, severity, or code boundary")
+  return
+end
+
 local function ready()
   return #missing(attached) == 0 and #missing(published) == 0 and #missing(analyzed) == 0
 end
@@ -124,16 +155,21 @@ end, 100) then
 end
 
 local failures = {}
+local accepted_hints = 0
 for uri, path in pairs(expected) do
   for _, diagnostic in ipairs(diagnostics[uri] or {}) do
-    table.insert(failures, string.format(
-      "%s:%d:%d [%s] %s",
-      path,
-      diagnostic.range.start.line + 1,
-      diagnostic.range.start.character + 1,
-      diagnostic.code or "diagnostic",
-      diagnostic.message
-    ))
+    if accepted_qualifier_style_hint(path, diagnostic) then
+      accepted_hints = accepted_hints + 1
+    else
+      table.insert(failures, string.format(
+        "%s:%d:%d [%s] %s",
+        path,
+        diagnostic.range.start.line + 1,
+        diagnostic.range.start.character + 1,
+        diagnostic.code or "diagnostic",
+        diagnostic.message
+      ))
+    end
   end
 end
 
@@ -145,8 +181,9 @@ end
 
 vim.lsp.get_client_by_id(client_id):stop(true)
 io.stdout:write(string.format(
-  "F# diagnostics: %d tracked files attached, published, analyzed, and quiet for %d ms with zero diagnostics",
+  "F# diagnostics: %d tracked files attached, published, analyzed, and quiet for %d ms with zero blocking diagnostics; accepted %d pinned qualifier style hints",
   #files,
-  quiet_timeout_ms
+  quiet_timeout_ms,
+  accepted_hints
 ) .. "\n")
 vim.cmd("qa!")
