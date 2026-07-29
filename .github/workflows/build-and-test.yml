@@ -1,0 +1,54 @@
+name: build and test Workspace Explorer
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: build and test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.300
+      - name: Restore local tools and solution
+        run: |
+          dotnet tool restore
+          dotnet restore Dotnet.WorkspaceExplorer.slnx
+      - name: Build Debug and Release
+        shell: pwsh
+        run: |
+          dotnet build Dotnet.WorkspaceExplorer.slnx --configuration Debug --no-restore
+          dotnet build Dotnet.WorkspaceExplorer.slnx --configuration Release --no-restore
+      - name: Run complete native MTP executables
+        shell: pwsh
+        run: |
+          $suffix = if ($env:RUNNER_OS -eq 'Windows') { '.exe' } else { '' }
+          $tests = @(
+            @('tests/unit/Rpc', 'Dotnet.WorkspaceExplorer.Rpc.UnitTests'),
+            @('tests/unit/Workspaces', 'Dotnet.WorkspaceExplorer.Workspaces.UnitTests'),
+            @('tests/integration/ProjectEvaluation', 'Dotnet.WorkspaceExplorer.ProjectEvaluation.IntegrationTests'),
+            @('tests/integration/Workspaces', 'Dotnet.WorkspaceExplorer.Workspaces.IntegrationTests')
+          )
+          foreach ($configuration in @('Debug', 'Release')) {
+            foreach ($test in $tests) {
+              $directory, $assembly = $test
+              & "$directory/bin/$configuration/net10.0/$assembly$suffix" --fail-skips on
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+          }
+      - name: Check formatting
+        run: |
+          dotnet fantomas --check .
+          dotnet csharpier check src/ProjectEvaluation

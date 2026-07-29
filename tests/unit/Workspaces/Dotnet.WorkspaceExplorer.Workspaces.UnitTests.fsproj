@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <IsPackable>false</IsPackable>
+        <IsTestProject>true</IsTestProject>
+        <OutputType>Exe</OutputType>
+        <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
+        <AssemblyName>Dotnet.WorkspaceExplorer.Workspaces.UnitTests</AssemblyName>
+        <RootNamespace>Dotnet.WorkspaceExplorer.Workspaces.UnitTests</RootNamespace>
+    </PropertyGroup>
+    <ItemGroup>
+        <Compile Include="Testing/UnitTestCollections.fs" />
+        <Compile Include="Testing/WorkspaceContractScenario.fs" />
+        <Compile Include="Testing/WorkspaceEditScenario.fs" />
+        <Compile Include="Testing/SolutionScenario.fs" />
+        <Compile Include="Testing/SolutionEditScenario.fs" />
+        <Compile Include="WorkspaceContracts/WorkspaceIdentityTests.fs" />
+        <Compile Include="WorkspaceContracts/WorkspaceCapabilityTests.fs" />
+        <Compile Include="WorkspaceContracts/WorkspaceConflictTests.fs" />
+        <Compile Include="WorkspaceEditing/WorkspaceEditCancellationTests.fs" />
+        <Compile Include="WorkspaceEditing/WorkspaceEditCompensationTests.fs" />
+        <Compile Include="WorkspaceEditing/WorkspaceEditConfirmationTests.fs" />
+        <Compile Include="WorkspaceEditing/ArtifactEditingTests.fs" />
+        <Compile Include="WorkspaceEditing/NativeArtifactTrashTests.fs" />
+        <Compile Include="Solutions/SolutionProjectionTests.fs" />
+        <Compile Include="SolutionFilters/SolutionFilterProjectionTests.fs" />
+        <Compile Include="Solutions/SolutionTargetResolutionTests.fs" />
+        <Compile Include="Solutions/SolutionEditPlanningTests.fs" />
+        <Compile Include="Solutions/SolutionProjectEditingTests.fs" />
+    </ItemGroup>
+    <ItemGroup>
+        <None Include="../../Fixtures/SolutionFiles/**/*" Link="Fixtures/SolutionFiles/%(RecursiveDir)%(Filename)%(Extension)" Pack="false" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+    <ItemGroup>
+        <ProjectReference Include="../../../src/Workspaces/Dotnet.WorkspaceExplorer.Workspaces.fsproj" />
+        <ProjectReference Include="../../../src/Solutions/Dotnet.WorkspaceExplorer.Solutions.fsproj" />
+        <ProjectReference Include="../../../src/WorkspaceIndex/Dotnet.WorkspaceExplorer.WorkspaceIndex.fsproj" />
+        <ProjectReference Include="../../../src/WorkspaceEditing/Dotnet.WorkspaceExplorer.WorkspaceEditing.fsproj" />
+    </ItemGroup>
+    <ItemGroup>
+        <PackageReference Include="FSharp.Core" />
+        <PackageReference Include="FsUnit.Xunit" />
+        <PackageReference Include="xunit.v3" />
+    </ItemGroup>
+</Project>

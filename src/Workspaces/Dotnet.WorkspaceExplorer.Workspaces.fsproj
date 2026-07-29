@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <AssemblyName>Dotnet.WorkspaceExplorer.Workspaces</AssemblyName>
+        <RootNamespace>Dotnet.WorkspaceExplorer.Workspaces</RootNamespace>
+    </PropertyGroup>
+
+    <ItemGroup>
+
+        <PackageReference Include="FSharp.Core" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Compile Include="FileSystemCaseSensitivity.fs" />
+        <Compile Include="WorkspaceIdentity.fs" />
+        <Compile Include="WorkspaceDiagnostics.fs" />
+        <Compile Include="WorkspaceNodes.fs" />
+        <Compile Include="WorkspaceChanges.fs" />
+        <Compile Include="WorkspaceCommandContracts.fs" />
+        <Compile Include="WorkspaceOperations.fs" />
+        <Compile Include="WorkspaceOutcomes.fs" />
+        <Compile Include="WorkspaceEditContracts.fs" />
+    </ItemGroup>
+</Project>

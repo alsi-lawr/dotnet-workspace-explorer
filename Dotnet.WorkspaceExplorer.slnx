@@ -1,0 +1,29 @@
+<Solution>
+    <Folder Name="/Solution Items/">
+        <File Path=".editorconfig" />
+        <File Path="Directory.Build.props" />
+        <File Path="Directory.Packages.props" />
+        <File Path="flake.lock" />
+        <File Path="flake.nix" />
+        <File Path="global.json" />
+        <File Path="README.md" />
+    </Folder>
+    <Folder Name="/src/">
+        <Project Path="src/Workspaces/Dotnet.WorkspaceExplorer.Workspaces.fsproj" />
+        <Project Path="src/Solutions/Dotnet.WorkspaceExplorer.Solutions.fsproj" />
+        <Project Path="src/Rpc/Dotnet.WorkspaceExplorer.Rpc.fsproj" />
+        <Project Path="src/ProjectEvaluation/Dotnet.WorkspaceExplorer.ProjectEvaluation.csproj" />
+        <Project Path="src/WorkspaceIndex/Dotnet.WorkspaceExplorer.WorkspaceIndex.fsproj" />
+        <Project Path="src/WorkspaceEditing/Dotnet.WorkspaceExplorer.WorkspaceEditing.fsproj" />
+        <Project Path="src/WorkspaceCommands/Dotnet.WorkspaceExplorer.WorkspaceCommands.fsproj" />
+        <Project Path="src/CommandLine/Dotnet.WorkspaceExplorer.CommandLine.fsproj" />
+        <Project Path="src/WorkspaceExplorer/Dotnet.WorkspaceExplorer.fsproj" />
+    </Folder>
+    <Folder Name="/tests/">
+        <Project Path="tests/unit/Rpc/Dotnet.WorkspaceExplorer.Rpc.UnitTests.fsproj" />
+        <Project Path="tests/unit/Workspaces/Dotnet.WorkspaceExplorer.Workspaces.UnitTests.fsproj" />
+        <Project Path="tests/integration/ProjectEvaluation/Dotnet.WorkspaceExplorer.ProjectEvaluation.IntegrationTests.fsproj" />
+        <Project Path="tests/integration/Workspaces/Dotnet.WorkspaceExplorer.Workspaces.IntegrationTests.fsproj" />
+        <Project Path="tests/integration/Support/ScriptedDotnet/Dotnet.WorkspaceExplorer.Testing.ScriptedDotnet.fsproj" />
+    </Folder>
+</Solution>

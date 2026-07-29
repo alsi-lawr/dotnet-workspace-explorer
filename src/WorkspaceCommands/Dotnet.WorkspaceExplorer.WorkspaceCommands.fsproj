@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <AssemblyName>Dotnet.WorkspaceExplorer.WorkspaceCommands</AssemblyName>
+        <RootNamespace>Dotnet.WorkspaceExplorer.WorkspaceCommands</RootNamespace>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../Workspaces/Dotnet.WorkspaceExplorer.Workspaces.fsproj" />
+        <ProjectReference Include="../Solutions/Dotnet.WorkspaceExplorer.Solutions.fsproj" />
+        <ProjectReference Include="../ProjectEvaluation/Dotnet.WorkspaceExplorer.ProjectEvaluation.csproj" />
+        <ProjectReference Include="../WorkspaceIndex/Dotnet.WorkspaceExplorer.WorkspaceIndex.fsproj" />
+        <ProjectReference Include="../WorkspaceEditing/Dotnet.WorkspaceExplorer.WorkspaceEditing.fsproj" />
+        <PackageReference Include="FSharp.Core" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Compile Include="AssemblyInfo.fs" />
+        <Compile Include="Dotnet/DotnetCommandCatalog.fs" />
+        <Compile Include="Dotnet/DotnetCommandArguments.fs" />
+        <Compile Include="Dotnet/DotnetLifecycleCommands.fs" />
+        <Compile Include="Solutions/SolutionLaunchProfileCommands.fs" />
+        <Compile Include="WorkspaceCommandCatalog.fs" />
+        <Compile Include="Projects/ProjectRelocation.fs" />
+        <Compile Include="WorkspaceCommandEditing.fs" />
+    </ItemGroup>
+</Project>

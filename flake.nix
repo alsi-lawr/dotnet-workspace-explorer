@@ -1,5 +1,5 @@
 {
-  description = ".NET 10 development shell for dotnet-cli-plus";
+  description = ".NET 10 development shell for dotnet-workspace-explorer";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -58,7 +58,7 @@
           pkgs = import nixpkgs { inherit system; };
         in
         {
-          formatting-tools = pkgs.runCommand "dotnet-cli-plus-formatting-tools" {
+          formatting-tools = pkgs.runCommand "dotnet-workspace-explorer-formatting-tools" {
             nativeBuildInputs = formattingTools pkgs;
           } ''
             export DOTNET_CLI_HOME="$TMPDIR"

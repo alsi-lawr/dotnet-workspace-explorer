@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <AssemblyName>Dotnet.WorkspaceExplorer.WorkspaceIndex</AssemblyName>
+        <RootNamespace>Dotnet.WorkspaceExplorer.WorkspaceIndex</RootNamespace>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../Workspaces/Dotnet.WorkspaceExplorer.Workspaces.fsproj" />
+        <ProjectReference Include="../Solutions/Dotnet.WorkspaceExplorer.Solutions.fsproj" />
+        <ProjectReference Include="../Rpc/Dotnet.WorkspaceExplorer.Rpc.fsproj" />
+        <ProjectReference Include="../ProjectEvaluation/Dotnet.WorkspaceExplorer.ProjectEvaluation.csproj" />
+        <PackageReference Include="FSharp.Core" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Compile Include="AssemblyInfo.fs" />
+        <Compile Include="Projection/ExploredProjectProperties.fs" />
+        <Compile Include="Projection/WorkspaceIndexModel.fs" />
+        <Compile Include="Projection/WorkspaceNodeProjection.fs" />
+        <Compile Include="Projection/WorkspaceIndexDiff.fs" />
+        <Compile Include="Watching/WorkspaceWatchPlan.fs" />
+        <Compile Include="Paging/WorkspacePageTokens.fs" />
+        <Compile Include="WorkspaceIndexContracts.fs" />
+        <Compile Include="WorkspaceIndex.fs" />
+        <Compile Include="Watching/WorkspaceChangeBuffer.fs" />
+        <Compile Include="Watching/WorkspaceIndexWatcher.fs" />
+    </ItemGroup>
+</Project>
