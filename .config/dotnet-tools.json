@@ -15,13 +15,6 @@
         "fantomas"
       ],
       "rollForward": false
-    },
-    "fsautocomplete": {
-      "version": "0.83.0",
-      "commands": [
-        "fsautocomplete"
-      ],
-      "rollForward": false
     }
   }
 }

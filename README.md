@@ -73,8 +73,14 @@ The repository targets .NET 10. Restore the repository tools, build, and run the
 
 ```console
 dotnet tool restore
-dotnet build --configuration Release
-dotnet fsi scripts/verify-package.fsx --configuration Release
+dotnet restore Dotnet.CLI.Plus.slnx
+dotnet build Dotnet.CLI.Plus.slnx --configuration Release --no-restore
 ```
 
-The package qualification command creates a fresh isolated package, installs that exact tool, smokes direct and pipe use, and removes its temporary package, tool, and fixture paths.
+Pull-request continuous integration runs restore, Debug and Release builds, configured formatting,
+and the ordinary native test apphosts. Additional concern-specific commands are intentionally
+manual:
+
+- [F# diagnostic review](review/README.md)
+- [release package smoke](release/README.md)
+- [performance benchmarks](benchmarks/README.md)

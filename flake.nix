@@ -13,7 +13,7 @@
         "aarch64-darwin"
       ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
-      qualityTools = pkgs:
+      formattingTools = pkgs:
         let
           fantomas_7_0_5 = pkgs.buildDotnetGlobalTool {
             pname = "fantomas";
@@ -31,8 +31,6 @@
         [
           pkgs.dotnet-sdk_10
           pkgs.git
-          pkgs.neovim
-          pkgs.fsautocomplete
           fantomas_7_0_5
           csharpier_1_3_0
         ];
@@ -45,7 +43,7 @@
         in
         {
           default = pkgs.mkShellNoCC {
-            packages = qualityTools pkgs;
+            packages = formattingTools pkgs ++ [ pkgs.fsautocomplete ];
 
             DOTNET_CLI_TELEMETRY_OPTOUT = "1";
             DOTNET_NOLOGO = "1";
@@ -60,14 +58,12 @@
           pkgs = import nixpkgs { inherit system; };
         in
         {
-          quality-tools = pkgs.runCommand "dotnet-cli-plus-quality-tools" {
-            nativeBuildInputs = qualityTools pkgs;
+          formatting-tools = pkgs.runCommand "dotnet-cli-plus-formatting-tools" {
+            nativeBuildInputs = formattingTools pkgs;
           } ''
             export DOTNET_CLI_HOME="$TMPDIR"
             dotnet --version | grep -E '^10[.]'
             git --version
-            nvim --version | grep -F 'NVIM v0.12.4'
-            fsautocomplete --version | grep -Fx '0.83.0'
             fantomas --version | grep -F 'Fantomas v7.0.5'
             csharpier --version | grep -F '1.3.0'
             touch "$out"

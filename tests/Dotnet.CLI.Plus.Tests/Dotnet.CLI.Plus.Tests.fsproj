@@ -22,7 +22,6 @@
 
     <ItemGroup>
         <None Include="../ConformanceFixtures/Solutions/**/*" Link="ConformanceFixtures/Solutions/%(RecursiveDir)%(Filename)%(Extension)" Pack="false" CopyToOutputDirectory="PreserveNewest" />
-        <None Include="../ConformanceFixtures/Neovim/**/*" Link="ConformanceFixtures/Neovim/%(RecursiveDir)%(Filename)%(Extension)" Pack="false" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 
     <ItemGroup>
