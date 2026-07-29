@@ -12,7 +12,7 @@ Every direct form may begin with `--json`:
 [--json] reference add|list|remove [options]
 [--json] new [<template-name>|create|list|search|details|install|uninstall|update] [options]
 [--json] restore|build|test|run [options]
-[--json] solution <SLN_FILE> launch list|set|remove [options]
+[--json] solution|sln <SLN_FILE> launch list|set|remove [options]
 workspace <TARGET> --pipe
 workspace <TARGET> --pipe --export-workers <positive-integer>
 ```

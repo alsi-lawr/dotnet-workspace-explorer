@@ -178,7 +178,7 @@ module RpcSession =
                     if Interlocked.CompareExchange(&fatalState, 1, 0) = 0 then
                         do!
                             error.WriteLineAsync
-                                $"dotnet-workspace-explorer pipe protocol failure: {message}"
+                                $"dotnet-workspace-explorer workspace RPC protocol failure: {message}"
 
                         do! error.FlushAsync()
                 }
