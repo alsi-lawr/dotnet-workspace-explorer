@@ -22,8 +22,11 @@ type internal WorkspaceCommandEffect =
       Recursive: bool }
 
 type internal ContextTemplateExecution =
-    | ProjectTemplate of expectedOutputs: WorkspaceArtifactPath array
+    | ProjectTemplate of
+        binding: WorkspaceTemplateBinding *
+        expectedOutputs: WorkspaceArtifactPath array
     | ItemTemplate of
+        binding: WorkspaceTemplateBinding *
         projectPath: WorkspaceArtifactPath *
         outputDirectory: WorkspaceArtifactPath *
         expectedOutputs: WorkspaceArtifactPath array
@@ -62,12 +65,19 @@ module internal ContextWorkspaceActions =
         && value.IndexOfAny(Path.GetInvalidFileNameChars()) < 0
         && value.IndexOfAny [| Path.DirectorySeparatorChar; Path.AltDirectorySeparatorChar |] < 0
 
-    let private templateArguments
+    let templateArguments
         (entry: WorkspaceTemplateEntry)
         (name: string)
         (output: WorkspaceArtifactPath)
         (projectPath: WorkspaceArtifactPath option)
         =
+        let templateType =
+            match entry.Kind with
+            | WorkspaceCreateKind.ItemTemplate -> "item"
+            | WorkspaceCreateKind.ProjectTemplate -> "project"
+            | WorkspaceCreateKind.Empty ->
+                invalidArg (nameof entry) "An empty creation is not a dotnet template."
+
         CommandArguments.Create
             [ parameter "template" (Text entry.ShortName)
               parameter "output" (Path output)
@@ -77,6 +87,11 @@ module internal ContextWorkspaceActions =
                       seq {
                           yield "--name"
                           yield name
+                          yield "--type"
+                          yield templateType
+
+                          if entry.Kind = WorkspaceCreateKind.ProjectTemplate then
+                              yield "--no-restore"
 
                           match entry.Language with
                           | Some language ->
@@ -109,6 +124,17 @@ module internal ContextWorkspaceActions =
                   yield entry.ShortName
                   yield "--name"
                   yield name
+                  yield "--type"
+
+                  yield
+                      match entry.Kind with
+                      | WorkspaceCreateKind.ItemTemplate -> "item"
+                      | WorkspaceCreateKind.ProjectTemplate -> "project"
+                      | WorkspaceCreateKind.Empty ->
+                          invalidArg (nameof entry) "An empty creation is not a dotnet template."
+
+                  if entry.Kind = WorkspaceCreateKind.ProjectTemplate then
+                      yield "--no-restore"
 
                   match entry.Language with
                   | Some language ->
@@ -366,6 +392,7 @@ module internal ContextWorkspaceActions =
                                           TemplateExecution =
                                             Some(
                                                 ItemTemplate(
+                                                    WorkspaceTemplateCatalog.binding entry,
                                                     projectPath,
                                                     outputDirectory,
                                                     outputs
@@ -419,6 +446,7 @@ module internal ContextWorkspaceActions =
                                       TemplateExecution =
                                         Some(
                                             ProjectTemplate(
+                                                WorkspaceTemplateCatalog.binding entry,
                                                 outputs |> Array.map WorkspaceArtifactPath.Create
                                             )
                                         ) })
@@ -537,21 +565,23 @@ module internal ContextWorkspaceActions =
                             Arguments = arguments
                             Intents =
                                 if external then
-                                    ImmutableHashSet.Create WorkspaceEditIntent.AccessExternalPath
+                                    solutionPlan.Request.Intents.Add
+                                        WorkspaceEditIntent.AccessExternalPath
                                 else
-                                    ImmutableHashSet<WorkspaceEditIntent>.Empty
+                                    solutionPlan.Request.Intents
                             AuthorizedRoots =
                                 if external then
-                                    ImmutableArray.Create(
-                                        WorkspaceArtifactPath.Create root,
-                                        WorkspaceArtifactPath.Create(
-                                            Path.GetDirectoryName path.Value
-                                            |> Option.ofObj
-                                            |> Option.defaultValue root
-                                        )
-                                    )
+                                    Seq.append
+                                        solutionPlan.Request.AuthorizedRoots
+                                        [ WorkspaceArtifactPath.Create(
+                                              Path.GetDirectoryName path.Value
+                                              |> Option.ofObj
+                                              |> Option.defaultValue root
+                                          ) ]
+                                    |> Seq.distinct
+                                    |> ImmutableArray.CreateRange
                                 else
-                                    ImmutableArray.Create(WorkspaceArtifactPath.Create root) }
+                                    solutionPlan.Request.AuthorizedRoots }
 
                     let actions =
                         Seq.append

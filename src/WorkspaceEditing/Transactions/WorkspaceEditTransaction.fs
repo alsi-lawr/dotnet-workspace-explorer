@@ -89,6 +89,7 @@ type WorkspaceEditTransaction
 
     let actionPaths =
         function
+        | WorkspaceEditAction.CreateDirectory path
         | WorkspaceEditAction.ReplaceFile(path, _)
         | WorkspaceEditAction.Delete(path, _, _)
         | WorkspaceEditAction.Trash path -> [ path ]
@@ -218,6 +219,9 @@ type WorkspaceEditTransaction
 
                         for action in actions do
                             match action with
+                            | WorkspaceEditAction.CreateDirectory _path ->
+                                WorkspaceEditFingerprint.writeValue writer "mkdir"
+                                WorkspaceEditFingerprint.writeValue writer (nextPath ())
                             | WorkspaceEditAction.ReplaceFile(_path, contents) ->
                                 WorkspaceEditFingerprint.writeValue writer "replace"
                                 WorkspaceEditFingerprint.writeValue writer (nextPath ())
@@ -277,6 +281,8 @@ type WorkspaceEditTransaction
         trailing
         && actions
            |> Array.forall (function
+               | WorkspaceEditAction.CreateDirectory path ->
+                   not (ArtifactFiles.exists path || repeatedDestination path)
                | WorkspaceEditAction.ReplaceFile(destination, _) ->
                    not (ArtifactFiles.exists destination || repeatedDestination destination)
                    || intents.Contains WorkspaceEditIntent.Overwrite
@@ -504,6 +510,16 @@ type WorkspaceEditTransaction
                                     | Ok _ -> ()
 
                                 match action with
+                                | WorkspaceEditAction.CreateDirectory path ->
+                                    Directory.CreateDirectory path |> ignore
+
+                                    reversals.Insert(
+                                        0,
+                                        ($"remove directory {path}",
+                                         fun () ->
+                                             if Directory.Exists path then
+                                                 Directory.Delete path)
+                                    )
                                 | WorkspaceEditAction.ReplaceFile(destination, contents) ->
                                     let stage = ArtifactFiles.temporaryBeside destination "stage"
                                     cleanup.Add stage

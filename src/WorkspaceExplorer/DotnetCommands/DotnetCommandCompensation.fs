@@ -89,6 +89,42 @@ module internal DotnetCommandCompensation =
                       Fingerprint = fingerprint }
             | Error error -> invalidOp error
 
+    let outputArtifacts root =
+        if Directory.Exists root && not (ArtifactFiles.isLink root) then
+            let entries =
+                Directory.EnumerateFileSystemEntries(root, "*", SearchOption.AllDirectories)
+                |> Seq.toArray
+
+            match entries |> Array.tryFind ArtifactFiles.isLink with
+            | Some path -> Error $"Template output contains a symbolic link: {path}"
+            | None ->
+                entries
+                |> Array.map Path.GetFullPath
+                |> Array.sortWith (fun left right -> StringComparer.Ordinal.Compare(left, right))
+                |> Ok
+        else
+            Error "The template output directory is unavailable."
+
+    let expectedOutputArtifacts root outputs =
+        let root = Path.GetFullPath root
+
+        let rec parents (path: string) =
+            match Path.GetDirectoryName path |> Option.ofObj with
+            | Some parent when
+                not (String.Equals(parent, root, StringComparison.Ordinal))
+                && ArtifactFiles.isUnder root parent
+                ->
+                parent :: parents parent
+            | _ -> []
+
+        outputs
+        |> Seq.collect (fun path ->
+            let path = Path.GetFullPath path
+            path :: parents path)
+        |> Seq.distinct
+        |> Seq.sortWith (fun left right -> StringComparer.Ordinal.Compare(left, right))
+        |> Seq.toArray
+
     let snapshotFiles paths =
         paths
         |> Seq.map (fun (path: WorkspaceArtifactPath) ->

@@ -335,13 +335,18 @@ type FilteredWorkspaceCommandTests() =
                           "capabilities",
                           RpcValue.array
                               [ RpcValue.String "workspace.root"
+                                RpcValue.String "workspace.create.options"
+                                RpcValue.String "workspace.commands.list"
+                                RpcValue.String "workspace.commands.describe"
+                                RpcValue.String "workspace.commands.preview"
+                                RpcValue.String "workspace.commands.execute"
                                 RpcValue.String "workspace.export.start"
                                 RpcValue.String "workspace.refresh"
                                 RpcValue.String "workspace.operations.cancel"
                                 RpcValue.String "unknown.claim" ]
                           "limits",
                           WorkspaceRpcScenario.map
-                              [ "maxFrameBytes", RpcValue.Integer 4096L
+                              [ "maxFrameBytes", RpcValue.Integer 4194304L
                                 "maxPageSize", RpcValue.Integer 50L ] ]
 
                 WorkspaceRpcScenario.send
@@ -352,6 +357,52 @@ type FilteredWorkspaceCommandTests() =
                 WorkspaceRpcScenario.readFrame child
                 |> WorkspaceRpcScenario.response 1u
                 |> ignore
+
+                WorkspaceRpcScenario.send
+                    child
+                    false
+                    (WorkspaceRpcScenario.request 20u "workspace/root" RpcValue.emptyMap)
+
+                let rootError, rootResult =
+                    WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 20u
+
+                Assert.True rootError.IsNone
+
+                let rootId =
+                    WorkspaceRpcScenario.field "nodes" rootResult
+                    |> RpcValue.requireArray "nodes"
+                    |> Seq.exactlyOne
+                    |> WorkspaceRpcScenario.field "id"
+                    |> RpcValue.requireString "id"
+
+                WorkspaceRpcScenario.send
+                    child
+                    false
+                    (WorkspaceRpcScenario.request
+                        21u
+                        "workspace/create/options"
+                        (WorkspaceRpcScenario.map
+                            [ "targetNodeId", RpcValue.String rootId
+                              "expectedRevision", RpcValue.Integer 0L ]))
+
+                let optionsError, optionsResult =
+                    WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 21u
+
+                match optionsError with
+                | Some error ->
+                    failwithf "Read-only create options failed: %s: %s" error.Code error.Message
+                | None -> ()
+
+                let options =
+                    WorkspaceRpcScenario.field "options" optionsResult
+                    |> RpcValue.requireArray "options"
+
+                Assert.NotEmpty options
+
+                options
+                |> Seq.forall (fun option ->
+                    WorkspaceRpcScenario.field "kind" option = RpcValue.String "projectTemplate")
+                |> Assert.True
 
                 WorkspaceRpcScenario.send
                     child
@@ -406,6 +457,26 @@ type FilteredWorkspaceCommandTests() =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 4u
 
                 Assert.Equal("unsupported_capability", previewError.Value.Code)
+
+                let contextPreview =
+                    WorkspaceRpcScenario.map
+                        [ "commandId", RpcValue.String "workspace.create"
+                          "targetNodeId", RpcValue.String rootId
+                          "arguments",
+                          WorkspaceRpcScenario.map
+                              [ "selectionId", RpcValue.String "unavailable"
+                                "name", RpcValue.String "Generated" ]
+                          "expectedRevision", RpcValue.Integer 0L ]
+
+                WorkspaceRpcScenario.send
+                    child
+                    false
+                    (WorkspaceRpcScenario.request 22u "workspace/commands/preview" contextPreview)
+
+                let contextPreviewError, _ =
+                    WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 22u
+
+                Assert.Equal("unsupported_capability", contextPreviewError.Value.Code)
 
                 let execute =
                     WorkspaceRpcScenario.map

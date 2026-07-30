@@ -39,6 +39,14 @@ type internal WorkspaceTemplateCatalog =
       EmptySelectionId: string
       Entries: WorkspaceTemplateEntry array }
 
+type internal WorkspaceTemplateBinding =
+    { SelectionId: string
+      Fingerprint: string
+      Identity: string
+      ShortName: string
+      Kind: WorkspaceCreateKind
+      Language: string option }
+
 [<RequireQualifiedAccess>]
 module internal WorkspaceTemplateCatalog =
     let private invalid code message = RpcErrors.create code message None
@@ -227,6 +235,21 @@ module internal WorkspaceTemplateCatalog =
         | _ ->
             Error(invalid "template_catalog_invalid" "The active SDK template catalog is invalid.")
 
+    let parseBytes fingerprint (bytes: byte array) =
+        try
+            let json =
+                if
+                    bytes.Length >= 3 && bytes[0] = 0xEFuy && bytes[1] = 0xBBuy && bytes[2] = 0xBFuy
+                then
+                    ReadOnlyMemory<byte>(bytes, 3, bytes.Length - 3)
+                else
+                    ReadOnlyMemory<byte>(bytes)
+
+            use document = JsonDocument.Parse json
+            parse fingerprint document
+        with :? JsonException ->
+            Error(invalid "template_catalog_invalid" "The active SDK template catalog is invalid.")
+
     let readAsync (workspace: SolutionWorkspace) (cancellationToken: CancellationToken) =
         task {
             let executable =
@@ -272,21 +295,8 @@ module internal WorkspaceTemplateCatalog =
                         let! bytes = File.ReadAllBytesAsync(path, cancellationToken)
                         let fingerprint = SHA256.HashData bytes |> Convert.ToHexString
 
-                        let json =
-                            if
-                                bytes.Length >= 3
-                                && bytes[0] = 0xEFuy
-                                && bytes[1] = 0xBBuy
-                                && bytes[2] = 0xBFuy
-                            then
-                                ReadOnlyMemory<byte>(bytes, 3, bytes.Length - 3)
-                            else
-                                ReadOnlyMemory<byte>(bytes)
-
-                        use document = JsonDocument.Parse json
-
                         return
-                            parse fingerprint document
+                            parseBytes fingerprint bytes
                             |> Result.map (fun entries ->
                                 { Fingerprint = fingerprint
                                   EmptySelectionId =
@@ -300,13 +310,6 @@ module internal WorkspaceTemplateCatalog =
                     with
                     | :? OperationCanceledException ->
                         return Error(invalid "cancelled" "Template discovery was cancelled.")
-                    | :? JsonException ->
-                        return
-                            Error(
-                                invalid
-                                    "template_catalog_invalid"
-                                    "The active SDK template catalog is invalid."
-                            )
                     | :? IOException ->
                         return
                             Error(
@@ -337,6 +340,31 @@ module internal WorkspaceTemplateCatalog =
                   Fingerprint = catalog.Fingerprint }
         else
             catalog.Entries |> Array.tryFind (fun entry -> entry.SelectionId = selectionId)
+
+    let binding (entry: WorkspaceTemplateEntry) =
+        { SelectionId = entry.SelectionId
+          Fingerprint = entry.Fingerprint
+          Identity = entry.Identity
+          ShortName = entry.ShortName
+          Kind = entry.Kind
+          Language = entry.Language }
+
+    let validateBinding expected catalog =
+        match find expected.SelectionId catalog with
+        | Some entry when
+            catalog.Fingerprint = expected.Fingerprint
+            && entry.Identity = expected.Identity
+            && entry.ShortName = expected.ShortName
+            && entry.Kind = expected.Kind
+            && entry.Language = expected.Language
+            ->
+            Ok()
+        | _ ->
+            Error(
+                invalid
+                    "template_catalog_changed"
+                    "The selected template registration changed before execution."
+            )
 
     let projectLanguage (projectPath: WorkspaceArtifactPath option) =
         projectPath

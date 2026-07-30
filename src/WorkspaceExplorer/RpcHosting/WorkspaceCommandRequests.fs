@@ -48,6 +48,10 @@ module internal WorkspaceCommandRequests =
     let private genericEffects (plan: PlannedWorkspaceCommand) =
         plannedActions plan
         |> Seq.collect (function
+            | WorkspaceEditAction.CreateDirectory path ->
+                [ { Operation = "create"
+                    Target = path
+                    Recursive = false } ]
             | WorkspaceEditAction.ReplaceFile(path, _) ->
                 [ { Operation = "modify"
                     Target = path

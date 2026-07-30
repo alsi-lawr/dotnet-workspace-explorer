@@ -2,6 +2,7 @@ namespace Dotnet.WorkspaceExplorer.WorkspaceEditing
 
 [<RequireQualifiedAccess>]
 type WorkspaceEditAction =
+    | CreateDirectory of path: string
     | ReplaceFile of destination: string * contents: byte array
     | Rename of source: string * destination: string
     | Move of source: string * destination: string

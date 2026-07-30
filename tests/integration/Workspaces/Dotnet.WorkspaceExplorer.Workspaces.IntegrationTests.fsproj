@@ -41,6 +41,7 @@
         <Compile Include="WorkspaceCommands/PackageCommandTests.fs" />
         <Compile Include="WorkspaceCommands/ProjectCreationCommandTests.fs" />
         <Compile Include="WorkspaceCommands/WorkspaceCommandLifecycleTests.fs" />
+        <Compile Include="WorkspaceCommands/ContextWorkspaceContractFixtureTests.fs" />
         <Compile Include="WorkspaceCommands/ContextWorkspaceCommandTests.fs" />
         <Compile Include="Projects/ProjectRelocationTests.fs" />
         <Compile Include="LaunchProfiles/LaunchProfileStorageTests.fs" />

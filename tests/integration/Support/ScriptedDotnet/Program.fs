@@ -40,6 +40,16 @@ module Program =
             | None -> ()
 
             0
+        | [ "--version" ], Some "workspace-command" ->
+            Console.Out.Write "test"
+            0
+        | [ "--list-sdks" ], Some "workspace-command" ->
+            let sdkRoot =
+                InvocationSettings.setting "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_DOTNET_SDK_ROOT"
+                |> Option.defaultValue (Directory.GetCurrentDirectory())
+
+            Console.Out.Write $"test [{sdkRoot}]"
+            0
         | _, Some "create-output" ->
             let output =
                 arguments

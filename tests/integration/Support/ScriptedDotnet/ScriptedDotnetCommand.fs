@@ -7,7 +7,6 @@ open System
 module internal ScriptedDotnetCommand =
     let run (arguments: string array) =
         InvocationSettings.recordInvocation arguments
-        InvocationSettings.signalAndWait ()
 
         match
             InvocationSettings.setting "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_DOTNET_OUTPUT_LENGTH"
@@ -26,6 +25,9 @@ module internal ScriptedDotnetCommand =
                 || value = "--check-only"
                 || value = "--check-only=true")
 
+        if not dryRun then
+            InvocationSettings.signalAndWait ()
+
         let mutated =
             match arguments |> Array.toList with
             | "reference" :: verb :: _ when verb = "add" || verb = "remove" ->
@@ -34,12 +36,9 @@ module internal ScriptedDotnetCommand =
             | "package" :: verb :: _ when verb = "add" || verb = "remove" || verb = "update" ->
                 ProjectFileEditing.mutatePackage verb arguments
                 true
-            | "new" :: _ when
-                InvocationSettings.argumentValue "--output" arguments |> Option.isSome
-                && not dryRun
-                ->
+            | "new" :: _ when InvocationSettings.argumentValue "--output" arguments |> Option.isSome ->
                 TemplateCreation.create arguments
-                true
+                not dryRun
             | _ -> false
 
         if

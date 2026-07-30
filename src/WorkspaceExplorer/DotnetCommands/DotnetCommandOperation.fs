@@ -93,6 +93,7 @@ module internal DotnetCommandOperation =
                         let mutable completionReserved = false
                         let mutable transitionPublished = false
                         let mutable ownedSnapshots: OwnedFileSnapshot array = Array.empty
+                        let mutable ownedDirectories: string array = Array.empty
                         let mutable invalidationPaths: WorkspaceArtifactPath array = Array.empty
                         let mutable templateBefore: OutputDirectorySnapshot option = None
                         let mutable templateAfter: OutputDirectorySnapshot option = None
@@ -216,6 +217,41 @@ module internal DotnetCommandOperation =
                                     requirePartialRecovery
                                         $"Command compensation failed: {error.Message}"
 
+                            if
+                                outcome <> WorkspaceOperationCompletion.Succeeded
+                                && ownedDirectories.Length > 0
+                                && not transitionPublished
+                            then
+                                let remaining =
+                                    ownedDirectories
+                                    |> Array.sortByDescending _.Length
+                                    |> Array.choose (fun path ->
+                                        try
+                                            if
+                                                Directory.Exists path
+                                                && not (
+                                                    Directory.EnumerateFileSystemEntries path
+                                                    |> Seq.isEmpty
+                                                )
+                                            then
+                                                Some $"{path} (directory is not empty)"
+                                            else
+                                                if Directory.Exists path then
+                                                    Directory.Delete path
+
+                                                if ArtifactFiles.exists path then
+                                                    Some path
+                                                else
+                                                    None
+                                        with error ->
+                                            Some $"{path} ({error.Message})")
+
+                                if remaining.Length > 0 then
+                                    requirePartialRecovery (
+                                        "Template compensation could not remove: "
+                                        + String.concat ", " remaining
+                                    )
+
                         let cleanupItemStaging () =
                             itemStagingDirectory
                             |> Option.iter (fun path ->
@@ -305,9 +341,59 @@ module internal DotnetCommandOperation =
                                         Error
                                             "The item template would overwrite an existing artifact."
                                     else
+                                        let missingDirectories =
+                                            destinations
+                                            |> Seq.collect (fun (_, destination) ->
+                                                let rec parents current =
+                                                    if
+                                                        String.Equals(
+                                                            current,
+                                                            outputDirectory,
+                                                            StringComparison.Ordinal
+                                                        )
+                                                    then
+                                                        []
+                                                    elif
+                                                        not (
+                                                            ArtifactFiles.isUnder
+                                                                outputDirectory
+                                                                current
+                                                        )
+                                                    then
+                                                        invalidOp
+                                                            "An item-template output escaped its output directory."
+                                                    else
+                                                        let parent =
+                                                            Path.GetDirectoryName current
+                                                            |> Option.ofObj
+                                                            |> Option.defaultValue outputDirectory
+
+                                                        current :: parents parent
+
+                                                Path.GetDirectoryName destination
+                                                |> Option.ofObj
+                                                |> Option.map parents
+                                                |> Option.defaultValue [])
+                                            |> Seq.filter (ArtifactFiles.exists >> not)
+                                            |> Seq.distinct
+                                            |> Seq.sortBy (fun path ->
+                                                Path
+                                                    .GetRelativePath(outputDirectory, path)
+                                                    .Split(
+                                                        Path.DirectorySeparatorChar,
+                                                        StringSplitOptions.RemoveEmptyEntries
+                                                    )
+                                                    .Length,
+                                                path)
+                                            |> Seq.toArray
+
                                         let targetPaths =
                                             destinations
                                             |> Seq.map (snd >> WorkspaceArtifactPath.Create)
+                                            |> Seq.append (
+                                                missingDirectories
+                                                |> Seq.map WorkspaceArtifactPath.Create
+                                            )
                                             |> Seq.append [ projectPath ]
                                             |> ImmutableArray.CreateRange
 
@@ -340,17 +426,22 @@ module internal DotnetCommandOperation =
                                                     ) }
 
                                         let actions =
-                                            destinations
-                                            |> Array.map (fun (source, destination) ->
-                                                WorkspaceEditAction.ReplaceFile(
-                                                    destination,
-                                                    File.ReadAllBytes source
-                                                ))
+                                            Array.append
+                                                (missingDirectories
+                                                 |> Array.map WorkspaceEditAction.CreateDirectory)
+                                                (destinations
+                                                 |> Array.map (fun (source, destination) ->
+                                                     WorkspaceEditAction.ReplaceFile(
+                                                         destination,
+                                                         File.ReadAllBytes source
+                                                     )))
 
                                         ownedSnapshots <-
                                             destinations
                                             |> Seq.map (snd >> WorkspaceArtifactPath.Create)
                                             |> DotnetCommandCompensation.snapshotFiles
+
+                                        ownedDirectories <- missingDirectories
 
                                         match coordinator.Prepare(publicationRequest, actions) with
                                         | Failure failure -> Error failure.Diagnostic.Message
@@ -419,7 +510,43 @@ module internal DotnetCommandOperation =
 
                                         false
 
-                            if canExecute then
+                            let! catalogIsCurrent =
+                                if canExecute then
+                                    let binding =
+                                        match templateExecution with
+                                        | Some(ProjectTemplate(binding, _))
+                                        | Some(ItemTemplate(binding, _, _, _)) -> Some binding
+                                        | None -> None
+
+                                    match binding with
+                                    | None -> Task.FromResult true
+                                    | Some binding ->
+                                        task {
+                                            let! catalog =
+                                                WorkspaceTemplateCatalog.readAsync
+                                                    workspace
+                                                    linked.Token
+
+                                            match
+                                                catalog
+                                                |> Result.bind (
+                                                    WorkspaceTemplateCatalog.validateBinding binding
+                                                )
+                                            with
+                                            | Ok() -> return true
+                                            | Error error ->
+                                                outcome <-
+                                                    WorkspaceOperationCompletion.Failed(
+                                                        error.Code,
+                                                        error.Message
+                                                    )
+
+                                                return false
+                                        }
+                                else
+                                    Task.FromResult false
+
+                            if canExecute && catalogIsCurrent then
                                 invalidationPaths <-
                                     plannedCommand
                                     |> Option.map (plannedPaths >> Seq.toArray)
@@ -539,7 +666,8 @@ module internal DotnetCommandOperation =
                                         && not (DotnetCommandCatalog.isTemplateDryRun request)
                                     then
                                         match templateExecution, templateBefore, templateAfter with
-                                        | Some(ItemTemplate(projectPath,
+                                        | Some(ItemTemplate(_,
+                                                            projectPath,
                                                             outputDirectory,
                                                             expectedOutputs)),
                                           _,
@@ -567,22 +695,31 @@ module internal DotnetCommandOperation =
                                                         "template_output_unavailable",
                                                         "The item-template staging output is unavailable."
                                                     )
-                                        | Some(ProjectTemplate expectedOutputs),
+                                        | Some(ProjectTemplate(_, expectedOutputs)),
                                           Some before,
                                           Some after ->
-                                            let missingExpectedOutput =
+                                            let expected =
                                                 expectedOutputs
-                                                |> Array.tryFind (fun path ->
-                                                    not (ArtifactFiles.exists path.Value))
+                                                |> Seq.map _.Value
+                                                |> DotnetCommandCompensation.expectedOutputArtifacts
+                                                    after.Root
 
-                                            match missingExpectedOutput with
-                                            | Some path ->
+                                            match
+                                                DotnetCommandCompensation.outputArtifacts after.Root
+                                            with
+                                            | Error message ->
                                                 outcome <-
                                                     WorkspaceOperationCompletion.Failed(
                                                         "template_output_changed",
-                                                        $"The template did not produce the previewed artifact {path.Value}."
+                                                        message
                                                     )
-                                            | None ->
+                                            | Ok actual when actual <> expected ->
+                                                outcome <-
+                                                    WorkspaceOperationCompletion.Failed(
+                                                        "template_output_changed",
+                                                        "The project-template output no longer matches its complete preview."
+                                                    )
+                                            | Ok _ ->
                                                 match
                                                     DotnetCommandCompensation.newProjectFiles
                                                         before
