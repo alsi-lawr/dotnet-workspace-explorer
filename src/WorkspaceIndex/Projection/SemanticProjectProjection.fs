@@ -14,6 +14,11 @@ type private SemanticFile =
       Ordinal: int
       DimensionOrder: int }
 
+type private SemanticFolder =
+    { RelativePath: string
+      Ordinal: int
+      DimensionOrder: int }
+
 type private DependencyCandidate =
     { Identity: string
       Name: string
@@ -279,7 +284,7 @@ module internal SemanticProjectProjection =
         let files = semanticFiles insensitive snapshot
 
         let folderFirstOccurrence =
-            Dictionary<string, struct (int * int)>(StringComparer.Ordinal)
+            Dictionary<string, SemanticFolder>(StringComparer.Ordinal)
 
         for file in files do
             let segments = file.RelativePath.Split('/', StringSplitOptions.RemoveEmptyEntries)
@@ -290,29 +295,40 @@ module internal SemanticProjectProjection =
                 let occurrence = struct (file.DimensionOrder, file.Ordinal)
 
                 match folderFirstOccurrence.TryGetValue key with
-                | true, existing when existing <= occurrence -> ()
-                | _ -> folderFirstOccurrence[key] <- occurrence
+                | true, existing when
+                    struct (existing.DimensionOrder, existing.Ordinal) <= occurrence
+                    ->
+                    ()
+                | _ ->
+                    folderFirstOccurrence[key] <-
+                        { RelativePath = path
+                          DimensionOrder = file.DimensionOrder
+                          Ordinal = file.Ordinal }
 
         let folderNodes = Dictionary<string, WorkspaceNode>(StringComparer.Ordinal)
 
         folderFirstOccurrence
-        |> Seq.sortBy (fun (KeyValue(path, struct (dimensionOrder, ordinal))) ->
-            path.Split('/').Length, dimensionOrder, ordinal, path)
-        |> Seq.iter (fun (KeyValue(path, struct (dimensionOrder, ordinal))) ->
-            let name = path.Split('/') |> Array.last
+        |> Seq.sortBy (fun (KeyValue(key, folder)) ->
+            key.Split('/').Length, folder.DimensionOrder, folder.Ordinal, key)
+        |> Seq.iter (fun (KeyValue(key, folder)) ->
+            let name = folder.RelativePath.Split('/') |> Array.last
 
             let node =
                 WorkspaceNode.Create(
                     descriptor,
                     WorkspaceNodeKind.ProjectFolder,
                     WorkspaceNodeIdentity.Create
-                        $"project-folder:{project.Node.Identity.Value}:{path}",
+                        $"project-folder:{project.Node.Identity.Value}:{key}",
                     name,
                     snapshot.CapabilityProfile
                 )
 
-            folderNodes[path] <- node
-            let parentPath = path |> Path.GetDirectoryName |> Option.ofObj
+            folderNodes[key] <- node
+
+            let parentPath =
+                folder.RelativePath.Replace('/', Path.DirectorySeparatorChar)
+                |> Path.GetDirectoryName
+                |> Option.ofObj
 
             let parentId =
                 parentPath
@@ -321,10 +337,10 @@ module internal SemanticProjectProjection =
                 |> Option.defaultValue projectNode.Id
 
             placements.Add
-                { PlacementKey = IndexedNodeKey [ "project-folder"; project.Node.Id.Value; path ]
+                { PlacementKey = IndexedNodeKey [ "project-folder"; project.Node.Id.Value; key ]
                   PlacementNode = node
                   ParentNodeId = parentId
-                  SiblingOrder = "1" :: orderValue dimensionOrder ordinal @ [ path ] })
+                  SiblingOrder = "1" :: orderValue folder.DimensionOrder folder.Ordinal @ [ key ] })
 
         for file in files do
             let parentPath =

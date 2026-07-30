@@ -183,10 +183,12 @@ type SemanticWorkspaceTreeTests() =
             Assert.Equal(WorkspaceNodeKind.Workspace, root.Node.Kind)
             Assert.Equal("Semantic", root.Node.Name)
 
-            let children parentId =
-                placements
+            let childrenFor (source: IndexedNode array) (parentId: WorkspaceNodeId) =
+                source
                 |> Array.filter (fun placement -> placement.ParentWorkspaceNodeId = Some parentId)
                 |> Array.sortBy _.Index
+
+            let children = childrenFor placements
 
             let rootChildren = children root.Node.Id
 
@@ -340,6 +342,147 @@ type SemanticWorkspaceTreeTests() =
                     placement.ParentWorkspaceNodeId = Some fallbackFolder.Node.Id)
                 |> Array.sortBy _.Index
                 |> Array.map _.Node.Name
+            )
+
+            let insensitiveItems =
+                ImmutableArray.CreateRange
+                    [ item 0 "Compile" "src/Api/First.fs" []
+                      item 1 "Compile" "SRC/API/FIRST.fs" []
+                      item 2 "Compile" "src/API/Second.fs" [] ]
+
+            let insensitiveIndexed = indexed (snapshot insensitiveItems) 0L
+
+            let insensitivePlacements =
+                WorkspaceIndexDiff.placements
+                    true
+                    { insensitiveIndexed with
+                        Hydrated =
+                            insensitiveIndexed.Hydrated
+                            |> Seq.map (fun (KeyValue(key, value)) -> key.ToUpperInvariant(), value)
+                            |> Map.ofSeq }
+
+            let insensitiveApp =
+                insensitivePlacements
+                |> Array.find (fun placement ->
+                    placement.Node.Kind = WorkspaceNodeKind.Project && placement.Node.Name = "App")
+
+            let insensitiveSource =
+                childrenFor insensitivePlacements insensitiveApp.Node.Id
+                |> Array.filter (fun placement ->
+                    placement.Node.Kind = WorkspaceNodeKind.ProjectFolder
+                    && String.Equals(
+                        placement.Node.Name,
+                        "src",
+                        StringComparison.OrdinalIgnoreCase
+                    ))
+                |> Assert.Single
+
+            Assert.Equal("src", insensitiveSource.Node.Name)
+
+            let insensitiveApi =
+                childrenFor insensitivePlacements insensitiveSource.Node.Id
+                |> Array.filter (fun placement ->
+                    placement.Node.Kind = WorkspaceNodeKind.ProjectFolder
+                    && String.Equals(
+                        placement.Node.Name,
+                        "Api",
+                        StringComparison.OrdinalIgnoreCase
+                    ))
+                |> Assert.Single
+
+            Assert.Equal("Api", insensitiveApi.Node.Name)
+
+            Assert.Equal<string array>(
+                [| "First.fs"; "Second.fs" |],
+                childrenFor insensitivePlacements insensitiveApi.Node.Id
+                |> Array.map _.Node.Name
+            )
+
+            let fileReorderedItems =
+                outerItems
+                |> Seq.map (fun value ->
+                    match value.EvaluatedInclude with
+                    | "A/First.fs" -> item 2 "Compile" "A/First.fs" []
+                    | "A/Third.fs" -> item 0 "Compile" "A/Third.fs" []
+                    | _ -> value)
+                |> ImmutableArray.CreateRange
+
+            let fileReordered =
+                WorkspaceIndexDiff.placements false (indexed (snapshot fileReorderedItems) 0L)
+
+            let fileReorderDelta =
+                WorkspaceIndexDiff.diff workspace.Descriptor.Id 0L placements fileReordered
+                |> Option.defaultWith (fun () -> failwith "Expected a semantic file-order delta.")
+
+            Assert.Equal(2, fileReorderDelta.Changes.Length)
+
+            let nameFor nodeId =
+                placements
+                |> Array.find (fun placement -> placement.Node.Id = nodeId)
+                |> _.Node.Name
+
+            let fileMoves =
+                fileReorderDelta.Changes
+                |> Seq.choose (function
+                    | Moved(nodeId, oldParent, oldIndex, newParent, newIndex) when
+                        oldParent = Some folderA.Node.Id && newParent = oldParent
+                        ->
+                        Some(nameFor nodeId, oldIndex, newIndex)
+                    | _ -> None)
+                |> Seq.toArray
+
+            Assert.Equal<(string * int * int) array>(
+                [| "First.fs", 0, 1; "Third.fs", 1, 0 |],
+                fileMoves
+            )
+
+            let fileReorderedFolderA =
+                fileReordered
+                |> Array.find (fun placement -> placement.Node.Id = folderA.Node.Id)
+
+            Assert.Equal<string array>(
+                [| "Third.fs"; "First.fs" |],
+                childrenFor fileReordered fileReorderedFolderA.Node.Id |> Array.map _.Node.Name
+            )
+
+            let folderReorderedItems =
+                outerItems
+                |> Seq.map (fun value ->
+                    match value.EvaluatedInclude with
+                    | "A/First.fs" -> item 1 "Compile" "A/First.fs" []
+                    | "B/Second.fs" -> item 0 "Compile" "B/Second.fs" []
+                    | "A/Third.fs" -> item 2 "Compile" "A/Third.fs" []
+                    | _ -> value)
+                |> ImmutableArray.CreateRange
+
+            let folderReordered =
+                WorkspaceIndexDiff.placements false (indexed (snapshot folderReorderedItems) 0L)
+
+            let folderReorderDelta =
+                WorkspaceIndexDiff.diff workspace.Descriptor.Id 0L placements folderReordered
+                |> Option.defaultWith (fun () -> failwith "Expected a semantic folder-order delta.")
+
+            Assert.Equal(2, folderReorderDelta.Changes.Length)
+
+            let folderMoves =
+                folderReorderDelta.Changes
+                |> Seq.choose (function
+                    | Moved(nodeId, oldParent, oldIndex, newParent, newIndex) when
+                        oldParent = Some appNode.Node.Id && newParent = oldParent
+                        ->
+                        Some(nameFor nodeId, oldIndex, newIndex)
+                    | _ -> None)
+                |> Seq.toArray
+
+            Assert.Equal<(string * int * int) array>([| "A", 1, 2; "B", 2, 1 |], folderMoves)
+
+            let folderReorderedApp =
+                folderReordered
+                |> Array.find (fun placement -> placement.Node.Id = appNode.Node.Id)
+
+            Assert.Equal<string array>(
+                [| "Dependencies"; "B"; "A"; "Root.txt" |],
+                childrenFor folderReordered folderReorderedApp.Node.Id |> Array.map _.Node.Name
             )
 
             let changedItems =

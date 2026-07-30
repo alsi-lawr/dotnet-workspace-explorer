@@ -159,6 +159,33 @@ module internal WorkspaceIndexDiff =
         let oldDepth = depths oldIndexedNodes
         let newDepth = depths newIndexedNodes
 
+        let stableSameParent =
+            oldByKey
+            |> Seq.choose (fun (KeyValue(key, oldValue)) ->
+                newByKey.TryFind key
+                |> Option.bind (fun newValue ->
+                    if
+                        oldValue.Node.Id = newValue.Node.Id
+                        && oldValue.ParentWorkspaceNodeId = newValue.ParentWorkspaceNodeId
+                    then
+                        Some(key, oldValue, newValue)
+                    else
+                        None))
+            |> Seq.toArray
+
+        let siblingRanks placement =
+            stableSameParent
+            |> Seq.groupBy (fun (_, oldValue, _) -> oldValue.ParentWorkspaceNodeId)
+            |> Seq.collect (fun (_, siblings) ->
+                siblings
+                |> Seq.sortBy (fun (key, oldValue, newValue) ->
+                    (placement oldValue newValue).Index, key)
+                |> Seq.mapi (fun index (key, _, _) -> key, index))
+            |> Map.ofSeq
+
+        let oldSiblingRanks = siblingRanks (fun oldValue _ -> oldValue)
+        let newSiblingRanks = siblingRanks (fun _ newValue -> newValue)
+
         let removals =
             oldByKey
             |> Seq.choose (fun (KeyValue(key, oldValue)) ->
@@ -196,6 +223,8 @@ module internal WorkspaceIndexDiff =
                         let nextMoves =
                             if
                                 oldValue.ParentWorkspaceNodeId <> newValue.ParentWorkspaceNodeId
+                                || (oldValue.Index <> newValue.Index
+                                    && oldSiblingRanks[key] <> newSiblingRanks[key])
                             then
                                 (key,
                                  newValue,
