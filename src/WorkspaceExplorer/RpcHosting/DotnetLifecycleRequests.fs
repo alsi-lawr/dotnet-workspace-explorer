@@ -74,6 +74,7 @@ module internal DotnetLifecycleRequests =
                                 None
                                 None
                                 argv
+                                None
                                 cancellationToken
 
                         return Some result

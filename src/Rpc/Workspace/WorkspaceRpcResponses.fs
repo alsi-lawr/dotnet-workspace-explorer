@@ -19,6 +19,7 @@ module WorkspaceRpcResponses =
               "workspace.refresh"
               "workspace.delta"
               "workspace.reset"
+              "workspace.create.options"
               "workspace.commands.list"
               "workspace.commands.describe"
               "workspace.commands.preview"
@@ -104,16 +105,32 @@ module WorkspaceRpcResponses =
     let commandDescribeResult (command: CommandDescriptor) =
         map [ "command", commandDescriptor command ]
 
-    let commandPreviewResult (preview: WorkspaceEditPreview) =
+    let commandPreviewResult
+        (preview: WorkspaceEditPreview)
+        summary
+        (effects: seq<string * string * bool>)
+        =
         map
             [ "confirmationToken", text preview.Confirmation.Value
-              "expiresAtUtc", text (preview.ExpiresAtUtc.ToString "O") ]
+              "expiresAtUtc", text (preview.ExpiresAtUtc.ToString "O")
+              "summary", text summary
+              "effects",
+              effects
+              |> Seq.map (fun (operation, target, recursive) ->
+                  map
+                      [ "operation", text operation
+                        "target", text target
+                        "recursive", boolean recursive ])
+              |> RpcValue.array ]
 
     let commandExecuteResult revision =
         map [ "applied", boolean true; "revision", integer revision ]
 
     let commandOperationResult operationId revision =
         map [ "operationId", text operationId; "revision", integer revision ]
+
+    let createOptionsResult revision (options: seq<RpcValue>) =
+        map [ "revision", integer revision; "options", RpcValue.array options ]
 
     let node (workspaceId: WorkspaceId) revision (value: WorkspaceNode) =
         map

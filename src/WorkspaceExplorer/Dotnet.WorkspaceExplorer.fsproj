@@ -30,6 +30,8 @@
         <Compile Include="RpcHosting/WorkspaceNavigationRequests.fs" />
         <Compile Include="RpcHosting/WorkspaceExportRequests.fs" />
         <Compile Include="RpcHosting/WorkspaceCommandArguments.fs" />
+        <Compile Include="RpcHosting/WorkspaceTemplateCatalog.fs" />
+        <Compile Include="RpcHosting/ContextWorkspaceActions.fs" />
         <Compile Include="DotnetCommands/DotnetCommandCompensation.fs" />
         <Compile Include="DotnetCommands/DotnetCommandOperation.fs" />
         <Compile Include="WorkspaceEditing/WorkspaceEditOperation.fs" />

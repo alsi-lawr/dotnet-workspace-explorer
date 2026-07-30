@@ -75,7 +75,10 @@ type WorkspaceRpcInitializationTests() =
             initialize
                 1L
                 "test"
-                [ "workspace.root"; "unknown.claim"; "workspace.operations.cancel" ]
+                [ "workspace.root"
+                  "workspace.create.options"
+                  "unknown.claim"
+                  "workspace.operations.cancel" ]
                 (Some(
                     Test.map
                         [ "maxFrameBytes", RpcValue.Integer 4096L
@@ -114,7 +117,10 @@ type WorkspaceRpcInitializationTests() =
             |> Seq.map (RpcValue.requireString "capability")
             |> Seq.toList
 
-        Assert.Equal<string list>([ "workspace.operations.cancel"; "workspace.root" ], negotiated)
+        Assert.Equal<string list>(
+            [ "workspace.create.options"; "workspace.operations.cancel"; "workspace.root" ],
+            negotiated
+        )
 
         let resultLimits = resultFields["limits"] |> RpcValue.requireMap "limits"
         Assert.Equal(RpcValue.Integer 4096L, resultLimits["maxFrameBytes"])
@@ -153,3 +159,23 @@ type WorkspaceRpcInitializationTests() =
         match children 4097L with
         | Error error -> Assert.Equal("invalid_params", error.Code)
         | result -> failwithf "oversized page should be rejected: %A" result
+
+        match
+            WorkspaceRpc.parseRequest
+                "workspace/create/options"
+                (Test.map
+                    [ "targetNodeId", RpcValue.String "node"
+                      "expectedRevision", RpcValue.Integer 12L ])
+        with
+        | Ok(WorkspaceRpcRequest.CreateOptions("node", 12L)) -> ()
+        | result -> failwithf "create options schema changed: %A" result
+
+        [ Test.map [ "targetNodeId", RpcValue.String "node" ]
+          Test.map
+              [ "targetNodeId", RpcValue.String "node"
+                "expectedRevision", RpcValue.Integer 0L
+                "extra", RpcValue.Boolean true ] ]
+        |> List.iter (fun parameters ->
+            match WorkspaceRpc.parseRequest "workspace/create/options" parameters with
+            | Error error -> Assert.Equal("invalid_params", error.Code)
+            | result -> failwithf "invalid create options request was accepted: %A" result)

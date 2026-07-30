@@ -249,6 +249,7 @@ module internal WorkspaceNavigationRequests =
         | WorkspaceRpcRequest.Cancel operationId -> dispatchCancel context operationId |> someAsync
         | WorkspaceRpcRequest.Shutdown -> dispatchShutdown context |> someAsync
         | WorkspaceRpcRequest.Export
+        | WorkspaceRpcRequest.CreateOptions _
         | WorkspaceRpcRequest.CommandList _
         | WorkspaceRpcRequest.CommandDescribe _
         | WorkspaceRpcRequest.CommandPreview _

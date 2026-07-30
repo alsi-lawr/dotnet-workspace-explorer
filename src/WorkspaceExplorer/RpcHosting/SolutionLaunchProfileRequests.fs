@@ -113,6 +113,7 @@ module internal SolutionLaunchProfileRequests =
                                     None
                                     None
                                     argv
+                                    None
                                     cancellationToken
 
                             return Some result

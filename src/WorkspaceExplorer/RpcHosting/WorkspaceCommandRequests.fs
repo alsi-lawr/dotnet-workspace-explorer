@@ -15,12 +15,105 @@ open WorkspaceCommandEditing
 open WorkspaceCommandArguments
 
 module internal WorkspaceCommandRequests =
+    let private createOption (entry: WorkspaceTemplateEntry) =
+        let kind =
+            match entry.Kind with
+            | WorkspaceCreateKind.Empty -> "empty"
+            | WorkspaceCreateKind.ItemTemplate -> "itemTemplate"
+            | WorkspaceCreateKind.ProjectTemplate -> "projectTemplate"
+
+        let execution =
+            match entry.Execution with
+            | WorkspaceCreateExecution.Transaction -> "transaction"
+            | WorkspaceCreateExecution.Operation -> "operation"
+
+        let fields =
+            ResizeArray<string * RpcValue>
+                [ "selectionId", RpcValue.String entry.SelectionId
+                  "kind", RpcValue.String kind
+                  "displayName", RpcValue.String entry.DisplayName
+                  "description", RpcValue.String entry.Description
+                  "execution", RpcValue.String execution ]
+
+        entry.Language
+        |> Option.iter (fun value -> fields.Add("language", RpcValue.String value))
+
+        RpcValue.map fields
+
     let private isDotnetCommandPlan =
         function
         | DotnetCommandPlan _ -> true
         | _ -> false
 
-    let private availableCommands workspace target =
+    let private genericEffects (plan: PlannedWorkspaceCommand) =
+        plannedActions plan
+        |> Seq.collect (function
+            | WorkspaceEditAction.ReplaceFile(path, _) ->
+                [ { Operation = "modify"
+                    Target = path
+                    Recursive = false } ]
+            | WorkspaceEditAction.Rename(source, destination)
+            | WorkspaceEditAction.Move(source, destination) ->
+                [ { Operation = "modify"
+                    Target = source
+                    Recursive = false }
+                  { Operation = "modify"
+                    Target = destination
+                    Recursive = false } ]
+            | WorkspaceEditAction.Delete(path, _, recursive) ->
+                [ { Operation = "trash"
+                    Target = path
+                    Recursive = recursive } ]
+            | WorkspaceEditAction.Trash path ->
+                [ { Operation = "trash"
+                    Target = path
+                    Recursive = false } ])
+        |> Seq.toArray
+
+    let private prepareMutation
+        (workspace: SolutionWorkspace)
+        (context: WorkspaceCommandContext)
+        (targetContext: WorkspaceSemanticContext)
+        (descriptor: CommandDescriptor)
+        (parsed: CommandArguments)
+        (expectedRevision: int64)
+        (cancellationToken: CancellationToken)
+        =
+        task {
+            if ContextWorkspaceCommands.tryDescribe descriptor.Id |> Option.isSome then
+                return!
+                    ContextWorkspaceActions.prepareAsync
+                        workspace
+                        context.State
+                        targetContext
+                        descriptor
+                        parsed
+                        expectedRevision
+                        cancellationToken
+            else
+                let request =
+                    { CommandId = descriptor.Id
+                      TargetWorkspaceNodeId = commandTarget targetContext
+                      Arguments = parsed
+                      ExpectedRevision = WorkspaceRevision.Create expectedRevision }
+
+                let! planned = planMutation workspace context.State request cancellationToken
+
+                return
+                    match planned with
+                    | Failure failure -> Error(WorkspaceRpcResponses.failureError failure)
+                    | Success plan ->
+                        Ok
+                            { Plan = plan
+                              CommandRequest = None
+                              Summary = descriptor.Name
+                              Effects = genericEffects plan
+                              TemplateExecution = None }
+        }
+
+    let private availableCommands workspace (context: WorkspaceSemanticContext) =
+        let target = commandTarget context
+
         let solutionAndProjectCommands =
             seq {
                 yield! SolutionEditor.Discover(workspace, target)
@@ -34,6 +127,21 @@ module internal WorkspaceCommandRequests =
         |> Seq.append (DotnetCommandCatalog.discover workspace target)
         |> Seq.append (DotnetLifecycleCommands.discover workspace target)
         |> Seq.append (SolutionLaunchProfileCommands.discover workspace target)
+        |> Seq.append (
+            ContextWorkspaceCommands.discover workspace.Descriptor.IsReadOnly (Some context.Node)
+        )
+
+    let private resolveTarget
+        (context: WorkspaceCommandContext)
+        (workspace: SolutionWorkspace)
+        targetNodeId
+        (cancellationToken: CancellationToken)
+        =
+        let nodeId =
+            targetNodeId
+            |> Option.defaultValue (WorkspaceIndexPure.workspaceRoot workspace.Descriptor).Id.Value
+
+        context.State.SemanticContextAsync(nodeId, None, cancellationToken)
 
     let private dispatchResolved
         (context: WorkspaceCommandContext)
@@ -43,10 +151,59 @@ module internal WorkspaceCommandRequests =
         =
         task {
             match request with
-            | WorkspaceRpcRequest.CommandList targetNodeId ->
-                match commandTarget workspace targetNodeId with
+            | WorkspaceRpcRequest.CreateOptions(targetNodeId, expectedRevision) ->
+                let! resolved =
+                    context.State.SemanticContextAsync(
+                        targetNodeId,
+                        Some expectedRevision,
+                        requestCancellationToken
+                    )
+
+                match resolved with
                 | Error rpcError -> return Error rpcError
-                | Ok target ->
+                | Ok(_, target) when target.Node.LoadState = WorkspaceNodeLoadState.FilteredOut ->
+                    return
+                        Error(
+                            RpcErrors.unsupported
+                                "New is not available for a filtered project placeholder."
+                        )
+                | Ok(revision, target) ->
+                    match target.Node.Kind with
+                    | WorkspaceNodeKind.Workspace
+                    | WorkspaceNodeKind.SolutionFolder
+                    | WorkspaceNodeKind.SolutionItem
+                    | WorkspaceNodeKind.Project
+                    | WorkspaceNodeKind.ProjectFolder
+                    | WorkspaceNodeKind.ProjectFile
+                    | WorkspaceNodeKind.DependencyContainer
+                    | WorkspaceNodeKind.Dependency ->
+                        let! catalog =
+                            WorkspaceTemplateCatalog.readAsync workspace requestCancellationToken
+
+                        return
+                            catalog
+                            |> Result.map (fun catalog ->
+                                { Result =
+                                    WorkspaceTemplateCatalog.options target catalog
+                                    |> Seq.map createOption
+                                    |> WorkspaceRpcResponses.createOptionsResult revision
+                                  Notifications = []
+                                  BackgroundWork = None
+                                  AfterResponse = None
+                                  StopAfterResponse = false })
+                    | _ ->
+                        return
+                            Error(
+                                RpcErrors.unsupported
+                                    "New is not available for the selected workspace node."
+                            )
+            | WorkspaceRpcRequest.CommandList targetNodeId ->
+                let! resolved =
+                    resolveTarget context workspace targetNodeId requestCancellationToken
+
+                match resolved with
+                | Error rpcError -> return Error rpcError
+                | Ok(_, target) ->
                     return
                         Ok
                             { Result =
@@ -57,14 +214,14 @@ module internal WorkspaceCommandRequests =
                               AfterResponse = None
                               StopAfterResponse = false }
             | WorkspaceRpcRequest.CommandDescribe(commandId, targetNodeId) ->
-                match
-                    commandTarget workspace targetNodeId,
-                    WorkspaceCommandCatalog.tryDescribe commandId
-                with
+                let! resolved =
+                    resolveTarget context workspace targetNodeId requestCancellationToken
+
+                match resolved, WorkspaceCommandCatalog.tryDescribe commandId with
                 | Error rpcError, _ -> return Error rpcError
                 | _, None ->
                     return Error(RpcErrors.create "not_found" "The command was not found." None)
-                | Ok target, Some descriptor when
+                | Ok(_, target), Some descriptor when
                     availableCommands workspace target
                     |> Seq.exists (fun candidate -> candidate.Id = descriptor.Id)
                     ->
@@ -90,38 +247,34 @@ module internal WorkspaceCommandRequests =
                 if context.State.Descriptor.IsReadOnly then
                     return Error(RpcErrors.unsupported "The selected .slnf workspace is read-only.")
                 else
-                    match
-                        commandTarget workspace targetNodeId,
-                        WorkspaceCommandCatalog.tryDescribe commandId
-                    with
+                    let! resolved =
+                        resolveTarget context workspace targetNodeId requestCancellationToken
+
+                    match resolved, WorkspaceCommandCatalog.tryDescribe commandId with
                     | Error rpcError, _ -> return Error rpcError
                     | _, None ->
                         return Error(RpcErrors.create "not_found" "The command was not found." None)
-                    | Ok target, Some descriptor ->
+                    | Ok(_, targetContext), Some descriptor ->
                         match commandArguments workspace descriptor arguments with
                         | Error rpcError -> return Error rpcError
                         | Ok parsed ->
-                            let mutationRequest =
-                                { CommandId = descriptor.Id
-                                  TargetWorkspaceNodeId = target
-                                  Arguments = parsed
-                                  ExpectedRevision = WorkspaceRevision.Create expectedRevision }
-
                             let! planned =
-                                planMutation
+                                prepareMutation
                                     workspace
-                                    context.State
-                                    mutationRequest
+                                    context
+                                    targetContext
+                                    descriptor
+                                    parsed
+                                    expectedRevision
                                     requestCancellationToken
 
                             match planned with
-                            | Failure failure ->
-                                return Error(WorkspaceRpcResponses.failureError failure)
-                            | Success plan ->
+                            | Error rpcError -> return Error rpcError
+                            | Ok prepared ->
                                 match
                                     context.Coordinator.Prepare(
-                                        plannedRequest plan,
-                                        plannedActions plan
+                                        plannedRequest prepared.Plan,
+                                        plannedActions prepared.Plan
                                     )
                                 with
                                 | Failure failure ->
@@ -130,7 +283,14 @@ module internal WorkspaceCommandRequests =
                                     return
                                         Ok
                                             { Result =
-                                                WorkspaceRpcResponses.commandPreviewResult preview
+                                                WorkspaceRpcResponses.commandPreviewResult
+                                                    preview
+                                                    prepared.Summary
+                                                    (prepared.Effects
+                                                     |> Seq.map (fun effect ->
+                                                         effect.Operation,
+                                                         effect.Target,
+                                                         effect.Recursive))
                                               Notifications = []
                                               BackgroundWork = None
                                               AfterResponse = None
@@ -140,12 +300,18 @@ module internal WorkspaceCommandRequests =
                                                  arguments,
                                                  expectedRevision,
                                                  confirmationToken) ->
+                let! resolved =
+                    resolveTarget context workspace targetNodeId requestCancellationToken
+
+                let resolvedDescriptor =
+                    match resolved, WorkspaceCommandCatalog.tryDescribe commandId with
+                    | Ok(_, targetContext), Some descriptor ->
+                        Some(commandTarget targetContext, descriptor)
+                    | _ -> None
+
                 let! lifecycle =
-                    match
-                        commandTarget workspace targetNodeId,
-                        WorkspaceCommandCatalog.tryDescribe commandId
-                    with
-                    | Ok target, Some descriptor ->
+                    match resolvedDescriptor with
+                    | Some(target, descriptor) ->
                         DotnetLifecycleRequests.tryExecute
                             context
                             workspace
@@ -161,11 +327,8 @@ module internal WorkspaceCommandRequests =
                 | Some result -> return result
                 | None ->
                     let! profile =
-                        match
-                            commandTarget workspace targetNodeId,
-                            WorkspaceCommandCatalog.tryDescribe commandId
-                        with
-                        | Ok target, Some descriptor ->
+                        match resolvedDescriptor with
+                        | Some(target, descriptor) ->
                             SolutionLaunchProfileRequests.tryExecute
                                 context
                                 workspace
@@ -181,7 +344,7 @@ module internal WorkspaceCommandRequests =
                     | Some result -> return result
                     | None ->
                         match
-                            commandTarget workspace targetNodeId,
+                            resolved,
                             WorkspaceCommandCatalog.tryDescribe commandId,
                             confirmationToken
                         with
@@ -200,12 +363,114 @@ module internal WorkspaceCommandRequests =
                                     RpcErrors.unsupported
                                         "The selected .slnf workspace is read-only."
                                 )
-                        | Ok target, Some descriptor, confirmationToken when
+                        | Ok(_, targetContext), Some descriptor, Some confirmationToken when
+                            ContextWorkspaceCommands.tryDescribe descriptor.Id |> Option.isSome
+                            ->
+                            match commandArguments workspace descriptor arguments with
+                            | Error rpcError -> return Error rpcError
+                            | Ok parsed ->
+                                let! prepared =
+                                    prepareMutation
+                                        workspace
+                                        context
+                                        targetContext
+                                        descriptor
+                                        parsed
+                                        expectedRevision
+                                        requestCancellationToken
+
+                                match prepared with
+                                | Error rpcError -> return Error rpcError
+                                | Ok prepared when prepared.TemplateExecution.IsSome ->
+                                    let request =
+                                        prepared.CommandRequest
+                                        |> Option.defaultWith (fun () ->
+                                            invalidOp
+                                                "The template command request is unavailable.")
+
+                                    match
+                                        WorkspaceCommandCatalog.tryDescribe "template.create",
+                                        DotnetCommandCatalog.argv workspace request
+                                    with
+                                    | None, _ -> return Error RpcErrors.internalError
+                                    | _, Error message ->
+                                        return Error(RpcErrors.invalidParams message)
+                                    | Some templateDescriptor, Ok argv ->
+                                        return!
+                                            DotnetCommandOperation.start
+                                                { Workspace = workspace
+                                                  State = context.State
+                                                  Watcher = context.Watcher
+                                                  Coordinator = context.Coordinator
+                                                  PublicationGate = context.PublicationGate
+                                                  ActiveOperations = context.ActiveOperations
+                                                  WorkspaceRoot = context.WorkspaceRoot
+                                                  MaximumFrameBytes = context.MaximumFrameBytes
+                                                  RebuildWatcher = context.RebuildWatcher
+                                                  MutationNotifications =
+                                                    context.MutationNotifications }
+                                                templateDescriptor
+                                                request
+                                                (Some prepared.Plan)
+                                                (Some confirmationToken)
+                                                argv
+                                                prepared.TemplateExecution
+                                                requestCancellationToken
+                                | Ok prepared ->
+                                    let token = WorkspaceEditConfirmation.Create confirmationToken
+
+                                    match
+                                        context.Coordinator.Execute(
+                                            plannedRequest prepared.Plan,
+                                            plannedActions prepared.Plan,
+                                            token,
+                                            requestCancellationToken
+                                        )
+                                    with
+                                    | Failure failure ->
+                                        return Error(WorkspaceRpcResponses.failureError failure)
+                                    | Success(RolledBack failure) ->
+                                        return Error(WorkspaceRpcResponses.failureError failure)
+                                    | Success Applied ->
+                                        let! invalidated =
+                                            context.State.InvalidateFromTransactionAsync(
+                                                plannedPaths prepared.Plan,
+                                                CancellationToken.None
+                                            )
+
+                                        let reset =
+                                            match invalidated with
+                                            | WorkspaceProjectInvalidationResult.Reset _ -> true
+                                            | _ -> false
+
+                                        if reset then
+                                            context.Watcher.Pause()
+
+                                        let! watcherNotifications =
+                                            if reset then
+                                                Task.FromResult []
+                                            else
+                                                context.RebuildWatcher CancellationToken.None
+
+                                        return
+                                            Ok
+                                                { Result =
+                                                    WorkspaceRpcResponses.commandExecuteResult
+                                                        context.State.Revision
+                                                  Notifications =
+                                                    context.MutationNotifications invalidated
+                                                    @ watcherNotifications
+                                                  BackgroundWork = None
+                                                  AfterResponse = None
+                                                  StopAfterResponse = false }
+                        | Ok(_, targetContext), Some descriptor, confirmationToken when
                             DotnetCommandCatalog.tryDescribe descriptor.Id |> Option.isSome
                             && (not (DotnetCommandCatalog.isMutation descriptor.Id.Value)
                                 && descriptor.Access <> CommandAccess.Write
                                 || confirmationToken.IsSome)
                             ->
+                            let target = commandTarget targetContext
+
                             if context.State.Revision <> expectedRevision then
                                 return
                                     Error(
@@ -310,10 +575,13 @@ module internal WorkspaceCommandRequests =
                                                     plannedCommand
                                                     confirmationToken
                                                     argv
+                                                    None
                                                     requestCancellationToken
-                        | Ok target, Some descriptor, Some confirmationToken when
+                        | Ok(_, targetContext), Some descriptor, Some confirmationToken when
                             descriptor.Id.Value = "project.relocate"
                             ->
+                            let target = commandTarget targetContext
+
                             match commandArguments workspace descriptor arguments with
                             | Error rpcError -> return Error rpcError
                             | Ok parsed ->
@@ -359,33 +627,31 @@ module internal WorkspaceCommandRequests =
                                     RpcErrors.invalidParams
                                         "workspace/commands/execute requires confirmationToken."
                                 )
-                        | Ok target, Some descriptor, Some confirmationToken ->
+                        | Ok(_, targetContext), Some descriptor, Some confirmationToken ->
+                            let target = commandTarget targetContext
+
                             match commandArguments workspace descriptor arguments with
                             | Error rpcError -> return Error rpcError
                             | Ok parsed ->
-                                let mutationRequest =
-                                    { CommandId = descriptor.Id
-                                      TargetWorkspaceNodeId = target
-                                      Arguments = parsed
-                                      ExpectedRevision = WorkspaceRevision.Create expectedRevision }
-
-                                let! planned =
-                                    planMutation
+                                let! prepared =
+                                    prepareMutation
                                         workspace
-                                        context.State
-                                        mutationRequest
+                                        context
+                                        targetContext
+                                        descriptor
+                                        parsed
+                                        expectedRevision
                                         requestCancellationToken
 
-                                match planned with
-                                | Failure failure ->
-                                    return Error(WorkspaceRpcResponses.failureError failure)
-                                | Success plan ->
+                                match prepared with
+                                | Error rpcError -> return Error rpcError
+                                | Ok prepared ->
                                     let token = WorkspaceEditConfirmation.Create confirmationToken
 
                                     match
                                         context.Coordinator.Execute(
-                                            plannedRequest plan,
-                                            plannedActions plan,
+                                            plannedRequest prepared.Plan,
+                                            plannedActions prepared.Plan,
                                             token,
                                             requestCancellationToken
                                         )
@@ -397,7 +663,7 @@ module internal WorkspaceCommandRequests =
                                     | Success Applied ->
                                         let! invalidated =
                                             context.State.InvalidateFromTransactionAsync(
-                                                plannedPaths plan,
+                                                plannedPaths prepared.Plan,
                                                 CancellationToken.None
                                             )
 
@@ -437,6 +703,7 @@ module internal WorkspaceCommandRequests =
         task {
             match request with
             | WorkspaceRpcRequest.CommandList _
+            | WorkspaceRpcRequest.CreateOptions _
             | WorkspaceRpcRequest.CommandDescribe _
             | WorkspaceRpcRequest.CommandPreview _
             | WorkspaceRpcRequest.CommandExecute _ ->

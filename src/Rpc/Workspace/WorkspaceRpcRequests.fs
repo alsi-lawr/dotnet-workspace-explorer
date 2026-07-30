@@ -16,6 +16,7 @@ type WorkspaceRpcRequest =
     | Children of parentNodeId: string * pageSize: int option * continuationToken: string option
     | Export
     | Refresh of expectedRevision: int64 option
+    | CreateOptions of targetNodeId: string * expectedRevision: int64
     | CommandList of targetNodeId: string option
     | CommandDescribe of commandId: string * targetNodeId: string option
     | CommandPreview of

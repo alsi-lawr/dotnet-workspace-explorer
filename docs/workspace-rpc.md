@@ -18,12 +18,13 @@ The v1.0 allowlist is exactly:
 3. `workspace/children`
 4. `workspace/export/start`
 5. `workspace/refresh`
-6. `workspace/commands/list`
-7. `workspace/commands/describe`
-8. `workspace/commands/preview`
-9. `workspace/commands/execute`
-10. `workspace/operations/cancel`
-11. `shutdown`
+6. `workspace/create/options`
+7. `workspace/commands/list`
+8. `workspace/commands/describe`
+9. `workspace/commands/preview`
+10. `workspace/commands/execute`
+11. `workspace/operations/cancel`
+12. `shutdown`
 
 `workspace/root` returns exactly one `workspace` node named from the opened workspace.
 `workspace/children` pages a parent by node ID, page size, and continuation token. The semantic
@@ -44,6 +45,36 @@ For workspace commands, omitting `targetNodeId`, supplying the initialized works
 or supplying the single root node ID selects the same workspace target.
 `workspace/operations/cancel` requests cancellation for an operation ID; it does not promise that
 already-completed work can be undone. `shutdown` accepts an orderly session shutdown.
+
+## Contextual New and Delete
+
+Clients that negotiate `workspace.create.options` may send `workspace/create/options` with exactly
+`{ targetNodeId, expectedRevision }`. The response is exactly `{ revision, options }`. Each option
+contains `selectionId`, `kind`, `displayName`, `description`, optional `language`, and `execution`.
+The fixed kinds are `empty`, `itemTemplate`, and `projectTemplate`; execution is `transaction` or
+`operation`. Selection IDs are opaque, catalog-bound values and must not be cached across catalog
+changes.
+
+The `workspace.create` command accepts exactly text arguments `selectionId` and `name`.
+`workspace.delete` accepts no arguments. Both use the ordinary command list, describe, preview, and
+execute methods with a semantic `targetNodeId`. New targets the nearest physical project directory.
+Project templates always create `<solution-root>/<name>` and join the nearest logical solution
+folder. Delete removes or trashes according to the selected node: project files and physical
+folders update project membership and use native trash, projects and logical solution folders
+change solution membership, and solution-item deletion changes membership and uses native trash.
+
+Project contexts offer an empty file, matching or language-neutral item templates, and installed
+project templates. Workspace roots and solution folders/items offer installed project templates.
+Dependencies inherit their nearest project for New but cannot be deleted. Filtered placeholders
+and non-navigation rows reject. `.slnf` workspaces may read options but cannot preview or execute
+these write commands.
+
+Every command preview contains exactly `confirmationToken`, `expiresAtUtc`, `summary`, and
+`effects`. Each effect contains only `operation`, `target`, and boolean `recursive`. Operations are
+`create`, `modify`, `trash`, `addToProject`, `removeFromProject`, `addToSolution`, or
+`removeFromSolution`. Empty creation and deletion complete synchronously. Item and project
+templates return `{ operationId, revision }`; `workspace/operations/completed` is their definitive
+outcome.
 
 ## Notifications
 

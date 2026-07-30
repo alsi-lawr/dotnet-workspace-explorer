@@ -57,6 +57,16 @@ type internal WorkspaceExportBatch =
       IsFinal: bool }
 
 [<RequireQualifiedAccess>]
+type internal WorkspaceSemanticContext =
+    { Node: WorkspaceNode
+      ProjectId: WorkspaceNodeId option
+      ProjectPath: WorkspaceArtifactPath option
+      PhysicalPath: WorkspaceArtifactPath option
+      PhysicalDirectory: WorkspaceArtifactPath option
+      LogicalFolderId: WorkspaceNodeId option
+      LogicalFolderPath: string option }
+
+[<RequireQualifiedAccess>]
 type internal WorkspaceProjectInvalidationResult =
     | None
     | Delta of WorkspaceDelta

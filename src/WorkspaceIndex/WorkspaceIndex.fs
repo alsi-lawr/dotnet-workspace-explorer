@@ -290,6 +290,178 @@ type internal WorkspaceIndex
     member _.Descriptor = current.Workspace.Descriptor
     member _.Revision = current.Revision
 
+    member _.SemanticContextAsync
+        (nodeIdText: string, expectedRevision: int64 option, cancellationToken: CancellationToken)
+        =
+        task {
+            do! gate.WaitAsync cancellationToken
+
+            try
+                let! ready = ensureReadyUnsafe cancellationToken
+
+                match ready with
+                | Error error -> return Error error
+                | Ok() when expectedRevision.IsSome && expectedRevision.Value <> current.Revision ->
+                    return Error(WorkspaceRpcResponses.workspaceConflict current.Revision)
+                | Ok() ->
+                    let placements = WorkspaceIndexDiff.placements insensitive current
+
+                    let placement =
+                        placements
+                        |> Array.tryFind (fun value ->
+                            value.Node.Id.Value = nodeIdText
+                            || (value.Node.Kind = WorkspaceNodeKind.Workspace
+                                && current.Workspace.Descriptor.Id.Value = nodeIdText))
+
+                    match placement with
+                    | None ->
+                        return
+                            Error(
+                                RpcErrors.create
+                                    "not_found"
+                                    "The command target was not found."
+                                    None
+                            )
+                    | Some placement ->
+                        let workspace = current.Workspace
+
+                        let solutionDirectory =
+                            Path.GetDirectoryName workspace.SolutionPath.Value
+                            |> Option.ofObj
+                            |> Option.defaultValue (Directory.GetCurrentDirectory())
+
+                        let projectById projectId =
+                            workspace.Contents.Projects
+                            |> Seq.tryFind (fun project -> project.Node.Id.Value = projectId)
+
+                        let folderByPath folderPath =
+                            workspace.Contents.Folders
+                            |> Seq.tryFind (fun folder -> folder.Path = folderPath)
+
+                        let context: WorkspaceSemanticContext =
+                            match placement.Key with
+                            | IndexedNodeKey [ "workspace-root" ] ->
+                                { Node = placement.Node
+                                  ProjectId = None
+                                  ProjectPath = None
+                                  PhysicalPath = None
+                                  PhysicalDirectory = None
+                                  LogicalFolderId = None
+                                  LogicalFolderPath = None }
+                            | IndexedNodeKey [ "folder"; folderPath ] ->
+                                { Node = placement.Node
+                                  ProjectId = None
+                                  ProjectPath = None
+                                  PhysicalPath = None
+                                  PhysicalDirectory = None
+                                  LogicalFolderId = Some placement.Node.Id
+                                  LogicalFolderPath = Some folderPath }
+                            | IndexedNodeKey [ "solution-item"; folderPath; relativePath ] ->
+                                let physicalPath =
+                                    WorkspaceArtifactPath.Create(
+                                        Path.GetFullPath(relativePath, solutionDirectory)
+                                    )
+
+                                { Node = placement.Node
+                                  ProjectId = None
+                                  ProjectPath = None
+                                  PhysicalPath = Some physicalPath
+                                  PhysicalDirectory =
+                                    Path.GetDirectoryName physicalPath.Value
+                                    |> Option.ofObj
+                                    |> Option.map WorkspaceArtifactPath.Create
+                                  LogicalFolderId =
+                                    folderPath
+                                    |> Some
+                                    |> Option.filter (String.IsNullOrEmpty >> not)
+                                    |> Option.bind (folderByPath >> Option.map _.Node.Id)
+                                  LogicalFolderPath =
+                                    folderPath
+                                    |> Some
+                                    |> Option.filter (String.IsNullOrEmpty >> not) }
+                            | IndexedNodeKey("project" :: projectKey :: _)
+                            | IndexedNodeKey(_ :: projectKey :: _) ->
+                                let project =
+                                    workspace.Contents.Projects
+                                    |> Seq.tryFind (fun project ->
+                                        pathKey project.Path.AbsolutePath.Value = projectKey
+                                        || project.Node.Id.Value = projectKey)
+
+                                match project with
+                                | None ->
+                                    { Node = placement.Node
+                                      ProjectId = None
+                                      ProjectPath = None
+                                      PhysicalPath = None
+                                      PhysicalDirectory = None
+                                      LogicalFolderId = None
+                                      LogicalFolderPath = None }
+                                | Some project ->
+                                    let projectDirectory =
+                                        Path.GetDirectoryName project.Path.AbsolutePath.Value
+                                        |> Option.ofObj
+                                        |> Option.defaultValue solutionDirectory
+
+                                    let physicalPath =
+                                        match placement.Key with
+                                        | IndexedNodeKey [ "project-folder"; _; relativePath ] ->
+                                            Some(
+                                                WorkspaceArtifactPath.Create(
+                                                    Path.GetFullPath(
+                                                        relativePath.Replace(
+                                                            '/',
+                                                            Path.DirectorySeparatorChar
+                                                        ),
+                                                        projectDirectory
+                                                    )
+                                                )
+                                            )
+                                        | IndexedNodeKey [ "project-file"; _; _; relativePath ] ->
+                                            Some(
+                                                WorkspaceArtifactPath.Create(
+                                                    Path.GetFullPath(
+                                                        relativePath.Replace(
+                                                            '/',
+                                                            Path.DirectorySeparatorChar
+                                                        ),
+                                                        projectDirectory
+                                                    )
+                                                )
+                                            )
+                                        | _ -> None
+
+                                    let physicalDirectory =
+                                        match placement.Node.Kind, physicalPath with
+                                        | WorkspaceNodeKind.ProjectFolder, Some path -> Some path
+                                        | WorkspaceNodeKind.ProjectFile, Some path ->
+                                            Path.GetDirectoryName path.Value
+                                            |> Option.ofObj
+                                            |> Option.map WorkspaceArtifactPath.Create
+                                        | _ -> Some(WorkspaceArtifactPath.Create projectDirectory)
+
+                                    { Node = placement.Node
+                                      ProjectId = Some project.Node.Id
+                                      ProjectPath = Some project.Path.AbsolutePath
+                                      PhysicalPath = physicalPath
+                                      PhysicalDirectory = physicalDirectory
+                                      LogicalFolderId =
+                                        project.ParentFolderPath
+                                        |> Option.bind (folderByPath >> Option.map _.Node.Id)
+                                      LogicalFolderPath = project.ParentFolderPath }
+                            | _ ->
+                                { Node = placement.Node
+                                  ProjectId = None
+                                  ProjectPath = None
+                                  PhysicalPath = None
+                                  PhysicalDirectory = None
+                                  LogicalFolderId = None
+                                  LogicalFolderPath = None }
+
+                        return Ok(current.Revision, context)
+            finally
+                gate.Release() |> ignore
+        }
+
     member _.WorkspaceAsync(cancellationToken: CancellationToken) =
         task {
             do! gate.WaitAsync cancellationToken

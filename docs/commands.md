@@ -38,6 +38,14 @@ A diagnostic carries severity, code, safe message, optional artifact location, r
 
 Solution, package, reference, and template mutations are checked against the selected workspace. For mutating pipe commands, clients obtain a preview and execute with its confirmation/expected revision. Direct commands perform their documented operation and verify postconditions where possible. A failed mutation may receive narrowly scoped in-process compensation; there is no durable recovery guarantee.
 
+Pipe clients discover contextual `workspace.create` and `workspace.delete` commands for semantic
+workspace nodes. New choices come from the active workspace SDK's installed template catalog,
+including custom templates. Empty files and item templates target the nearest physical directory
+inside the selected project; item choices are filtered to the project language. Project templates
+create a named directory at the solution root and are added to the nearest logical solution folder.
+Delete composes project or solution membership changes with native trash where the selected
+artifact is physical. Template creation is asynchronous; its operation completion is authoritative.
+
 `restore`, `build`, `run`, and `test` select a workspace or project where appropriate, then invoke one ordinary `dotnet` child. The installed SDK owns option validation and all command semantics; `dotnet-workspace-explorer` does not interpret or model lifecycle/test output.
 
 Launch profiles stored in `.slnLaunch` are configuration data. The tool can list, set, and remove that data; it never executes `.slnLaunch`.

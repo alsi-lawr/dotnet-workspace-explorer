@@ -10,6 +10,10 @@ type internal PlannedWorkspaceCommand =
     | SolutionPlan of PlannedSolutionEdit
     | ProjectPlan of PlannedProjectEdit
     | CompositePlan of PlannedProjectEdit
+    | ContextPlan of
+        WorkspaceEditPreviewRequest *
+        WorkspaceEditAction array *
+        WorkspaceArtifactPath array
     | DotnetCommandPlan of WorkspaceEditPreviewRequest * WorkspaceArtifactPath array
     | LaunchProfilePlan of WorkspaceEditPreviewRequest * WorkspaceEditAction * WorkspaceArtifactPath
 
@@ -27,5 +31,6 @@ module internal WorkspaceCommandCatalog =
             |> Option.orElseWith (fun () -> DotnetCommandCatalog.tryDescribe id)
             |> Option.orElseWith (fun () -> DotnetLifecycleCommands.tryDescribe id)
             |> Option.orElseWith (fun () -> SolutionLaunchProfileCommands.tryDescribe id)
+            |> Option.orElseWith (fun () -> ContextWorkspaceCommands.tryDescribe id)
         with :? ArgumentException as error ->
             raise (ArgumentException(error.Message, "commandId"))

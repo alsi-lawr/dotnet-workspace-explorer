@@ -153,6 +153,7 @@ module internal WorkspaceRpcServer =
                                 | None ->
                                     match request with
                                     | WorkspaceRpcRequest.CommandList _
+                                    | WorkspaceRpcRequest.CreateOptions _
                                     | WorkspaceRpcRequest.CommandDescribe _
                                     | WorkspaceRpcRequest.CommandPreview _
                                     | WorkspaceRpcRequest.CommandExecute _ ->
@@ -176,6 +177,7 @@ module internal WorkspaceRpcServer =
                             | Ok WorkspaceRpcRequest.Root
                             | Ok(WorkspaceRpcRequest.Children _)
                             | Ok(WorkspaceRpcRequest.Refresh _)
+                            | Ok(WorkspaceRpcRequest.CreateOptions _)
                             | Ok(WorkspaceRpcRequest.CommandList _)
                             | Ok(WorkspaceRpcRequest.CommandDescribe _)
                             | Ok(WorkspaceRpcRequest.CommandPreview _)

@@ -171,6 +171,16 @@ module WorkspaceRpc =
                         |> Option.map (positiveInt 1 4096 "pageSize"),
                         optionalString "continuationToken" fields
                     )
+                | "workspace/create/options" ->
+                    let fields = RpcValue.requireMap "params" parameters
+                    RpcValue.ensureOnly "params" [ "targetNodeId"; "expectedRevision" ] fields
+
+                    WorkspaceRpcRequest.CreateOptions(
+                        requiredString "targetNodeId" fields,
+                        fields
+                        |> RpcValue.requireField "expectedRevision"
+                        |> revision "expectedRevision"
+                    )
                 | "workspace/commands/list" ->
                     let fields = RpcValue.requireMap "params" parameters
                     RpcValue.ensureOnly "params" [ "targetNodeId" ] fields
@@ -260,6 +270,7 @@ module WorkspaceRpcProfile =
                     "workspace/children"
                     "workspace/export/start"
                     "workspace/refresh"
+                    "workspace/create/options"
                     "workspace/commands/list"
                     "workspace/commands/describe"
                     "workspace/commands/preview"

@@ -10,19 +10,11 @@ open System.Collections.Immutable
 open System.IO
 
 module internal WorkspaceCommandArguments =
-    let commandTarget (workspace: SolutionWorkspace) targetNodeId =
-        match targetNodeId with
-        | None -> Ok None
-        | Some value when value = workspace.Descriptor.Id.Value -> Ok None
-        | Some value when value = (WorkspaceIndexPure.workspaceRoot workspace.Descriptor).Id.Value ->
-            Ok None
-        | Some value ->
-            workspace.Contents.Nodes
-            |> Seq.tryFind (fun node -> node.Id.Value = value)
-            |> Option.map (fun node -> Ok(Some node.Id))
-            |> Option.defaultValue (
-                Error(RpcErrors.create "not_found" "The command target was not found." None)
-            )
+    let commandTarget (target: WorkspaceSemanticContext) =
+        if target.Node.Kind = WorkspaceNodeKind.Workspace then
+            None
+        else
+            Some target.Node.Id
 
     let commandArguments
         (workspace: SolutionWorkspace)

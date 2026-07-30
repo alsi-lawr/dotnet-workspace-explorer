@@ -23,6 +23,7 @@ module internal WorkspaceCommandEditing =
             }
         | ProjectPlan plan -> plan.Actions :> seq<WorkspaceEditAction>
         | CompositePlan plan -> plan.Actions :> seq<WorkspaceEditAction>
+        | ContextPlan(_, actions, _) -> actions :> seq<WorkspaceEditAction>
         | DotnetCommandPlan _ -> Seq.empty
         | LaunchProfilePlan(_, action, _) -> Seq.singleton action
 
@@ -40,6 +41,7 @@ module internal WorkspaceCommandEditing =
             }
         | ProjectPlan plan -> plan.Paths :> seq<WorkspaceArtifactPath>
         | CompositePlan plan -> plan.Paths :> seq<WorkspaceArtifactPath>
+        | ContextPlan(_, _, paths) -> paths :> seq<WorkspaceArtifactPath>
         | DotnetCommandPlan(_, paths) -> paths :> seq<WorkspaceArtifactPath>
         | LaunchProfilePlan(_, _, path) -> Seq.singleton path
 
@@ -48,6 +50,7 @@ module internal WorkspaceCommandEditing =
         | SolutionPlan plan -> plan.Request
         | ProjectPlan plan -> plan.Request
         | CompositePlan plan -> plan.Request
+        | ContextPlan(request, _, _) -> request
         | DotnetCommandPlan(request, _) -> request
         | LaunchProfilePlan(request, _, _) -> request
 

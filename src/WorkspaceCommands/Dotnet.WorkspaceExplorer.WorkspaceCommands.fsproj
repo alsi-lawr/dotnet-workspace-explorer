@@ -20,6 +20,7 @@
         <Compile Include="Dotnet/DotnetLifecycleCommands.fs" />
         <Compile Include="Solutions/SolutionLaunchProfileCommands.fs" />
         <Compile Include="Projects/ProjectRelocation.fs" />
+        <Compile Include="Context/ContextWorkspaceCommands.fs" />
         <Compile Include="WorkspaceCommandCatalog.fs" />
         <Compile Include="WorkspaceCommandEditing.fs" />
     </ItemGroup>

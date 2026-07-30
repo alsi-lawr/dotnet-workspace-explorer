@@ -11,8 +11,12 @@ module internal TemplatePostconditions =
         if Directory.Exists directory then
             Directory.EnumerateFileSystemEntries(directory, "*", SearchOption.AllDirectories)
             |> Seq.map (fun path ->
-                let info = FileInfo path
-                path, (info.Length, info.LastWriteTimeUtc.Ticks))
+                if File.Exists path then
+                    let info = FileInfo path
+                    path, (false, info.Length, info.LastWriteTimeUtc.Ticks)
+                else
+                    let info = DirectoryInfo path
+                    path, (true, 0L, info.LastWriteTimeUtc.Ticks))
             |> Map.ofSeq
         else
             Map.empty

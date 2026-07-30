@@ -1,0 +1,375 @@
+namespace Dotnet.WorkspaceExplorer
+
+open System
+open System.IO
+open System.Security.Cryptography
+open System.Text
+open System.Text.Json
+open System.Threading
+open Dotnet.WorkspaceExplorer.ProjectEvaluation
+open Dotnet.WorkspaceExplorer.Rpc
+open Dotnet.WorkspaceExplorer.Solutions
+open Dotnet.WorkspaceExplorer.WorkspaceIndex
+open Dotnet.WorkspaceExplorer.Workspaces
+
+[<RequireQualifiedAccess>]
+type internal WorkspaceCreateKind =
+    | Empty
+    | ItemTemplate
+    | ProjectTemplate
+
+[<RequireQualifiedAccess>]
+type internal WorkspaceCreateExecution =
+    | Transaction
+    | Operation
+
+type internal WorkspaceTemplateEntry =
+    { SelectionId: string
+      Kind: WorkspaceCreateKind
+      DisplayName: string
+      Description: string
+      Language: string option
+      Execution: WorkspaceCreateExecution
+      Identity: string
+      ShortName: string
+      Fingerprint: string }
+
+type internal WorkspaceTemplateCatalog =
+    { Fingerprint: string
+      EmptySelectionId: string
+      Entries: WorkspaceTemplateEntry array }
+
+[<RequireQualifiedAccess>]
+module internal WorkspaceTemplateCatalog =
+    let private invalid code message = RpcErrors.create code message None
+
+    let private tryProperty (name: string) (element: JsonElement) =
+        let mutable value = Unchecked.defaultof<JsonElement>
+
+        if element.TryGetProperty(name, &value) then
+            Some value
+        else
+            None
+
+    let private textProperty (name: string) (element: JsonElement) : string option =
+        match tryProperty name element with
+        | Some value when value.ValueKind = JsonValueKind.String ->
+            let text = string (value.GetString())
+            if String.IsNullOrWhiteSpace text then None else Some text
+        | _ -> None
+
+    let private integerProperty (name: string) (element: JsonElement) =
+        match tryProperty name element with
+        | Some value when value.ValueKind = JsonValueKind.Number ->
+            match value.TryGetInt32() with
+            | true, parsed -> parsed
+            | _ -> 0
+        | _ -> 0
+
+    let private tag name (element: JsonElement) =
+        match tryProperty "TagsCollection" element with
+        | Some tags when tags.ValueKind = JsonValueKind.Object -> textProperty name tags
+        | _ -> None
+
+    let private shortName (element: JsonElement) : string option =
+        match tryProperty "ShortNameList" element with
+        | Some names when names.ValueKind = JsonValueKind.Array ->
+            names.EnumerateArray()
+            |> Seq.tryPick (fun value ->
+                if value.ValueKind = JsonValueKind.String then
+                    let text = string (value.GetString())
+                    if String.IsNullOrWhiteSpace text then None else Some text
+                else
+                    None)
+        | _ -> None
+
+    let private kind (element: JsonElement) =
+        match tag "type" element |> Option.map _.ToLowerInvariant() with
+        | Some "item" -> Some WorkspaceCreateKind.ItemTemplate
+        | Some "project" -> Some WorkspaceCreateKind.ProjectTemplate
+        | _ -> None
+
+    let private language (element: JsonElement) =
+        tag "language" element
+        |> Option.map (fun value ->
+            match value.ToUpperInvariant() with
+            | "C#" -> "C#"
+            | "F#" -> "F#"
+            | "VB"
+            | "VISUAL BASIC" -> "VB"
+            | _ -> value)
+
+    let private selectionId fingerprint identity shortName language kind =
+        let kindValue =
+            match kind with
+            | WorkspaceCreateKind.Empty -> "empty"
+            | WorkspaceCreateKind.ItemTemplate -> "item"
+            | WorkspaceCreateKind.ProjectTemplate -> "project"
+
+        String.concat
+            "\u001f"
+            [ fingerprint
+              identity
+              shortName
+              language |> Option.defaultValue String.Empty
+              kindValue ]
+        |> Encoding.UTF8.GetBytes
+        |> SHA256.HashData
+        |> Convert.ToHexString
+        |> _.ToLowerInvariant()
+
+    let private templateHome () =
+        Environment.GetEnvironmentVariable "DOTNET_CLI_HOME"
+        |> Option.ofObj
+        |> Option.filter (String.IsNullOrWhiteSpace >> not)
+        |> Option.defaultWith (fun () ->
+            Environment.GetFolderPath Environment.SpecialFolder.UserProfile)
+
+    let private parse fingerprint (document: JsonDocument) =
+        match tryProperty "TemplateInfo" document.RootElement with
+        | Some templates when templates.ValueKind = JsonValueKind.Array ->
+            let candidates =
+                templates.EnumerateArray()
+                |> Seq.choose (fun template ->
+                    match
+                        kind template,
+                        textProperty "Identity" template,
+                        textProperty "Name" template,
+                        shortName template
+                    with
+                    | Some templateKind, Some identity, Some name, Some templateShortName ->
+                        let templateLanguage = language template
+
+                        Some(
+                            templateShortName,
+                            templateLanguage,
+                            templateKind,
+                            integerProperty "Precedence" template,
+                            identity,
+                            name,
+                            textProperty "Description" template |> Option.defaultValue name
+                        )
+                    | _ -> None)
+                |> Seq.toArray
+
+            let entries = ResizeArray<WorkspaceTemplateEntry>()
+            let mutable ambiguity = None
+
+            for _, group in
+                candidates
+                |> Seq.groupBy (fun (shortName, language, templateKind, _, _, _, _) ->
+                    shortName.ToUpperInvariant(),
+                    language |> Option.map _.ToUpperInvariant(),
+                    templateKind) do
+                let highest =
+                    group
+                    |> Seq.maxBy (fun (_, _, _, precedence, _, _, _) -> precedence)
+                    |> fun (_, _, _, precedence, _, _, _) -> precedence
+
+                let winners =
+                    group
+                    |> Seq.filter (fun (_, _, _, precedence, _, _, _) -> precedence = highest)
+                    |> Seq.toArray
+
+                let identities =
+                    winners
+                    |> Seq.map (fun (_, _, _, _, identity, _, _) -> identity)
+                    |> Seq.distinct
+                    |> Seq.toArray
+
+                if identities.Length <> 1 then
+                    let templateShortName, _, _, _, _, _, _ = winners[0]
+                    ambiguity <- Some templateShortName
+                else
+                    let (templateShortName,
+                         templateLanguage,
+                         templateKind,
+                         _,
+                         identity,
+                         name,
+                         description) =
+                        winners
+                        |> Seq.sortBy (fun (_, _, _, _, candidateIdentity, _, _) ->
+                            candidateIdentity)
+                        |> Seq.head
+
+                    entries.Add
+                        { SelectionId =
+                            selectionId
+                                fingerprint
+                                identity
+                                templateShortName
+                                templateLanguage
+                                templateKind
+                          Kind = templateKind
+                          DisplayName = name
+                          Description = description
+                          Language = templateLanguage
+                          Execution = WorkspaceCreateExecution.Operation
+                          Identity = identity
+                          ShortName = templateShortName
+                          Fingerprint = fingerprint }
+
+            match ambiguity with
+            | Some templateShortName ->
+                Error(
+                    invalid
+                        "template_catalog_ambiguous"
+                        $"The active SDK has ambiguous '{templateShortName}' template registrations."
+                )
+            | None ->
+                Ok(
+                    entries
+                    |> Seq.sortBy (fun entry ->
+                        entry.Kind, entry.DisplayName, entry.Language, entry.Identity)
+                    |> Seq.toArray
+                )
+        | _ ->
+            Error(invalid "template_catalog_invalid" "The active SDK template catalog is invalid.")
+
+    let readAsync (workspace: SolutionWorkspace) (cancellationToken: CancellationToken) =
+        task {
+            let executable =
+                Environment.GetEnvironmentVariable "DOTNET_HOST_PATH"
+                |> Option.ofObj
+                |> Option.filter (String.IsNullOrWhiteSpace >> not)
+                |> Option.defaultValue "dotnet"
+
+            let! selected =
+                DotnetSdkResolver.DiscoverAsync(
+                    workspace.SolutionPath,
+                    executable,
+                    cancellationToken
+                )
+
+            match selected with
+            | Failure failure -> return Error(WorkspaceRpcResponses.failureError failure)
+            | Success selection ->
+                let version =
+                    Path.GetFileName selection.SdkPath.Value
+                    |> Option.ofObj
+                    |> Option.filter (String.IsNullOrWhiteSpace >> not)
+
+                match version with
+                | None ->
+                    return
+                        Error(
+                            invalid
+                                "template_catalog_unavailable"
+                                "The active workspace SDK version is unavailable."
+                        )
+                | Some version ->
+                    let path =
+                        Path.Combine(
+                            templateHome (),
+                            ".templateengine",
+                            "dotnetcli",
+                            version,
+                            "templatecache.json"
+                        )
+
+                    try
+                        let! bytes = File.ReadAllBytesAsync(path, cancellationToken)
+                        let fingerprint = SHA256.HashData bytes |> Convert.ToHexString
+
+                        let json =
+                            if
+                                bytes.Length >= 3
+                                && bytes[0] = 0xEFuy
+                                && bytes[1] = 0xBBuy
+                                && bytes[2] = 0xBFuy
+                            then
+                                ReadOnlyMemory<byte>(bytes, 3, bytes.Length - 3)
+                            else
+                                ReadOnlyMemory<byte>(bytes)
+
+                        use document = JsonDocument.Parse json
+
+                        return
+                            parse fingerprint document
+                            |> Result.map (fun entries ->
+                                { Fingerprint = fingerprint
+                                  EmptySelectionId =
+                                    selectionId
+                                        fingerprint
+                                        "workspace.empty"
+                                        "empty"
+                                        None
+                                        WorkspaceCreateKind.Empty
+                                  Entries = entries })
+                    with
+                    | :? OperationCanceledException ->
+                        return Error(invalid "cancelled" "Template discovery was cancelled.")
+                    | :? JsonException ->
+                        return
+                            Error(
+                                invalid
+                                    "template_catalog_invalid"
+                                    "The active SDK template catalog is invalid."
+                            )
+                    | :? IOException ->
+                        return
+                            Error(
+                                invalid
+                                    "template_catalog_unavailable"
+                                    "The active SDK template catalog could not be read."
+                            )
+                    | :? UnauthorizedAccessException ->
+                        return
+                            Error(
+                                invalid
+                                    "template_catalog_unavailable"
+                                    "The active SDK template catalog could not be read."
+                            )
+        }
+
+    let find selectionId catalog =
+        if selectionId = catalog.EmptySelectionId then
+            Some
+                { SelectionId = catalog.EmptySelectionId
+                  Kind = WorkspaceCreateKind.Empty
+                  DisplayName = "Empty file"
+                  Description = "Create an empty project file"
+                  Language = None
+                  Execution = WorkspaceCreateExecution.Transaction
+                  Identity = "workspace.empty"
+                  ShortName = "empty"
+                  Fingerprint = catalog.Fingerprint }
+        else
+            catalog.Entries |> Array.tryFind (fun entry -> entry.SelectionId = selectionId)
+
+    let projectLanguage (projectPath: WorkspaceArtifactPath option) =
+        projectPath
+        |> Option.bind (fun path ->
+            match
+                Path.GetExtension(path.Value)
+                |> Option.ofObj
+                |> Option.defaultValue String.Empty
+                |> _.ToLowerInvariant()
+            with
+            | ".csproj" -> Some "C#"
+            | ".fsproj" -> Some "F#"
+            | ".vbproj" -> Some "VB"
+            | _ -> None)
+
+    let options (context: WorkspaceSemanticContext) catalog =
+        let projectLanguage = projectLanguage context.ProjectPath
+        let hasProject = context.ProjectId.IsSome
+
+        seq {
+            if hasProject then
+                yield
+                    find catalog.EmptySelectionId catalog
+                    |> Option.defaultWith (fun () ->
+                        invalidOp "The empty selection is unavailable.")
+
+            yield!
+                catalog.Entries
+                |> Seq.filter (fun entry ->
+                    match entry.Kind with
+                    | WorkspaceCreateKind.ProjectTemplate -> true
+                    | WorkspaceCreateKind.ItemTemplate when hasProject ->
+                        entry.Language.IsNone || entry.Language = projectLanguage
+                    | _ -> false)
+        }
+        |> Seq.toArray
