@@ -55,12 +55,15 @@ type WorkspaceInvalidationTests() =
                 workspace.Contents.Projects |> Seq.find (fun value -> not value.IsFilteredOut)
 
             let snapshot visible imports watchInputs globRoots =
+                let relativePath = $"Items/N0001-{visible}.cs"
+
                 let item =
                     EvaluatedItem(
                         "Compile",
-                        "Items/N0001.cs",
-                        null,
-                        ImmutableArray.Create(EvaluatedMetadata("Visible", visible))
+                        relativePath,
+                        WorkspaceArtifactPath.Create(Path.Combine(directory, relativePath)),
+                        ImmutableArray<EvaluatedMetadata>.Empty,
+                        0
                     )
 
                 let dimension =
@@ -71,7 +74,7 @@ type WorkspaceInvalidationTests() =
                         ImmutableArray<EvaluatedReference>.Empty,
                         ImmutableArray<EvaluatedReference>.Empty,
                         ImmutableArray<EvaluatedPackage>.Empty,
-                        ImmutableArray<WorkspaceArtifactPath>.Empty
+                        ImmutableArray<EvaluatedReference>.Empty
                     )
 
                 ProjectEvaluationSnapshot(
@@ -148,11 +151,28 @@ type WorkspaceInvalidationTests() =
 
             Assert.Equal(1L, hydratedPage.Revision)
 
-            let oldItem =
+            let itemsFolder =
                 hydratedPage.Nodes
-                |> Seq.find (fun node ->
-                    node.Kind = WorkspaceNodeKind.ProjectItem
-                    && node.Name.Contains("Visible=true", StringComparison.Ordinal))
+                |> Seq.find (fun node -> node.Kind = WorkspaceNodeKind.ProjectFolder)
+
+            let oldItem =
+                state
+                    .ChildrenAsync(
+                        itemsFolder.Id.Value,
+                        Some 100,
+                        100,
+                        None,
+                        CancellationToken.None
+                    )
+                    .GetAwaiter()
+                    .GetResult()
+                |> function
+                    | Ok page ->
+                        page.Nodes
+                        |> Seq.find (fun node ->
+                            node.Kind = WorkspaceNodeKind.ProjectFile
+                            && node.Name = "N0001-true.cs")
+                    | Error error -> failwithf "Could not page project folder: %A" error
 
             evaluated <- snapshot "false" [ freshImport ] [ freshWatch ] [ freshGlob ]
 
@@ -183,18 +203,16 @@ type WorkspaceInvalidationTests() =
                 let newNode, addedParent =
                     delta.Changes
                     |> Seq.choose (function
-                        | Added(node, parentNodeId, _) when
-                            node.Name.Contains("Visible=false", StringComparison.Ordinal)
-                            ->
+                        | Added(node, parentNodeId, _) when node.Name = "N0001-false.cs" ->
                             Some(node, parentNodeId)
                         | _ -> None)
                     |> Seq.exactlyOne
 
                 Assert.NotEqual(oldItem.Id, newNode.Id)
-                Assert.Equal(Some projectNode.Node.Id, removedParent)
+                Assert.Equal(Some itemsFolder.Id, removedParent)
                 Assert.Equal(removedParent, addedParent)
-                Assert.Contains("Visible=false", newNode.Name)
-            | result -> failwithf "Expected a project-item replacement delta, got %A" result
+                Assert.Equal("N0001-false.cs", newNode.Name)
+            | result -> failwithf "Expected a project-file replacement delta, got %A" result
 
             let watchPlan =
                 state.WatchPlanAsync(CancellationToken.None).GetAwaiter().GetResult()
@@ -285,12 +303,16 @@ type WorkspaceInvalidationTests() =
                 | Failure failure -> failwithf "Could not open retry fixture: %A" failure
 
             let snapshot (project: string) (visible: string) =
+                let name = Path.GetFileNameWithoutExtension project
+                let relativePath = $"Items/{name}-{visible}.cs"
+
                 let item =
                     EvaluatedItem(
                         "Compile",
-                        $"Items/{Path.GetFileNameWithoutExtension project}.cs",
-                        null,
-                        ImmutableArray.Create(EvaluatedMetadata("Visible", visible))
+                        relativePath,
+                        WorkspaceArtifactPath.Create(Path.Combine(directory, relativePath)),
+                        ImmutableArray<EvaluatedMetadata>.Empty,
+                        0
                     )
 
                 let dimension =
@@ -301,7 +323,7 @@ type WorkspaceInvalidationTests() =
                         ImmutableArray<EvaluatedReference>.Empty,
                         ImmutableArray<EvaluatedReference>.Empty,
                         ImmutableArray<EvaluatedPackage>.Empty,
-                        ImmutableArray<WorkspaceArtifactPath>.Empty
+                        ImmutableArray<EvaluatedReference>.Empty
                     )
 
                 ProjectEvaluationSnapshot(
@@ -456,15 +478,14 @@ type WorkspaceInvalidationTests() =
                 let added =
                     delta.Changes
                     |> Seq.choose (function
-                        | Added(node, _, _) when node.Kind = WorkspaceNodeKind.ProjectItem ->
+                        | Added(node, _, _) when node.Kind = WorkspaceNodeKind.ProjectFile ->
                             Some node.Name
                         | _ -> None)
                     |> Seq.sort
                     |> Seq.toArray
 
                 Assert.Equal<string array>(
-                    [| "Compile: Items/Alpha.cs (Visible=final-Alpha)"
-                       "Compile: Items/Beta.cs (Visible=final-Beta)" |],
+                    [| "Alpha-final-Alpha.cs"; "Beta-final-Beta.cs" |],
                     added
                 )
 
@@ -522,12 +543,15 @@ type WorkspaceInvalidationTests() =
                     | Failure failure -> failwithf "Could not open retry-bound fixture: %A" failure
 
                 let snapshot visible =
+                    let relativePath = $"Items/Demo-{visible}.cs"
+
                     let item =
                         EvaluatedItem(
                             "Compile",
-                            "Items/Demo.cs",
-                            null,
-                            ImmutableArray.Create(EvaluatedMetadata("Visible", visible))
+                            relativePath,
+                            WorkspaceArtifactPath.Create(Path.Combine(directory, relativePath)),
+                            ImmutableArray<EvaluatedMetadata>.Empty,
+                            0
                         )
 
                     let dimension =
@@ -538,7 +562,7 @@ type WorkspaceInvalidationTests() =
                             ImmutableArray<EvaluatedReference>.Empty,
                             ImmutableArray<EvaluatedReference>.Empty,
                             ImmutableArray<EvaluatedPackage>.Empty,
-                            ImmutableArray<WorkspaceArtifactPath>.Empty
+                            ImmutableArray<EvaluatedReference>.Empty
                         )
 
                     ProjectEvaluationSnapshot(
@@ -684,8 +708,7 @@ type WorkspaceInvalidationTests() =
                 fun change ->
                     match change with
                     | Added(node, _, _) ->
-                        node.Kind = WorkspaceNodeKind.ProjectItem
-                        && node.Name = "Compile: Items/Demo.cs (Visible=final)"
+                        node.Kind = WorkspaceNodeKind.ProjectFile && node.Name = "Demo-final.cs"
                     | _ -> false
             )
         | result -> failwithf "Expected an invalid-input recovery delta, got %A" result

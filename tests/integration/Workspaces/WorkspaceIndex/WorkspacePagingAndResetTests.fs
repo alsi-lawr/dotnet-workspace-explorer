@@ -20,7 +20,18 @@ type WorkspacePagingAndResetTests() =
             let project = Path.Combine(directory, "Demo.fsproj")
             let model = SolutionModel()
             model.AddProject("Demo.fsproj", "Demo", null) |> ignore
-            WorkspaceRpcScenario.writeProject project
+            File.WriteAllText(Path.Combine(directory, "Initial.fs"), "module Initial")
+
+            File.WriteAllText(
+                project,
+                "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup>"
+                + "<TargetFramework>net10.0</TargetFramework>"
+                + "<EnableDefaultCompileItems>false</EnableDefaultCompileItems>"
+                + "</PropertyGroup><ItemGroup>"
+                + "<Compile Include=\"Initial.fs\" />"
+                + "</ItemGroup></Project>"
+            )
+
             WorkspaceRpcScenario.save solution model
             use child = WorkspaceRpcScenario.startWorkspaceRpc "solution" solution
 
@@ -66,8 +77,29 @@ type WorkspacePagingAndResetTests() =
                 let _, root =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 2u
 
-                let projectId =
+                let workspaceRootId =
                     WorkspaceRpcScenario.field "nodes" root
+                    |> RpcValue.requireArray "nodes"
+                    |> Seq.map (WorkspaceRpcScenario.field "id" >> RpcValue.requireString "id")
+                    |> Seq.exactlyOne
+
+                let rootChildren =
+                    WorkspaceRpcScenario.map
+                        [ "parentNodeId", RpcValue.String workspaceRootId
+                          "pageSize", RpcValue.Integer 100L ]
+
+                WorkspaceRpcScenario.send
+                    child
+                    false
+                    (WorkspaceRpcScenario.request 3u "workspace/children" rootChildren)
+
+                let rootChildrenError, rootPage =
+                    WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 3u
+
+                Assert.True rootChildrenError.IsNone
+
+                let projectId =
+                    WorkspaceRpcScenario.field "nodes" rootPage
                     |> RpcValue.requireArray "nodes"
                     |> Seq.filter (fun node ->
                         WorkspaceRpcScenario.field "kind" node = RpcValue.String "project")
@@ -82,10 +114,10 @@ type WorkspacePagingAndResetTests() =
                 WorkspaceRpcScenario.send
                     child
                     false
-                    (WorkspaceRpcScenario.request 3u "workspace/children" children)
+                    (WorkspaceRpcScenario.request 4u "workspace/children" children)
 
                 let childError, page =
-                    WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 3u
+                    WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 4u
 
                 Assert.True childError.IsNone
 
@@ -129,19 +161,24 @@ type WorkspacePagingAndResetTests() =
                 WorkspaceRpcScenario.send
                     child
                     false
-                    (WorkspaceRpcScenario.request 4u "workspace/children" invalidPage)
+                    (WorkspaceRpcScenario.request 5u "workspace/children" invalidPage)
 
                 let tokenError, _ =
-                    WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 4u
+                    WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 5u
 
                 Assert.Equal("invalid_params", tokenError.Value.Code)
+
+                File.WriteAllText(Path.Combine(directory, "Changed.fs"), "module Changed")
 
                 File.WriteAllText(
                     project,
                     "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup>"
                     + "<TargetFramework>net10.0</TargetFramework>"
-                    + "<WatchedValue>changed</WatchedValue>"
-                    + "</PropertyGroup></Project>"
+                    + "<EnableDefaultCompileItems>false</EnableDefaultCompileItems>"
+                    + "</PropertyGroup><ItemGroup>"
+                    + "<Compile Include=\"Initial.fs\" />"
+                    + "<Compile Include=\"Changed.fs\" />"
+                    + "</ItemGroup></Project>"
                 )
 
                 let watching = Task.Run(fun () -> WorkspaceRpcScenario.readFrame child)
@@ -169,11 +206,11 @@ type WorkspacePagingAndResetTests() =
                 | frame -> failwithf "Expected watcher delta, got %A" frame
 
                 let mutable continuation = None
-                let mutable requestId = 5u
+                let mutable requestId = 6u
                 let mutable hasMore = true
-                let mutable watchedValueFound = false
+                let mutable changedFileFound = false
 
-                while hasMore && not watchedValueFound do
+                while hasMore && not changedFileFound do
                     let freshChildren =
                         [ "parentNodeId", RpcValue.String projectId
                           "pageSize", RpcValue.Integer 100L ]
@@ -201,27 +238,25 @@ type WorkspacePagingAndResetTests() =
                         |> RpcValue.requireInteger "revision"
                     )
 
-                    watchedValueFound <-
+                    changedFileFound <-
                         WorkspaceRpcScenario.field "nodes" projectPage
                         |> RpcValue.requireArray "nodes"
                         |> Seq.exists (fun node ->
-                            WorkspaceRpcScenario.field "kind" node = RpcValue.String "projectItem"
+                            WorkspaceRpcScenario.field "kind" node = RpcValue.String "projectFile"
                             && WorkspaceRpcScenario.field "name" node = RpcValue.String
-                                "Evaluated WatchedValue = changed")
+                                "Changed.fs")
 
                     continuation <-
-                        match WorkspaceRpcScenario.field "nextToken" projectPage with
-                        | RpcValue.String token -> Some token
-                        | RpcValue.Nil -> None
-                        | value -> failwithf "Unexpected continuation token: %A" value
+                        match RpcValue.tryField "nextToken" projectPage with
+                        | Some(RpcValue.String token) -> Some token
+                        | Some RpcValue.Nil
+                        | None -> None
+                        | Some value -> failwithf "Unexpected continuation token: %A" value
 
                     hasMore <- continuation.IsSome
                     requestId <- requestId + 1u
 
-                Assert.True(
-                    watchedValueFound,
-                    "Fresh project paging did not expose Evaluated WatchedValue = changed."
-                )
+                Assert.True(changedFileFound, "Fresh project paging did not expose Changed.fs.")
 
                 File.Copy(WorkspaceRpcScenario.globalJson, Path.Combine(directory, "global.json"))
                 let selection = Task.Run(fun () -> WorkspaceRpcScenario.readFrame child)

@@ -239,9 +239,9 @@ internal sealed class ProjectSnapshotEvaluator : IDisposable
             .OrderBy(property => property.Name, StringComparer.Ordinal)
             .ToImmutableArray();
         var items = project
-            .AllEvaluatedItems.Select(item => MaterializeItem(projectPath.Value, item))
-            .OrderBy(item => item.ItemType, StringComparer.Ordinal)
-            .ThenBy(item => item.EvaluatedInclude, StringComparer.Ordinal)
+            .AllEvaluatedItems.Select(
+                (item, ordinal) => MaterializeItem(projectPath.Value, item, ordinal)
+            )
             .ToImmutableArray();
         var centralVersions = project
             .GetItems("PackageVersion")
@@ -290,11 +290,12 @@ internal sealed class ProjectSnapshotEvaluator : IDisposable
             .ToImmutableArray();
         var analyzers = project
             .GetItems("Analyzer")
-            .Select(item => Resolve(projectPath.Value, item.EvaluatedInclude))
-            .Where(path => path is not null)
-            .Cast<WorkspaceArtifactPath>()
-            .DistinctBy(path => path.Value, PathComparer)
-            .OrderBy(path => path.Value, PathComparer)
+            .Select(item => new EvaluatedReference(
+                item.EvaluatedInclude,
+                Resolve(projectPath.Value, item.EvaluatedInclude)
+            ))
+            .Distinct()
+            .OrderBy(analyzer => analyzer.Include, StringComparer.Ordinal)
             .ToImmutableArray();
 
         return new ProjectEvaluationDimension(
@@ -312,7 +313,11 @@ internal sealed class ProjectSnapshotEvaluator : IDisposable
         };
     }
 
-    private static EvaluatedItem MaterializeItem(string projectPath, ProjectItem item) =>
+    private static EvaluatedItem MaterializeItem(
+        string projectPath,
+        ProjectItem item,
+        int ordinal
+    ) =>
         new(
             item.ItemType,
             ItemInclude(item),
@@ -322,7 +327,8 @@ internal sealed class ProjectSnapshotEvaluator : IDisposable
                     MetadataValue(metadata)
                 ))
                 .OrderBy(metadata => metadata.Name, StringComparer.Ordinal)
-                .ToImmutableArray()
+                .ToImmutableArray(),
+            ordinal
         );
 
     private static string ItemInclude(ProjectItem item)

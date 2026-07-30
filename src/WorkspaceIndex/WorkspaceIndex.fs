@@ -867,6 +867,7 @@ type internal WorkspaceIndex
                     return!
                         WorkspaceExportScheduler.run
                             workspace
+                            insensitive
                             options.ExportCapacity
                             pathKey
                             openSession

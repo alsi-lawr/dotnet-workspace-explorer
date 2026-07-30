@@ -22,6 +22,10 @@ type WorkspaceNodeKind =
     | Configuration = 5
     | Platform = 6
     | Placeholder = 7
+    | ProjectFolder = 8
+    | ProjectFile = 9
+    | DependencyContainer = 10
+    | Dependency = 11
 
 type WorkspacePath private (value: string) =
     member _.Value = value

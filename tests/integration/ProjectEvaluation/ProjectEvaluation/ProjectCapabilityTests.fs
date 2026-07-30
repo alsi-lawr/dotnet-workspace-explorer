@@ -10,6 +10,63 @@ open Xunit
 [<Collection("Project evaluation scenarios")>]
 type ProjectCapabilityTests() =
     [<Fact>]
+    member _.``should retain evaluated item ordinals for non lexical FSharp order``() =
+        let directory = Test.temporaryDirectory "fsharp-item-order"
+
+        try
+            let project = Path.Combine(directory, "Ordered.fsproj")
+
+            for relative in [ "A/First.fs"; "B/Second.fs"; "A/Third.fs" ] do
+                let path = Path.Combine(directory, relative)
+                Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+                File.WriteAllText(path, $"module {Path.GetFileNameWithoutExtension path}")
+
+            File.WriteAllText(
+                project,
+                "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup>"
+                + "<TargetFramework>net10.0</TargetFramework>"
+                + "<EnableDefaultCompileItems>false</EnableDefaultCompileItems>"
+                + "</PropertyGroup><ItemGroup>"
+                + "<Compile Include=\"A/First.fs\" />"
+                + "<Compile Include=\"B/Second.fs\" />"
+                + "<Compile Include=\"A/Third.fs\" />"
+                + "</ItemGroup></Project>"
+            )
+
+            Test.withWorker directory (fun worker ->
+                let error, snapshot = Test.evaluate worker 2u project
+                Assert.True error.IsNone
+
+                let dimension =
+                    Test.values "dimensions" snapshot
+                    |> Seq.find (fun value ->
+                        Test.field "targetFramework" value = RpcValue.String "net10.0")
+
+                let ordered =
+                    Test.values "items" dimension
+                    |> Seq.filter (fun value -> Test.stringField "itemType" value = "Compile")
+                    |> Seq.map (fun value ->
+                        Test.stringField "include" value,
+                        Test.field "ordinal" value |> RpcValue.requireInteger "ordinal")
+                    |> Seq.toArray
+
+                Assert.Equal<string array>(
+                    [| "A/First.fs"; "B/Second.fs"; "A/Third.fs" |],
+                    ordered |> Array.map fst
+                )
+
+                Assert.True(
+                    ordered
+                    |> Array.map snd
+                    |> Array.pairwise
+                    |> Array.forall (fun (left, right) -> left < right)
+                )
+
+                3u)
+        finally
+            Directory.Delete(directory, true)
+
+    [<Fact>]
     member _.``should project dimensions and invalidate imports and globs in the real worker``() =
         let directory = Test.temporaryDirectory "projection"
 

@@ -11,6 +11,71 @@ open Xunit
 [<Collection("Workspace-command scenarios")>]
 type ProjectCreationCommandTests() =
     [<Fact>]
+    member _.``should treat the semantic root as the workspace command target``() =
+        let session =
+            WorkspaceCommandScenario.start "workspace-command-semantic-root" (fun _ _ -> ())
+
+        try
+            let output = Path.Combine(session.Directory, "root-target")
+
+            let target =
+                WorkspaceRpcScenario.map [ "targetNodeId", RpcValue.String session.RootId ]
+
+            WorkspaceRpcScenario.send
+                session.Child
+                false
+                (WorkspaceRpcScenario.request 30u "workspace/commands/list" target)
+
+            let listError, list =
+                WorkspaceRpcScenario.readFrame session.Child
+                |> WorkspaceRpcScenario.response 30u
+
+            Assert.True listError.IsNone
+
+            Assert.Contains(
+                WorkspaceRpcScenario.field "commands" list |> RpcValue.requireArray "commands",
+                fun command ->
+                    WorkspaceRpcScenario.field "id" command = RpcValue.String "solution.project.add"
+            )
+
+            WorkspaceRpcScenario.send
+                session.Child
+                false
+                (WorkspaceRpcScenario.request
+                    31u
+                    "workspace/commands/describe"
+                    (WorkspaceRpcScenario.map
+                        [ "commandId", RpcValue.String "solution.project.add"
+                          "targetNodeId", RpcValue.String session.RootId ]))
+
+            let describeError, _ =
+                WorkspaceRpcScenario.readFrame session.Child
+                |> WorkspaceRpcScenario.response 31u
+
+            Assert.True describeError.IsNone
+
+            let arguments =
+                WorkspaceCommandScenario.argumentMap
+                    [ "template", RpcValue.String "console"; "output", RpcValue.String output ]
+
+            let completion =
+                WorkspaceCommandScenario.execute
+                    session
+                    4u
+                    "template.create"
+                    (Some session.RootId)
+                    arguments
+                    0L
+
+            completion.Outcome |> should equal "succeeded"
+            completion.Revision |> should equal 1L
+
+            Directory.GetFiles(output, "*.*proj", SearchOption.AllDirectories).Length
+            |> should equal 1
+        finally
+            WorkspaceCommandScenario.stop session
+
+    [<Fact>]
     member _.``should add one project to a logical folder at the requested physical path``() =
         let session =
             WorkspaceCommandScenario.start "workspace-command-template" (fun _ model ->

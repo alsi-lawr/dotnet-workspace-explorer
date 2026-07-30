@@ -46,6 +46,10 @@ module WorkspaceRpcResponses =
         | WorkspaceNodeKind.Configuration -> "configuration"
         | WorkspaceNodeKind.Platform -> "platform"
         | WorkspaceNodeKind.Placeholder -> "placeholder"
+        | WorkspaceNodeKind.ProjectFolder -> "projectFolder"
+        | WorkspaceNodeKind.ProjectFile -> "projectFile"
+        | WorkspaceNodeKind.DependencyContainer -> "dependencyContainer"
+        | WorkspaceNodeKind.Dependency -> "dependency"
         | _ -> "unknown"
 
     let private loadState =

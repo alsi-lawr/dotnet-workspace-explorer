@@ -20,6 +20,7 @@
         <Compile Include="DotnetCommands/LegacyDirectoryImportTests.fs" />
         <Compile Include="DotnetCommands/DotnetProcessLifecycleTests.fs" />
         <Compile Include="WorkspaceIndex/WorkspaceInvalidationTests.fs" />
+        <Compile Include="WorkspaceIndex/SemanticWorkspaceTreeTests.fs" />
         <Compile Include="WorkspaceExport/ExportWorkerLifecycleTests.fs" />
         <Compile Include="ProjectItems/DefaultProjectItemTests.fs" />
         <Compile Include="ProjectItems/ProjectItemCommandTests.fs" />

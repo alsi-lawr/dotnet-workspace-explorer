@@ -3,6 +3,7 @@ namespace Dotnet.WorkspaceExplorer.Workspaces.IntegrationTests
 #nowarn "3261"
 
 open System
+open System.Collections.Generic
 open System.Diagnostics
 open System.IO
 open System.Threading
@@ -184,6 +185,28 @@ module internal WorkspaceRpcScenario =
     let field name value =
         value |> fields |> RpcValue.requireField name
 
+    let rootChildren (child: Process) requestId root =
+        let rootId =
+            field "nodes" root
+            |> RpcValue.requireArray "nodes"
+            |> Seq.exactlyOne
+            |> field "id"
+            |> RpcValue.requireString "id"
+
+        send
+            child
+            false
+            (request
+                requestId
+                "workspace/children"
+                (map [ "parentNodeId", RpcValue.String rootId; "pageSize", RpcValue.Integer 100L ]))
+
+        let error, result = readFrame child |> response requestId
+
+        match error with
+        | Some value -> failwithf "Workspace root children failed: %s" value.Message
+        | None -> result
+
     let responseAfterWorkspaceNotifications (child: Process) id expectedRevision =
         let mutable revision = expectedRevision
         let mutable result = None
@@ -214,9 +237,21 @@ module internal WorkspaceRpcScenario =
 
     let shutdown (child: Process) id =
         send child false (request id "shutdown" RpcValue.emptyMap)
-        let frame, size = readFrameWithSize child
-        Assert.True(size <= 1024)
-        let error, result = response id frame
+        let mutable completed = None
+
+        while completed.IsNone do
+            let frame, size = readFrameWithSize child
+
+            match frame with
+            | Notification("workspace/delta", _)
+            | Notification("workspace/reset", _) -> ()
+            | Response(actual, error, result) when actual = id ->
+                Assert.True(size <= 1024)
+                completed <- Some(error, result)
+            | Response _ -> ()
+            | value -> failwithf "Expected shutdown response %d, got %A" id value
+
+        let error, result = completed.Value
         Assert.True error.IsNone
         Assert.Equal(RpcValue.Boolean true, field "accepted" result)
         child.StandardInput.Close()
@@ -399,8 +434,31 @@ module internal WorkspaceRpcScenario =
         match error with
         | Some value -> failwithf "Workspace root failed: %s" value.Message
         | None ->
-            let projectId =
+            let workspaceRootId =
                 field "nodes" root
+                |> RpcValue.requireArray "nodes"
+                |> Seq.exactlyOne
+                |> field "id"
+                |> RpcValue.requireString "id"
+
+            send
+                child
+                false
+                (request
+                    3u
+                    "workspace/children"
+                    (map
+                        [ "parentNodeId", RpcValue.String workspaceRootId
+                          "pageSize", RpcValue.Integer 100L ]))
+
+            let childError, children = readFrame child |> response 3u
+
+            match childError with
+            | Some value -> failwithf "Workspace children failed: %s" value.Message
+            | None -> ()
+
+            let projectId =
+                field "nodes" children
                 |> RpcValue.requireArray "nodes"
                 |> Seq.find (fun node -> field "kind" node = RpcValue.String "project")
                 |> field "id"
@@ -441,39 +499,52 @@ module internal WorkspaceRpcScenario =
 
     let readAllProjectChildNames session firstRequestId expectedRevision =
         let names = ResizeArray<string>()
-        let mutable continuation = None
+        let parents = Queue<string>()
+        parents.Enqueue session.ProjectId
         let mutable requestId = firstRequestId
-        let mutable first = true
+        let mutable revision = expectedRevision
 
-        while first || continuation.IsSome do
-            let fields =
-                [ "parentNodeId", RpcValue.String session.ProjectId
-                  "pageSize", RpcValue.Integer 100L ]
-                |> fun fields ->
-                    continuation
-                    |> Option.map (fun token ->
-                        ("continuationToken", RpcValue.String token) :: fields)
-                    |> Option.defaultValue fields
+        while parents.Count > 0 do
+            let parentId = parents.Dequeue()
+            let mutable continuation = None
+            let mutable first = true
 
-            send session.Child false (request requestId "workspace/children" (map fields))
+            while first || continuation.IsSome do
+                let fields =
+                    [ "parentNodeId", RpcValue.String parentId; "pageSize", RpcValue.Integer 100L ]
+                    |> fun fields ->
+                        continuation
+                        |> Option.map (fun token ->
+                            ("continuationToken", RpcValue.String token) :: fields)
+                        |> Option.defaultValue fields
 
-            let (error, page), _, _ =
-                responseAfterWorkspaceNotifications session.Child requestId expectedRevision
+                send session.Child false (request requestId "workspace/children" (map fields))
 
-            Assert.True error.IsNone
+                let (error, page), observedRevision, _ =
+                    responseAfterWorkspaceNotifications session.Child requestId revision
 
-            field "nodes" page
-            |> RpcValue.requireArray "nodes"
-            |> Seq.iter (fun node -> names.Add(field "name" node |> RpcValue.requireString "name"))
+                Assert.True error.IsNone
+                revision <- observedRevision
 
-            continuation <-
-                match RpcValue.tryField "nextToken" page with
-                | Some(RpcValue.String token) -> Some token
-                | Some RpcValue.Nil
-                | None -> None
-                | Some value -> failwithf "Unexpected continuation token: %A" value
+                field "nodes" page
+                |> RpcValue.requireArray "nodes"
+                |> Seq.iter (fun node ->
+                    names.Add(field "name" node |> RpcValue.requireString "name")
 
-            requestId <- requestId + 1u
-            first <- false
+                    match field "kind" node with
+                    | RpcValue.String "projectFolder"
+                    | RpcValue.String "dependencyContainer" ->
+                        field "id" node |> RpcValue.requireString "id" |> parents.Enqueue
+                    | _ -> ())
+
+                continuation <-
+                    match RpcValue.tryField "nextToken" page with
+                    | Some(RpcValue.String token) -> Some token
+                    | Some RpcValue.Nil
+                    | None -> None
+                    | Some value -> failwithf "Unexpected continuation token: %A" value
+
+                requestId <- requestId + 1u
+                first <- false
 
         names |> Seq.toArray

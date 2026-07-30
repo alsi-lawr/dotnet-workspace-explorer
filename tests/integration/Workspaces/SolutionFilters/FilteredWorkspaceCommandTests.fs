@@ -103,9 +103,10 @@ type FilteredWorkspaceCommandTests() =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 2u
 
                 Assert.True rootError.IsNone
+                let rootChildren = WorkspaceRpcScenario.rootChildren child 20u rootResult
 
                 let projectId =
-                    WorkspaceRpcScenario.field "nodes" rootResult
+                    WorkspaceRpcScenario.field "nodes" rootChildren
                     |> RpcValue.requireArray "nodes"
                     |> Seq.find (fun node ->
                         WorkspaceRpcScenario.field "kind" node = RpcValue.String "project"

@@ -332,20 +332,11 @@ type ProjectItemCommandTests() =
 
                 requestId <- requestId + 1u
 
-            Assert.Contains(
+            Assert.DoesNotContain(
                 names,
                 fun name ->
-                    name.Contains("Evaluated AssemblyName = After", StringComparison.Ordinal)
-            )
-
-            Assert.Contains(
-                names,
-                fun name ->
-                    name.Contains("Declared AssemblyName = After", StringComparison.Ordinal)
-                    && name.Contains(
-                        "condition: '$(MSBuildProjectName)' == 'Demo'",
-                        StringComparison.Ordinal
-                    )
+                    name.StartsWith("Evaluated ", StringComparison.Ordinal)
+                    || name.StartsWith("Declared ", StringComparison.Ordinal)
             )
         finally
             WorkspaceRpcScenario.closeProject session
@@ -389,8 +380,10 @@ type ProjectItemCommandTests() =
             let _, root =
                 WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 2u
 
+            let rootChildren = WorkspaceRpcScenario.rootChildren child 20u root
+
             let projectId =
-                WorkspaceRpcScenario.field "nodes" root
+                WorkspaceRpcScenario.field "nodes" rootChildren
                 |> RpcValue.requireArray "nodes"
                 |> Seq.find (fun node ->
                     WorkspaceRpcScenario.field "kind" node = RpcValue.String "project")

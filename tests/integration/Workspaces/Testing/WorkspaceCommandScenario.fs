@@ -18,6 +18,7 @@ module internal WorkspaceCommandScenario =
           Solution: string
           Child: Process
           WorkspaceId: string
+          RootId: string
           ProjectId: string option
           FolderId: string option }
 
@@ -91,12 +92,36 @@ module internal WorkspaceCommandScenario =
             WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 2u
 
         rootError |> should equal None
-        let nodes = WorkspaceRpcScenario.field "nodes" root |> RpcValue.requireArray "nodes"
+
+        let rootId =
+            WorkspaceRpcScenario.field "nodes" root
+            |> RpcValue.requireArray "nodes"
+            |> Seq.exactlyOne
+            |> WorkspaceRpcScenario.field "id"
+            |> RpcValue.requireString "id"
+
+        WorkspaceRpcScenario.send
+            child
+            false
+            (WorkspaceRpcScenario.request
+                3u
+                "workspace/children"
+                (WorkspaceRpcScenario.map
+                    [ "parentNodeId", RpcValue.String rootId; "pageSize", RpcValue.Integer 100L ]))
+
+        let childrenError, children =
+            WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 3u
+
+        childrenError |> should equal None
+
+        let nodes =
+            WorkspaceRpcScenario.field "nodes" children |> RpcValue.requireArray "nodes"
 
         { Directory = directory
           Solution = solution
           Child = child
           WorkspaceId = workspaceId
+          RootId = rootId
           ProjectId = nodeId "project" nodes
           FolderId = nodeId "solutionFolder" nodes }
 

@@ -95,7 +95,7 @@ internal static class ProjectEvaluationMessagePack
                 "packageVersions",
                 ProjectEvaluationRpc.Array(dimension.PackageVersions, EncodePackageVersion)
             ),
-            ("analyzers", Paths(dimension.Analyzers))
+            ("analyzers", ProjectEvaluationRpc.Array(dimension.Analyzers, EncodeReference))
         );
 
     private static ProjectEvaluationDimension DecodeDimension(RpcValue value)
@@ -123,7 +123,7 @@ internal static class ProjectEvaluationMessagePack
             Values(fields, "projectReferences", DecodeReference),
             Values(fields, "references", DecodeReference),
             Values(fields, "packages", DecodePackage),
-            Paths(fields, "analyzers")
+            Values(fields, "analyzers", DecodeReference)
         )
         {
             PackageMemberships = Values(fields, "packageMemberships", DecodePackageMembership),
@@ -146,7 +146,8 @@ internal static class ProjectEvaluationMessagePack
                             ("value", RpcValue.NewString(metadata.Value))
                         )
                 )
-            )
+            ),
+            ("ordinal", RpcValue.NewInteger(item.Ordinal))
         );
 
     private static EvaluatedProperty DecodeProperty(RpcValue value)
@@ -163,13 +164,14 @@ internal static class ProjectEvaluationMessagePack
         var fields = ProjectEvaluationRpc.ExactMap(
             "item",
             value,
-            ["itemType", "include", "resolvedPath", "metadata"]
+            ["itemType", "include", "resolvedPath", "metadata", "ordinal"]
         );
         return new EvaluatedItem(
             ProjectEvaluationRpc.String(fields, "itemType"),
             ProjectEvaluationRpc.String(fields, "include"),
             OptionalPath(fields, "resolvedPath"),
-            Values(fields, "metadata", DecodeMetadata)
+            Values(fields, "metadata", DecodeMetadata),
+            checked((int)ProjectEvaluationRpc.Integer(fields, "ordinal"))
         );
     }
 

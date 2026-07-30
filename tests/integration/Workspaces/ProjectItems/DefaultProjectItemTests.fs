@@ -53,16 +53,7 @@ type DefaultProjectItemTests() =
 
             let names = WorkspaceRpcScenario.readAllProjectChildNames session 7u 2L
 
-            Assert.Contains(
-                names,
-                fun name -> name.StartsWith("None: appsettings.json", StringComparison.Ordinal)
-            )
-
-            Assert.False(
-                names
-                |> Array.exists (fun name ->
-                    name.StartsWith("Content: appsettings.json", StringComparison.Ordinal))
-            )
+            Assert.Equal(1, names |> Array.filter ((=) "appsettings.json") |> Array.length)
         finally
             WorkspaceRpcScenario.closeProject session
 
@@ -112,16 +103,7 @@ type DefaultProjectItemTests() =
 
             let names = WorkspaceRpcScenario.readAllProjectChildNames session 7u 2L
 
-            Assert.Contains(
-                names,
-                fun name -> name.StartsWith("None: wwwroot/site.css", StringComparison.Ordinal)
-            )
-
-            Assert.False(
-                names
-                |> Array.exists (fun name ->
-                    name.StartsWith("Content: wwwroot/site.css", StringComparison.Ordinal))
-            )
+            Assert.Equal(1, names |> Array.filter ((=) "site.css") |> Array.length)
         finally
             WorkspaceRpcScenario.closeProject session
 
@@ -204,15 +186,6 @@ type DefaultProjectItemTests() =
 
             let names = WorkspaceRpcScenario.readAllProjectChildNames session 5u 1L
 
-            Assert.Contains(
-                names,
-                fun name -> name.StartsWith("Content: Assets/Readme.txt", StringComparison.Ordinal)
-            )
-
-            Assert.False(
-                names
-                |> Array.exists (fun name ->
-                    name.StartsWith("None: Assets/Readme.txt", StringComparison.Ordinal))
-            )
+            Assert.Equal(1, names |> Array.filter ((=) "Readme.txt") |> Array.length)
         finally
             WorkspaceRpcScenario.closeProject session

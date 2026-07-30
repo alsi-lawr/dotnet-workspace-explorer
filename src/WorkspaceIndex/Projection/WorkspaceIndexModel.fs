@@ -30,8 +30,8 @@ type internal IndexedWorkspace =
       Revision: int64
       NeedsRebase: bool }
 
-type internal ProjectNodeContribution =
-    { Logical: string list
-      Content: string list
-      Display: string
-      Dimension: string }
+type internal ProjectNodePlacement =
+    { PlacementKey: IndexedNodeKey
+      PlacementNode: WorkspaceNode
+      ParentNodeId: WorkspaceNodeId
+      SiblingOrder: string list }

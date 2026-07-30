@@ -374,20 +374,33 @@ module internal Test =
 
         let rootRevision = field "revision" root |> RpcValue.requireInteger "revision"
 
+        let workspaceRootId =
+            values "nodes" root |> Seq.map (stringField "id") |> Seq.exactlyOne
+
+        send
+            child
+            (firstId + 1u)
+            "workspace/children"
+            (RpcValue.map
+                [ "parentNodeId", RpcValue.String workspaceRootId
+                  "pageSize", RpcValue.Integer 100L ])
+
+        let rootChildren = requireSuccess (firstId + 1u) child
+
         let projectId =
-            values "nodes" root
+            values "nodes" rootChildren
             |> Seq.filter (fun node -> stringField "kind" node = "project")
             |> Seq.filter (fun node -> stringField "name" node = "Selected")
             |> Seq.map (stringField "id")
             |> Seq.exactlyOne
 
         let mutable continuation = None
-        let mutable requestId = firstId + 1u
+        let mutable requestId = firstId + 2u
         let mutable hasMore = true
-        let mutable targetFrameworkFound = false
+        let mutable projectFileFound = false
         let mutable hydratedRevision = None
 
-        while hasMore && not targetFrameworkFound do
+        while hasMore && not projectFileFound do
             let parameters =
                 [ "parentNodeId", RpcValue.String projectId; "pageSize", RpcValue.Integer 100L ]
                 |> fun fields ->
@@ -415,11 +428,9 @@ module internal Test =
                     hydratedRevision <- Some revision
                 | frame -> failwithf "Expected hydration delta, got %A" frame
 
-            targetFrameworkFound <-
+            projectFileFound <-
                 values "nodes" page
-                |> Seq.exists (fun node ->
-                    stringField "kind" node = "projectItem"
-                    && stringField "name" node = "Evaluated TargetFramework = net8.0")
+                |> Seq.exists (fun node -> stringField "kind" node = "projectFile")
 
             continuation <-
                 match RpcValue.tryField "nextToken" page with
@@ -432,8 +443,8 @@ module internal Test =
             requestId <- requestId + 1u
 
         Assert.True(
-            targetFrameworkFound,
-            "Fresh project paging did not expose Evaluated TargetFramework = net8.0."
+            projectFileFound,
+            "Fresh project paging did not expose a semantic project file."
         )
 
         hydratedRevision
