@@ -25,7 +25,14 @@ The v1.0 allowlist is exactly:
 10. `workspace/operations/cancel`
 11. `shutdown`
 
-`workspace/root` returns the current revision and root nodes. `workspace/children` pages a parent by node ID, page size, and continuation token. `workspace/export/start` starts an export operation; `workspace/refresh` compares or refreshes a revision. `workspace/delta` and reset notifications let clients reconcile change instead of assuming a cached tree remains current.
+`workspace/root` returns exactly one `workspace` node named from the opened workspace.
+`workspace/children` pages a parent by node ID, page size, and continuation token. The semantic
+hierarchy uses `solutionFolder`, `solutionItem`, and `project` beneath that root. Hydrated projects
+contain `projectFolder`, `projectFile`, `dependencyContainer`, and `dependency` nodes; evaluated
+properties, configurations, platforms, and arbitrary MSBuild items are not navigation rows.
+`workspace/export/start` emits the same semantic node ID/kind set as a flat stream without parent or
+index metadata. `workspace/refresh` compares or refreshes a revision. `workspace/delta` and reset
+notifications let clients reconcile change instead of assuming a cached tree remains current.
 
 Each public node carries its workspace ID and revision, plus `id`, `kind`, `name`, `loadState`, and `capabilities`. Capabilities determine which commands a node may expose. The node shape has no general properties field; property mutation is exposed by descriptors such as `project.property.set`. Filtered and `.slnf` workspaces can contain read-only/excluded views. Clients must use revisions and must tolerate paging, export chunks, and reset notifications.
 
@@ -33,6 +40,8 @@ Each public node carries its workspace ID and revision, plus `id`, `kind`, `name
 and `workspace/commands/preview` creates a revision-bound plan. A mutating or destructive
 `workspace/commands/execute` requires that confirmation token and expected revision. Clients must
 handle conflicts rather than retrying against an unknown workspace state.
+For workspace commands, omitting `targetNodeId`, supplying the initialized workspace descriptor ID,
+or supplying the single root node ID selects the same workspace target.
 `workspace/operations/cancel` requests cancellation for an operation ID; it does not promise that
 already-completed work can be undone. `shutdown` accepts an orderly session shutdown.
 

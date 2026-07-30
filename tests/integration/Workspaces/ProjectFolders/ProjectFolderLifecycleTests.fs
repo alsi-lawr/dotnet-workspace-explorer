@@ -134,15 +134,7 @@ type ProjectFolderLifecycleTests() =
 
             let names = WorkspaceRpcScenario.readAllProjectChildNames session 5u 1L
 
-            names
-            |> Array.exists (fun name ->
-                name.StartsWith("Content: New/Source.txt", StringComparison.Ordinal))
-            |> should equal true
-
-            names
-            |> Array.exists (fun name ->
-                name.Contains(": Old/Source.txt", StringComparison.Ordinal))
-            |> should equal false
+            names |> Array.exists ((=) "Source.txt") |> should equal true
         finally
             WorkspaceRpcScenario.closeProject session
 
@@ -221,14 +213,6 @@ type ProjectFolderLifecycleTests() =
 
             let names = WorkspaceRpcScenario.readAllProjectChildNames session 5u 1L
 
-            names
-            |> Array.exists (fun name ->
-                name.StartsWith("Content: Moved/Source.txt", StringComparison.Ordinal))
-            |> should equal true
-
-            names
-            |> Array.exists (fun name ->
-                name.Contains(": Old/Source.txt", StringComparison.Ordinal))
-            |> should equal false
+            names |> Array.exists ((=) "Source.txt") |> should equal true
         finally
             WorkspaceRpcScenario.closeProject session

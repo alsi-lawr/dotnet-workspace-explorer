@@ -21,7 +21,13 @@ module internal WorkspaceIndexDiff =
 
     let placements insensitive (data: IndexedWorkspace) =
         let root = data.Workspace.Contents
-        let raw = ResizeArray<IndexedNodeKey * WorkspaceNode * WorkspaceNodeId option>()
+
+        let raw =
+            ResizeArray<IndexedNodeKey * WorkspaceNode * WorkspaceNodeId option * string list>()
+
+        let workspaceRoot = WorkspaceIndexPure.workspaceRoot data.Workspace.Descriptor
+
+        raw.Add(IndexedNodeKey [ "workspace-root" ], workspaceRoot, None, [ "0" ])
 
         let folderIds =
             Dictionary<string, WorkspaceNodeId>(
@@ -45,7 +51,8 @@ module internal WorkspaceIndexDiff =
             raw.Add(
                 IndexedNodeKey [ "folder"; folder.Path ],
                 folder.Node,
-                folderParent folder.ParentPath
+                folderParent folder.ParentPath |> Option.orElse (Some workspaceRoot.Id),
+                [ "1"; folder.Path ]
             )
 
         for item in root.Items do
@@ -55,7 +62,8 @@ module internal WorkspaceIndexDiff =
                       item.FolderPath |> Option.defaultValue String.Empty
                       item.RelativePath ],
                 item.Node,
-                folderParent item.FolderPath
+                folderParent item.FolderPath |> Option.orElse (Some workspaceRoot.Id),
+                [ "2"; item.RelativePath ]
             )
 
         for project in root.Projects do
@@ -74,38 +82,37 @@ module internal WorkspaceIndexDiff =
                     )
                 | None -> project.Node
 
-            raw.Add(IndexedNodeKey [ "project"; key ], node, folderParent project.ParentFolderPath)
+            raw.Add(
+                IndexedNodeKey [ "project"; key ],
+                node,
+                folderParent project.ParentFolderPath |> Option.orElse (Some workspaceRoot.Id),
+                [ "3"; key ]
+            )
 
             match data.Hydrated.TryFind key with
             | Some hydrated ->
-                for placement, child in
-                    WorkspaceIndexPure.projectBodyEntries data.Workspace.Descriptor project hydrated do
-                    raw.Add(IndexedNodeKey("project-body" :: key :: placement), child, Some node.Id)
+                for placement in
+                    WorkspaceIndexPure.projectBodyEntries
+                        insensitive
+                        data.Workspace
+                        project
+                        hydrated
+                        node do
+                    raw.Add(
+                        placement.PlacementKey,
+                        placement.PlacementNode,
+                        Some placement.ParentNodeId,
+                        placement.SiblingOrder
+                    )
             | None -> ()
 
-        for node in root.BuildTypes do
-            raw.Add(IndexedNodeKey [ "configuration"; node.Identity.Value ], node, None)
-
-        for node in root.Platforms do
-            raw.Add(IndexedNodeKey [ "platform"; node.Identity.Value ], node, None)
-
-        for dependency in root.Dependencies do
-            raw.Add(
-                IndexedNodeKey
-                    [ "dependency"
-                      dependency.ProjectId.Value
-                      dependency.DependsOnProjectId.Value ],
-                dependency.Node,
-                Some dependency.ProjectId
-            )
-
         raw
-        |> Seq.groupBy (fun (_, _, parentNodeId) ->
+        |> Seq.groupBy (fun (_, _, parentNodeId, _) ->
             parentNodeId |> Option.map _.Value |> Option.defaultValue String.Empty)
         |> Seq.collect (fun (_, siblings) ->
             siblings
-            |> Seq.sortBy (fun (key, _, _) -> key)
-            |> Seq.mapi (fun index (key, node, parentNodeId) ->
+            |> Seq.sortBy (fun (key, _, _, order) -> order, key)
+            |> Seq.mapi (fun index (key, node, parentNodeId, _) ->
                 { Key = key
                   Node = node
                   ParentWorkspaceNodeId = parentNodeId
@@ -152,6 +159,33 @@ module internal WorkspaceIndexDiff =
         let oldDepth = depths oldIndexedNodes
         let newDepth = depths newIndexedNodes
 
+        let stableSameParent =
+            oldByKey
+            |> Seq.choose (fun (KeyValue(key, oldValue)) ->
+                newByKey.TryFind key
+                |> Option.bind (fun newValue ->
+                    if
+                        oldValue.Node.Id = newValue.Node.Id
+                        && oldValue.ParentWorkspaceNodeId = newValue.ParentWorkspaceNodeId
+                    then
+                        Some(key, oldValue, newValue)
+                    else
+                        None))
+            |> Seq.toArray
+
+        let siblingRanks placement =
+            stableSameParent
+            |> Seq.groupBy (fun (_, oldValue, _) -> oldValue.ParentWorkspaceNodeId)
+            |> Seq.collect (fun (_, siblings) ->
+                siblings
+                |> Seq.sortBy (fun (key, oldValue, newValue) ->
+                    (placement oldValue newValue).Index, key)
+                |> Seq.mapi (fun index (key, _, _) -> key, index))
+            |> Map.ofSeq
+
+        let oldSiblingRanks = siblingRanks (fun oldValue _ -> oldValue)
+        let newSiblingRanks = siblingRanks (fun _ newValue -> newValue)
+
         let removals =
             oldByKey
             |> Seq.choose (fun (KeyValue(key, oldValue)) ->
@@ -189,6 +223,8 @@ module internal WorkspaceIndexDiff =
                         let nextMoves =
                             if
                                 oldValue.ParentWorkspaceNodeId <> newValue.ParentWorkspaceNodeId
+                                || (oldValue.Index <> newValue.Index
+                                    && oldSiblingRanks[key] <> newSiblingRanks[key])
                             then
                                 (key,
                                  newValue,
@@ -261,14 +297,26 @@ module internal WorkspaceIndexDiff =
             function
             | Added(node, _, _)
             | Updated(node, _, _)
-            | Replaced(_, node, _, _) -> node.Kind = WorkspaceNodeKind.ProjectItem
+            | Replaced(_, node, _, _) ->
+                node.Kind = WorkspaceNodeKind.ProjectFolder
+                || node.Kind = WorkspaceNodeKind.ProjectFile
+                || node.Kind = WorkspaceNodeKind.DependencyContainer
+                || node.Kind = WorkspaceNodeKind.Dependency
             | Removed(nodeId, _, _) ->
                 match oldKinds.TryGetValue nodeId with
-                | true, kind -> kind = WorkspaceNodeKind.ProjectItem
+                | true, kind ->
+                    kind = WorkspaceNodeKind.ProjectFolder
+                    || kind = WorkspaceNodeKind.ProjectFile
+                    || kind = WorkspaceNodeKind.DependencyContainer
+                    || kind = WorkspaceNodeKind.Dependency
                 | _ -> false
             | Moved(nodeId, _, _, _, _) ->
                 match oldKinds.TryGetValue nodeId with
-                | true, kind -> kind = WorkspaceNodeKind.ProjectItem
+                | true, kind ->
+                    kind = WorkspaceNodeKind.ProjectFolder
+                    || kind = WorkspaceNodeKind.ProjectFile
+                    || kind = WorkspaceNodeKind.DependencyContainer
+                    || kind = WorkspaceNodeKind.Dependency
                 | _ -> false
 
         { delta with

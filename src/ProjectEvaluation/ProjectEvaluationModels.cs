@@ -24,7 +24,8 @@ public sealed record EvaluatedItem(
     string ItemType,
     string EvaluatedInclude,
     WorkspaceArtifactPath? ResolvedPath,
-    ImmutableArray<EvaluatedMetadata> Metadata
+    ImmutableArray<EvaluatedMetadata> Metadata,
+    int Ordinal
 );
 
 public sealed record EvaluatedReference(string Include, WorkspaceArtifactPath? ResolvedPath);
@@ -52,7 +53,7 @@ public sealed record ProjectEvaluationDimension(
     ImmutableArray<EvaluatedReference> ProjectReferences,
     ImmutableArray<EvaluatedReference> References,
     ImmutableArray<EvaluatedPackage> Packages,
-    ImmutableArray<WorkspaceArtifactPath> Analyzers
+    ImmutableArray<EvaluatedReference> Analyzers
 )
 {
     public bool IsOuterBuild => TargetFramework is null;

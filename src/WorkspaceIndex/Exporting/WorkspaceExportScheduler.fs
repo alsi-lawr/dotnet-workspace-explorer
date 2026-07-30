@@ -16,6 +16,7 @@ type private WorkspaceExportAdmission =
 module internal WorkspaceExportScheduler =
     let run
         (workspace: SolutionWorkspace)
+        insensitive
         exportCapacity
         pathKey
         (openSession: CancellationToken -> Task<Result<WorkspaceIndexExportSession, RpcError>>)
@@ -194,7 +195,8 @@ module internal WorkspaceExportScheduler =
                                         writeBatch
                                             { Nodes =
                                                 WorkspaceIndexPure.exportProjectNodes
-                                                    workspace.Descriptor
+                                                    insensitive
+                                                    workspace
                                                     projects[nextEmission]
                                                     snapshot
                                               IsFinal = nextEmission = projects.Length - 1 }

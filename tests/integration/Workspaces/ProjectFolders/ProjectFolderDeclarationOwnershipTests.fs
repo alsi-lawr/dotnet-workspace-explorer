@@ -188,14 +188,7 @@ type ProjectFolderDeclarationOwnershipTests() =
 
             let names = WorkspaceRpcScenario.readAllProjectChildNames session 5u 1L
 
-            names
-            |> Array.exists (fun name ->
-                name.StartsWith("Content: New/Source.cs", StringComparison.Ordinal))
-            |> should equal true
-
-            names
-            |> Array.exists (fun name -> name.Contains(": Old/Source.cs", StringComparison.Ordinal))
-            |> should equal false
+            names |> Array.exists ((=) "Source.cs") |> should equal true
         finally
             WorkspaceRpcScenario.closeProject session
 

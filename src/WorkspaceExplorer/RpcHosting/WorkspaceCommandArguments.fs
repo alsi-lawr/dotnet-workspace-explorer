@@ -3,6 +3,7 @@ namespace Dotnet.WorkspaceExplorer
 open Dotnet.WorkspaceExplorer.Workspaces
 open Dotnet.WorkspaceExplorer.Solutions
 open Dotnet.WorkspaceExplorer.Rpc
+open Dotnet.WorkspaceExplorer.WorkspaceIndex
 
 open System
 open System.Collections.Immutable
@@ -13,6 +14,8 @@ module internal WorkspaceCommandArguments =
         match targetNodeId with
         | None -> Ok None
         | Some value when value = workspace.Descriptor.Id.Value -> Ok None
+        | Some value when value = (WorkspaceIndexPure.workspaceRoot workspace.Descriptor).Id.Value ->
+            Ok None
         | Some value ->
             workspace.Contents.Nodes
             |> Seq.tryFind (fun node -> node.Id.Value = value)

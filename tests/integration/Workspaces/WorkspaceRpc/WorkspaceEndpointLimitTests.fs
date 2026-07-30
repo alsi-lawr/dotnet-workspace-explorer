@@ -75,8 +75,9 @@ type WorkspaceEndpointLimitTests() =
                     WorkspaceRpcScenario.readFrame probe |> WorkspaceRpcScenario.response 2u
 
                 Assert.True probeRootError.IsNone
+                let probeRootChildren = WorkspaceRpcScenario.rootChildren probe 20u probeRoot
 
-                let probeProjectIds = projectIds probeRoot
+                let probeProjectIds = projectIds probeRootChildren
                 Assert.Equal(2, probeProjectIds.Length)
 
                 for index in 0..1 do
@@ -138,7 +139,33 @@ type WorkspaceEndpointLimitTests() =
                     WorkspaceRpcScenario.field "revision" root |> RpcValue.requireInteger "revision"
                 )
 
-                let childProjectIds = projectIds root
+                let workspaceRootId =
+                    WorkspaceRpcScenario.field "nodes" root
+                    |> RpcValue.requireArray "nodes"
+                    |> Seq.exactlyOne
+                    |> WorkspaceRpcScenario.field "id"
+                    |> RpcValue.requireString "id"
+
+                WorkspaceRpcScenario.send
+                    child
+                    false
+                    (WorkspaceRpcScenario.request
+                        20u
+                        "workspace/children"
+                        (WorkspaceRpcScenario.map
+                            [ "parentNodeId", RpcValue.String workspaceRootId
+                              "pageSize", RpcValue.Integer 2L ]))
+
+                let rootChildrenFrame, rootChildrenSize =
+                    WorkspaceRpcScenario.readFrameWithSize child
+
+                Assert.True(rootChildrenSize <= 1024)
+
+                let rootChildrenError, rootChildren =
+                    WorkspaceRpcScenario.response 20u rootChildrenFrame
+
+                Assert.True rootChildrenError.IsNone
+                let childProjectIds = projectIds rootChildren
                 Assert.Equal(2, childProjectIds.Length)
 
                 WorkspaceRpcScenario.send
@@ -282,8 +309,30 @@ type WorkspaceEndpointLimitTests() =
 
                 let rootFrame, rootSize = WorkspaceRpcScenario.readFrameWithSize child
                 Assert.True(rootSize <= 1024)
-                let rootError, _ = WorkspaceRpcScenario.response 2u rootFrame
-                Assert.Equal("response_too_large", rootError.Value.Code)
+                let rootError, root = WorkspaceRpcScenario.response 2u rootFrame
+                Assert.True rootError.IsNone
+
+                let workspaceRootId =
+                    WorkspaceRpcScenario.field "nodes" root
+                    |> RpcValue.requireArray "nodes"
+                    |> Seq.exactlyOne
+                    |> WorkspaceRpcScenario.field "id"
+                    |> RpcValue.requireString "id"
+
+                WorkspaceRpcScenario.send
+                    child
+                    false
+                    (WorkspaceRpcScenario.request
+                        20u
+                        "workspace/children"
+                        (WorkspaceRpcScenario.map
+                            [ "parentNodeId", RpcValue.String workspaceRootId
+                              "pageSize", RpcValue.Integer 50L ]))
+
+                let childrenFrame, childrenSize = WorkspaceRpcScenario.readFrameWithSize child
+                Assert.True(childrenSize <= 1024)
+                let childrenError, _ = WorkspaceRpcScenario.response 20u childrenFrame
+                Assert.True childrenError.IsNone
 
                 let unknownMethod = String('m', 3000)
 

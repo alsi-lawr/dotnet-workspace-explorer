@@ -57,8 +57,10 @@ type ProjectFolderDeletionTests() =
             let _, root =
                 WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 2u
 
+            let rootChildren = WorkspaceRpcScenario.rootChildren child 20u root
+
             let projectId =
-                WorkspaceRpcScenario.field "nodes" root
+                WorkspaceRpcScenario.field "nodes" rootChildren
                 |> RpcValue.requireArray "nodes"
                 |> Seq.find (fun node ->
                     WorkspaceRpcScenario.field "kind" node = RpcValue.String "project")

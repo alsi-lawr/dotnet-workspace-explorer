@@ -176,7 +176,7 @@ internal static class ProjectEvaluationRpc
     internal static string String(ImmutableDictionary<string, RpcValue> fields, string name) =>
         RpcValueModule.requireString(name, Field(fields, name));
 
-    private static long Integer(ImmutableDictionary<string, RpcValue> fields, string name) =>
+    internal static long Integer(ImmutableDictionary<string, RpcValue> fields, string name) =>
         RpcValueModule.requireInteger(name, Field(fields, name));
 
     private static RpcValue InitializePayload(int maximumFrameBytes) =>

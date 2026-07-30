@@ -134,6 +134,13 @@ type WorkspaceSessionTests() =
                     |> RpcValue.requireInteger "revision"
                 )
 
+                let workspaceRootId =
+                    WorkspaceRpcScenario.field "nodes" rootResult
+                    |> RpcValue.requireArray "nodes"
+                    |> Seq.exactlyOne
+                    |> WorkspaceRpcScenario.field "id"
+                    |> RpcValue.requireString "id"
+
                 WorkspaceRpcScenario.send
                     child
                     false
@@ -254,7 +261,10 @@ type WorkspaceSessionTests() =
                                 then
                                     match WorkspaceRpcScenario.field "parentNodeId" change with
                                     | RpcValue.String parentNodeId ->
-                                        Assert.Contains(parentNodeId, added)
+                                        Assert.True(
+                                            parentNodeId = workspaceRootId
+                                            || added.Contains parentNodeId
+                                        )
                                     | RpcValue.Nil -> ()
                                     | value -> failwithf "Unexpected parent ID: %A" value
 

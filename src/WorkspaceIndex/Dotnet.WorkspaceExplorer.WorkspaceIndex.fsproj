@@ -16,6 +16,7 @@
         <Compile Include="AssemblyInfo.fs" />
         <Compile Include="Projection/ExploredProjectProperties.fs" />
         <Compile Include="Projection/WorkspaceIndexModel.fs" />
+        <Compile Include="Projection/SemanticProjectProjection.fs" />
         <Compile Include="Projection/WorkspaceNodeProjection.fs" />
         <Compile Include="Projection/WorkspaceIndexDiff.fs" />
         <Compile Include="Watching/WorkspaceWatchPlan.fs" />
