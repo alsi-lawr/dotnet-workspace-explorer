@@ -106,8 +106,20 @@ type ContextWorkspaceCommandTests() =
         (child) |> should not' (be Null)
         let output = child.StandardOutput.ReadToEndAsync()
         let error = child.StandardError.ReadToEndAsync()
-        (child.WaitForExit 30000) |> should equal true
-        (child.ExitCode = 0) |> should equal true
+        child.WaitForExit()
+        let outputText = output.GetAwaiter().GetResult()
+        let errorText = error.GetAwaiter().GetResult()
+
+        if child.ExitCode <> 0 then
+            failwithf
+                "dotnet restore failed with exit code %d.%sstdout:%s%s%sstderr:%s%s"
+                child.ExitCode
+                Environment.NewLine
+                Environment.NewLine
+                outputText
+                Environment.NewLine
+                Environment.NewLine
+                errorText
 
     [<Fact>]
     member _.``contextual delete previews and executions report cascades while preserving surviving project files``
