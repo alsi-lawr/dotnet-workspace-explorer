@@ -31,23 +31,30 @@ jobs:
         run: |
           dotnet build Dotnet.WorkspaceExplorer.slnx --configuration Debug --no-restore
           dotnet build Dotnet.WorkspaceExplorer.slnx --configuration Release --no-restore
-      - name: Run complete native MTP executables
-        shell: pwsh
-        run: |
-          $suffix = if ($env:RUNNER_OS -eq 'Windows') { '.exe' } else { '' }
-          $tests = @(
-            @('tests/unit/Rpc', 'Dotnet.WorkspaceExplorer.Rpc.UnitTests'),
-            @('tests/unit/Workspaces', 'Dotnet.WorkspaceExplorer.Workspaces.UnitTests'),
-            @('tests/integration/ProjectEvaluation', 'Dotnet.WorkspaceExplorer.ProjectEvaluation.IntegrationTests'),
-            @('tests/integration/Workspaces', 'Dotnet.WorkspaceExplorer.Workspaces.IntegrationTests')
-          )
-          foreach ($configuration in @('Debug', 'Release')) {
-            foreach ($test in $tests) {
-              $directory, $assembly = $test
-              & "$directory/bin/$configuration/net10.0/$assembly$suffix" --fail-skips on
-              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            }
-          }
+      - name: Run RPC unit tests (Debug)
+        working-directory: tests/unit/Rpc/bin/Debug/net10.0
+        run: dotnet Dotnet.WorkspaceExplorer.Rpc.UnitTests.dll --fail-skips on
+      - name: Run workspace unit tests (Debug)
+        working-directory: tests/unit/Workspaces/bin/Debug/net10.0
+        run: dotnet Dotnet.WorkspaceExplorer.Workspaces.UnitTests.dll --fail-skips on
+      - name: Run project evaluation integration tests (Debug)
+        working-directory: tests/integration/ProjectEvaluation/bin/Debug/net10.0
+        run: dotnet Dotnet.WorkspaceExplorer.ProjectEvaluation.IntegrationTests.dll --fail-skips on
+      - name: Run workspace integration tests (Debug)
+        working-directory: tests/integration/Workspaces/bin/Debug/net10.0
+        run: dotnet Dotnet.WorkspaceExplorer.Workspaces.IntegrationTests.dll --fail-skips on
+      - name: Run RPC unit tests (Release)
+        working-directory: tests/unit/Rpc/bin/Release/net10.0
+        run: dotnet Dotnet.WorkspaceExplorer.Rpc.UnitTests.dll --fail-skips on
+      - name: Run workspace unit tests (Release)
+        working-directory: tests/unit/Workspaces/bin/Release/net10.0
+        run: dotnet Dotnet.WorkspaceExplorer.Workspaces.UnitTests.dll --fail-skips on
+      - name: Run project evaluation integration tests (Release)
+        working-directory: tests/integration/ProjectEvaluation/bin/Release/net10.0
+        run: dotnet Dotnet.WorkspaceExplorer.ProjectEvaluation.IntegrationTests.dll --fail-skips on
+      - name: Run workspace integration tests (Release)
+        working-directory: tests/integration/Workspaces/bin/Release/net10.0
+        run: dotnet Dotnet.WorkspaceExplorer.Workspaces.IntegrationTests.dll --fail-skips on
       - name: Check formatting
         run: |
           dotnet fantomas --check .
