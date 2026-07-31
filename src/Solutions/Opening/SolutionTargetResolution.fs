@@ -117,6 +117,17 @@ module internal SolutionTargetResolution =
             | [| path |] -> Success path
             | _ -> ambiguous "solution" "Multiple solution or filter files were found."
 
+    let resolveDirectoryCandidates directory cancellationToken predicate =
+        let rootCandidates =
+            Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly)
+            |> resolveCandidates cancellationToken predicate
+
+        match rootCandidates with
+        | Failure(NotFound _) ->
+            Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories)
+            |> resolveCandidates cancellationToken predicate
+        | result -> result
+
     let resolveTarget targetPath cancellationToken =
         throwIfCancellationRequested cancellationToken
 
@@ -125,8 +136,7 @@ module internal SolutionTargetResolution =
         else
             try
                 if Directory.Exists targetPath then
-                    Directory.EnumerateFiles(targetPath, "*", SearchOption.AllDirectories)
-                    |> resolveCandidates cancellationToken isCandidate
+                    resolveDirectoryCandidates targetPath cancellationToken isCandidate
                 else
                     let path = System.IO.Path.GetFullPath targetPath
 
@@ -149,8 +159,7 @@ module internal SolutionTargetResolution =
         throwIfCancellationRequested cancellationToken
 
         if Directory.Exists backingPath then
-            Directory.EnumerateFiles(backingPath, "*", SearchOption.AllDirectories)
-            |> resolveCandidates cancellationToken isSolution
+            resolveDirectoryCandidates backingPath cancellationToken isSolution
         elif not (File.Exists backingPath) then
             notFound backingPath "The filter backing solution was not found."
         elif isSolution backingPath then

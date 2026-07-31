@@ -11,6 +11,24 @@ open Xunit
 [<Collection("Solution contracts")>]
 type SolutionTargetResolutionTests() =
     [<Fact>]
+    member _.``should prefer a unique root solution over nested workspace copies``() =
+        let directory = SolutionScenario.temporaryDirectory ()
+
+        try
+            let rootSolution = Path.Combine(directory, "Root.slnx")
+            let nestedDirectory = Path.Combine(directory, ".agent-workspace", "fixture")
+            let nestedSolution = Path.Combine(nestedDirectory, "Nested.slnx")
+            Directory.CreateDirectory nestedDirectory |> ignore
+            SolutionScenario.save rootSolution (SolutionModel())
+            SolutionScenario.save nestedSolution (SolutionModel())
+
+            let workspace = SolutionScenario.openWorkspace directory
+
+            Assert.Equal(Path.GetFullPath rootSolution, workspace.SolutionPath.Value)
+        finally
+            SolutionScenario.delete directory
+
+    [<Fact>]
     member _.``should retain distinct classifications for ambiguous targets and invalid filters``
         ()
         =
