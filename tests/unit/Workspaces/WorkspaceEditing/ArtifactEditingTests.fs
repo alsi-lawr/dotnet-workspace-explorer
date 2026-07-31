@@ -8,6 +8,7 @@ open System.Text
 open System.Threading
 open Dotnet.WorkspaceExplorer.Workspaces
 open Dotnet.WorkspaceExplorer.WorkspaceEditing
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("Workspace edits")>]
@@ -36,37 +37,32 @@ type ArtifactEditingTests() =
             let replacePreview =
                 WorkspaceEditScenario.preview coordinator replaceRequest replace
 
-            Assert.Equal(
-                Success Applied,
-                coordinator.Execute(
-                    replaceRequest,
-                    replace,
-                    replacePreview.Confirmation,
-                    CancellationToken.None
-                )
-            )
+            (coordinator.Execute(
+                replaceRequest,
+                replace,
+                replacePreview.Confirmation,
+                CancellationToken.None
+            ))
+            |> should equal (Success Applied)
 
             let renamed = Path.Combine(root, "target.txt")
             let renameRequest = WorkspaceEditScenario.request [] [ target; renamed ] [] 0L
             let rename = [ WorkspaceEditAction.Rename(target, renamed) ]
             let renamePreview = WorkspaceEditScenario.preview coordinator renameRequest rename
 
-            Assert.Equal(
-                Success Applied,
-                coordinator.Execute(
-                    renameRequest,
-                    rename,
-                    renamePreview.Confirmation,
-                    CancellationToken.None
-                )
-            )
+            (coordinator.Execute(
+                renameRequest,
+                rename,
+                renamePreview.Confirmation,
+                CancellationToken.None
+            ))
+            |> should equal (Success Applied)
 
-            Assert.Equal("new", File.ReadAllText renamed)
+            (File.ReadAllText renamed) |> should equal ("new")
 
-            Assert.Empty(
-                Directory.EnumerateFileSystemEntries(root, "*.dotnet-workspace-explorer-*")
-                |> Seq.toArray
-            )
+            (Directory.EnumerateFileSystemEntries(root, "*.dotnet-workspace-explorer-*")
+             |> Seq.toArray)
+            |> should be Empty
         finally
             Directory.Delete(root, true)
 
@@ -106,18 +102,16 @@ type ArtifactEditingTests() =
                 let linkPreview =
                     WorkspaceEditScenario.preview coordinator linkRequest linkReplacement
 
-                Assert.Equal(
-                    Success Applied,
-                    coordinator.Execute(
-                        linkRequest,
-                        linkReplacement,
-                        linkPreview.Confirmation,
-                        CancellationToken.None
-                    )
-                )
+                (coordinator.Execute(
+                    linkRequest,
+                    linkReplacement,
+                    linkPreview.Confirmation,
+                    CancellationToken.None
+                ))
+                |> should equal (Success Applied)
 
-                Assert.Equal("replacement", File.ReadAllText replacementLink)
-                Assert.Equal("outside", File.ReadAllText outside)
+                (File.ReadAllText replacementLink) |> should equal ("replacement")
+                (File.ReadAllText outside) |> should equal ("outside")
 
                 let broken = Path.Combine(root, "broken-link")
                 File.CreateSymbolicLink(broken, Path.Combine(root, "missing")) |> ignore
@@ -134,17 +128,15 @@ type ArtifactEditingTests() =
                 let brokenPreview =
                     WorkspaceEditScenario.preview coordinator brokenRequest brokenDelete
 
-                Assert.Equal(
-                    Success Applied,
-                    coordinator.Execute(
-                        brokenRequest,
-                        brokenDelete,
-                        brokenPreview.Confirmation,
-                        CancellationToken.None
-                    )
-                )
+                (coordinator.Execute(
+                    brokenRequest,
+                    brokenDelete,
+                    brokenPreview.Confirmation,
+                    CancellationToken.None
+                ))
+                |> should equal (Success Applied)
 
-                Assert.Null((FileInfo broken).LinkTarget)
+                ((FileInfo broken).LinkTarget) |> should be Null
 
                 let linkedDirectory = Path.Combine(root, "linked-directory")
                 Directory.CreateSymbolicLink(linkedDirectory, external) |> ignore
@@ -209,13 +201,13 @@ type ArtifactEditingTests() =
             let move = [ WorkspaceEditAction.Move(source, destination) ]
             let preview = WorkspaceEditScenario.preview coordinator request move
 
-            Assert.Equal(
-                Success Applied,
-                coordinator.Execute(request, move, preview.Confirmation, CancellationToken.None)
-            )
+            (coordinator.Execute(request, move, preview.Confirmation, CancellationToken.None))
+            |> should equal (Success Applied)
 
-            Assert.False(Directory.Exists source)
-            Assert.Equal("child", File.ReadAllText(Path.Combine(destination, "child.txt")))
+            (Directory.Exists source) |> should equal false
+
+            (File.ReadAllText(Path.Combine(destination, "child.txt")))
+            |> should equal ("child")
         finally
             if Directory.Exists destination then
                 Directory.Delete(destination, true)

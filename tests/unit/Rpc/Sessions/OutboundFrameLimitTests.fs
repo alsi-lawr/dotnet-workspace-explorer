@@ -7,6 +7,7 @@ open System.IO
 open System.Threading
 open System.Threading.Tasks
 open Dotnet.WorkspaceExplorer.Rpc
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("RPC scenarios")>]
@@ -35,7 +36,7 @@ type OutboundFrameLimitTests() =
 
         let assertBounded name stdout =
             Test.decode stdout
-            |> List.iter (fun (_, size) -> Assert.True(size <= limit, $"{name}: {size}-byte frame"))
+            |> List.iter (fun (_, size) -> (size <= limit) |> should equal true)
 
         let initializeInput =
             Array.concat
@@ -47,14 +48,12 @@ type OutboundFrameLimitTests() =
                 (fun _ _ _ _ -> Task.FromResult(Ok(Test.dispatchResult Test.empty false)))
                 initializeInput
 
-        Assert.Equal(0, initializeExit)
-        Assert.Equal(String.Empty, initializeError)
+        (initializeExit) |> should equal (0)
+        (initializeError) |> should equal (String.Empty)
         assertBounded "initialize" initializeOutput
 
-        Assert.Equal<(uint32 * string) list>(
-            [ 1u, "response_too_large"; 2u, "not_initialized" ],
-            Test.responseErrors initializeOutput
-        )
+        (Test.responseErrors initializeOutput)
+        |> should equal ([ 1u, "response_too_large"; 2u, "not_initialized" ])
 
         let requestInput =
             Array.concat
@@ -66,14 +65,12 @@ type OutboundFrameLimitTests() =
                 (fun _ _ _ _ -> Task.FromResult(Ok(Test.dispatchResult oversized false)))
                 requestInput
 
-        Assert.Equal(0, requestExit)
-        Assert.Equal(String.Empty, requestError)
+        (requestExit) |> should equal (0)
+        (requestError) |> should equal (String.Empty)
         assertBounded "request" requestOutput
 
-        Assert.Equal<(uint32 * string) list>(
-            [ 2u, "response_too_large" ],
-            Test.responseErrors requestOutput
-        )
+        (Test.responseErrors requestOutput)
+        |> should equal ([ 2u, "response_too_large" ])
 
         let backgroundDispatch _ methodName _ _ =
             if methodName = "start" then
@@ -113,17 +110,16 @@ type OutboundFrameLimitTests() =
         let backgroundExit, backgroundOutput, backgroundError =
             run (fun _ _ -> Task.FromResult(Ok Test.empty)) backgroundDispatch backgroundInput
 
-        Assert.Equal(0, backgroundExit)
-        Assert.Equal(String.Empty, backgroundError)
+        (backgroundExit) |> should equal (0)
+        (backgroundError) |> should equal (String.Empty)
         assertBounded "background" backgroundOutput
 
-        Assert.Contains(
-            Test.frames backgroundOutput,
-            function
+        (Test.frames backgroundOutput)
+        |> Seq.exists (function
             | Notification("workspace/operations/completed", parameters) ->
                 RpcValue.tryField "code" parameters = Some(RpcValue.String "response_too_large")
-            | _ -> false
-        )
+            | _ -> false)
+        |> should equal true
 
     [<Fact>]
     member _.``should synchronize and limit prepared notification writes without re-encoding``() =
@@ -162,8 +158,8 @@ type OutboundFrameLimitTests() =
                     try
                         do! sink.WriteEncodedAsync oversized
                     with :? RpcFrameLimitExceededException as failure ->
-                        Assert.Equal(limit, failure.Limit)
-                        Assert.Equal(oversized.Length, failure.Actual)
+                        (failure.Limit) |> should equal (limit)
+                        (failure.Actual) |> should equal (oversized.Length)
 
                     do!
                         Notification(
@@ -196,14 +192,14 @@ type OutboundFrameLimitTests() =
                 dispatch
 
         let running = Test.runStream configuration source cancellation.Token
-        Assert.True(completed.Task.Wait(TimeSpan.FromSeconds 10.0))
+        (completed.Task.Wait(TimeSpan.FromSeconds 10.0)) |> should equal true
         cancellation.Cancel()
         let exitCode, stdout, stderr = running.Result
-        Assert.Equal(130, exitCode)
-        Assert.Equal(String.Empty, stderr)
+        (exitCode) |> should equal (130)
+        (stderr) |> should equal (String.Empty)
 
         let decoded = Test.decode stdout
-        decoded |> List.iter (fun (_, size) -> Assert.True(size <= limit))
+        decoded |> List.iter (fun (_, size) -> (size <= limit) |> should equal true)
 
         let indices =
             decoded
@@ -217,23 +213,21 @@ type OutboundFrameLimitTests() =
                 | _ -> None)
             |> List.sort
 
-        Assert.Equal<int64 list>([ 0L .. 31L ], indices)
+        (indices) |> should equal ([ 0L .. 31L ])
 
-        Assert.Contains(
-            decoded,
-            function
+        (decoded)
+        |> Seq.exists (function
             | Notification("prepared/completed", parameters), _ ->
                 RpcValue.tryField "count" parameters
                 |> Option.exists (fun value -> RpcValue.requireInteger "count" value = 32L)
-            | _ -> false
-        )
+            | _ -> false)
+        |> should equal true
 
-        Assert.DoesNotContain(
-            decoded,
-            function
+        (decoded)
+        |> Seq.exists (function
             | Notification("prepared/oversized", _), _ -> true
-            | _ -> false
-        )
+            | _ -> false)
+        |> should equal false
 
     [<Fact>]
     member _.``should cancel a prepared notification write without partial-frame success``() =
@@ -272,10 +266,10 @@ type OutboundFrameLimitTests() =
         let running =
             RpcSession.runAsync configuration source output errors cancellation.Token
 
-        Assert.True(notificationStarted.Task.Wait(TimeSpan.FromSeconds 10.0))
+        (notificationStarted.Task.Wait(TimeSpan.FromSeconds 10.0)) |> should equal true
         cancellation.Cancel()
-        Assert.Equal(130, running.Result)
-        Assert.Equal(String.Empty, errors.ToString())
+        (running.Result) |> should equal (130)
+        (errors.ToString()) |> should equal (String.Empty)
 
         match Test.frames (output.ToArray()) with
         | [ Response(1u, None, _); Response(2u, None, _) ] -> ()

@@ -5,6 +5,7 @@ namespace Dotnet.WorkspaceExplorer.Workspaces.IntegrationTests
 open System.IO
 open System.Text.Json
 open Dotnet.WorkspaceExplorer.Solutions
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("Delegated dotnet processes")>]
@@ -30,8 +31,8 @@ type LegacyDirectoryImportTests() =
                     [ "--json"; "sln"; solution; "add"; alias; folder.FullName ]
                     [ "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_DOTNET_STARTED_PATH", marker ]
 
-            Assert.True(DirectCommandProcess.success result)
-            Assert.False(File.Exists marker)
+            (DirectCommandProcess.success result) |> should equal true
+            (File.Exists marker) |> should equal false
 
             match
                 Dotnet.WorkspaceExplorer.Solutions.SolutionWorkspaceReader
@@ -39,7 +40,9 @@ type LegacyDirectoryImportTests() =
                     .Result
             with
             | Dotnet.WorkspaceExplorer.Workspaces.Success workspace ->
-                Assert.Contains(workspace.Contents.Folders, fun item -> item.Path = "/src/nested/")
+                (workspace.Contents.Folders)
+                |> Seq.exists (fun item -> item.Path = "/src/nested/")
+                |> should equal true
             | outcome -> failwithf "Expected the persisted folder, got %A" outcome
 
             let refused =
@@ -54,14 +57,12 @@ type LegacyDirectoryImportTests() =
                       Path.Combine(directory, "missing") ]
                     [ "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_DOTNET_STARTED_PATH", marker ]
 
-            Assert.False(DirectCommandProcess.success refused)
+            (DirectCommandProcess.success refused) |> should equal false
             use document = DirectCommandProcess.json refused
 
-            Assert.Equal(
-                JsonValueKind.Null,
-                document.RootElement.GetProperty("externalExitCode").ValueKind
-            )
+            (document.RootElement.GetProperty("externalExitCode").ValueKind)
+            |> should equal (JsonValueKind.Null)
 
-            Assert.False(File.Exists marker)
+            (File.Exists marker) |> should equal false
         finally
             DirectCommandProcess.delete directory

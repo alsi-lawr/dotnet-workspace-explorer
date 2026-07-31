@@ -85,7 +85,7 @@ type ExportWorkerLifecycleTests() =
                             )
                       OpenExportSessionAsync =
                         fun _ observedCapacity _ ->
-                            Assert.Equal(capacity, observedCapacity)
+                            (observedCapacity) |> should equal (capacity)
 
                             Task.FromResult<WorkspaceOutcome<WorkspaceIndexExportSession>>(
                                 Success
@@ -139,21 +139,18 @@ type ExportWorkerLifecycleTests() =
                 let initiallyAdmitted = min capacity projectCount
 
                 for _ in 1..initiallyAdmitted do
-                    Assert.True(started.Wait 5000, "An admitted evaluation did not start.")
+                    (started.Wait 5000) |> should equal true
 
-                Assert.Equal(initiallyAdmitted, maximumActive)
+                (maximumActive) |> should equal (initiallyAdmitted)
 
                 if capacity = 2 && projectCount = 4 then
                     gates[projects[1]].SetResult()
-                    Assert.True(completed.Wait 5000, "The reverse completion did not settle.")
-                    Assert.Empty emitted
+                    (completed.Wait 5000) |> should equal true
+                    (emitted) |> should be Empty
                     gates[projects[0]].SetResult()
 
                     for _ in 1..2 do
-                        Assert.True(
-                            started.Wait 5000,
-                            "The bounded window did not admit more work."
-                        )
+                        (started.Wait 5000) |> should equal true
 
                     gates[projects[3]].SetResult()
                     gates[projects[2]].SetResult()
@@ -168,8 +165,8 @@ type ExportWorkerLifecycleTests() =
                 |> Seq.toArray
                 |> should equal (projects |> Array.map Path.GetFileNameWithoutExtension)
 
-                Assert.Equal(1, disposedSessions)
-                Assert.True(maximumActive <= min capacity projectCount)
+                (disposedSessions) |> should equal (1)
+                (maximumActive <= min capacity projectCount) |> should equal true
                 state.DisposeAsync().GetAwaiter().GetResult()
             finally
                 if Directory.Exists directory then
@@ -244,7 +241,7 @@ type ExportWorkerLifecycleTests() =
                             )
                       OpenExportSessionAsync =
                         fun _ observedCapacity _ ->
-                            Assert.Equal(3, observedCapacity)
+                            (observedCapacity) |> should equal (3)
                             let sessionNumber = Interlocked.Increment(&openedSessions)
 
                             Task.FromResult<WorkspaceOutcome<WorkspaceIndexExportSession>>(
@@ -280,7 +277,8 @@ type ExportWorkerLifecycleTests() =
                                       DisposeAsync =
                                         fun () ->
                                             if sessionNumber = 1 then
-                                                Assert.Equal(projects.Length, settledEvaluations)
+                                                (settledEvaluations)
+                                                |> should equal (projects.Length)
 
                                             Interlocked.Increment(&disposedSessions) |> ignore
                                             Task.CompletedTask }
@@ -311,20 +309,20 @@ type ExportWorkerLifecycleTests() =
                     )
 
                 for _ in projects do
-                    Assert.True(started.Wait 5000, "A default-capacity lane did not start.")
+                    (started.Wait 5000) |> should equal true
 
-                Assert.False firstExport.IsCompleted
-                Assert.Equal(0, settledEvaluations)
+                (firstExport.IsCompleted) |> should equal false
+                (settledEvaluations) |> should equal (0)
                 cancellation.Cancel()
 
                 match firstExport.GetAwaiter().GetResult() with
-                | Error error -> Assert.Equal("cancelled", error.Code)
+                | Error error -> (error.Code) |> should equal ("cancelled")
                 | Ok() -> failwith "The blocked export unexpectedly succeeded."
 
-                Assert.Equal(3, settledEvaluations)
-                Assert.Equal(1, openedSessions)
-                Assert.Equal(1, disposedSessions)
-                Assert.DoesNotContain(true, firstLastValues)
+                (settledEvaluations) |> should equal (3)
+                (openedSessions) |> should equal (1)
+                (disposedSessions) |> should equal (1)
+                (firstLastValues) |> should not' (contain (true))
 
                 let secondLastValues = ResizeArray<bool>()
 
@@ -341,13 +339,10 @@ type ExportWorkerLifecycleTests() =
                 | Ok() -> ()
                 | Error error -> failwithf "The fresh export failed: %s" error.Message
 
-                Assert.Equal(2, openedSessions)
-                Assert.Equal(2, disposedSessions)
+                (openedSessions) |> should equal (2)
+                (disposedSessions) |> should equal (2)
 
-                Assert.Equal<bool array>(
-                    [| true |],
-                    secondLastValues |> Seq.filter id |> Seq.toArray
-                )
+                (secondLastValues |> Seq.filter id |> Seq.toArray) |> should equal ([| true |])
 
                 state.DisposeAsync().GetAwaiter().GetResult()
             finally
@@ -397,20 +392,16 @@ type ExportWorkerLifecycleTests() =
                 let operationId, revision = WorkspaceRpcScenario.startExport child 2u
 
                 let firstFrame, firstSize = WorkspaceRpcScenario.readFrameWithSize child
-                Assert.True(firstSize <= 1024)
+                (firstSize <= 1024) |> should equal true
 
                 match firstFrame with
                 | Notification("workspace/export/chunk", parameters) ->
-                    Assert.Equal(
-                        RpcValue.Boolean false,
-                        WorkspaceRpcScenario.field "last" parameters
-                    )
+                    (WorkspaceRpcScenario.field "last" parameters)
+                    |> should equal (RpcValue.Boolean false)
 
-                    Assert.Equal(
-                        0L,
-                        WorkspaceRpcScenario.field "sequence" parameters
-                        |> RpcValue.requireInteger "sequence"
-                    )
+                    (WorkspaceRpcScenario.field "sequence" parameters
+                     |> RpcValue.requireInteger "sequence")
+                    |> should equal (0L)
                 | frame -> failwithf "Expected the first non-final export chunk, got %A" frame
 
                 WorkspaceRpcScenario.send
@@ -427,51 +418,37 @@ type ExportWorkerLifecycleTests() =
                 while cancelResult.IsNone do
                     match WorkspaceRpcScenario.readFrame child with
                     | Notification("workspace/export/chunk", parameters) ->
-                        Assert.Equal(
-                            RpcValue.Boolean false,
-                            WorkspaceRpcScenario.field "last" parameters
-                        )
+                        (WorkspaceRpcScenario.field "last" parameters)
+                        |> should equal (RpcValue.Boolean false)
 
-                        Assert.Equal(
-                            sequence,
-                            WorkspaceRpcScenario.field "sequence" parameters
-                            |> RpcValue.requireInteger "sequence"
-                        )
+                        (WorkspaceRpcScenario.field "sequence" parameters
+                         |> RpcValue.requireInteger "sequence")
+                        |> should equal (sequence)
 
                         sequence <- sequence + 1L
                     | Response(3u, error, result) ->
-                        Assert.True error.IsNone
+                        (error.IsNone) |> should equal true
                         cancelResult <- Some result
                     | frame -> failwithf "Unexpected frame before cancellation response: %A" frame
 
-                Assert.Equal(
-                    RpcValue.Boolean true,
-                    WorkspaceRpcScenario.field "accepted" cancelResult.Value
-                )
+                (WorkspaceRpcScenario.field "accepted" cancelResult.Value)
+                |> should equal (RpcValue.Boolean true)
 
                 match WorkspaceRpcScenario.readFrame child with
                 | Notification("workspace/operations/completed", parameters) ->
-                    Assert.Equal(
-                        RpcValue.String operationId,
-                        WorkspaceRpcScenario.field "operationId" parameters
-                    )
+                    (WorkspaceRpcScenario.field "operationId" parameters)
+                    |> should equal (RpcValue.String operationId)
 
-                    Assert.Equal(
-                        RpcValue.String "cancelled",
-                        WorkspaceRpcScenario.field "outcome" parameters
-                    )
+                    (WorkspaceRpcScenario.field "outcome" parameters)
+                    |> should equal (RpcValue.String "cancelled")
 
-                    Assert.Equal(
-                        revision,
-                        WorkspaceRpcScenario.field "revision" parameters
-                        |> RpcValue.requireInteger "revision"
-                    )
+                    (WorkspaceRpcScenario.field "revision" parameters
+                     |> RpcValue.requireInteger "revision")
+                    |> should equal (revision)
 
-                    Assert.Equal(
-                        sequence,
-                        WorkspaceRpcScenario.field "sequence" parameters
-                        |> RpcValue.requireInteger "sequence"
-                    )
+                    (WorkspaceRpcScenario.field "sequence" parameters
+                     |> RpcValue.requireInteger "sequence")
+                    |> should equal (sequence)
                 | frame -> failwithf "Expected one cancelled completion, got %A" frame
 
                 WorkspaceRpcScenario.send
@@ -485,12 +462,10 @@ type ExportWorkerLifecycleTests() =
                 let retryError, retryResult =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 4u
 
-                Assert.True retryError.IsNone
+                (retryError.IsNone) |> should equal true
 
-                Assert.Equal(
-                    RpcValue.Boolean false,
-                    WorkspaceRpcScenario.field "accepted" retryResult
-                )
+                (WorkspaceRpcScenario.field "accepted" retryResult)
+                |> should equal (RpcValue.Boolean false)
 
                 WorkspaceRpcScenario.shutdown child 5u
             finally

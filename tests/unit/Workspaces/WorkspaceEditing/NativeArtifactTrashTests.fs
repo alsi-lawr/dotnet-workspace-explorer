@@ -4,6 +4,7 @@ namespace Dotnet.WorkspaceExplorer.Workspaces.UnitTests
 
 open System
 open Dotnet.WorkspaceExplorer.WorkspaceEditing
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("Workspace edits")>]
@@ -13,8 +14,8 @@ type NativeArtifactTrashTests() =
         let selected = NativeArtifactTrash.CreateForCurrentUser()
 
         if OperatingSystem.IsWindows() then
-            Assert.Equal("WindowsArtifactTrash", selected.GetType().Name)
+            (selected.GetType().Name) |> should equal ("WindowsArtifactTrash")
         elif OperatingSystem.IsMacOS() then
-            Assert.Equal("MacArtifactTrash", selected.GetType().Name)
+            (selected.GetType().Name) |> should equal ("MacArtifactTrash")
         else
-            Assert.Equal("FreedesktopArtifactTrash", selected.GetType().Name)
+            (selected.GetType().Name) |> should equal ("FreedesktopArtifactTrash")

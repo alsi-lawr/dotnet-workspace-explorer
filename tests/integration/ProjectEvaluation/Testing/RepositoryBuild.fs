@@ -257,12 +257,12 @@ module internal Test =
                 let nextRevision =
                     field "newRevision" parameters |> RpcValue.requireInteger "newRevision"
 
-                Assert.Equal(revision, baseRevision)
-                Assert.True(nextRevision > baseRevision)
+                (baseRevision) |> should equal (revision)
+                (nextRevision > baseRevision) |> should equal true
                 revision <- nextRevision
             | Notification("workspace/reset", parameters) ->
                 let nextRevision = field "revision" parameters |> RpcValue.requireInteger "revision"
-                Assert.True(nextRevision > revision)
+                (nextRevision > revision) |> should equal true
                 revision <- nextRevision
             | Response(actual, error, value) when actual = id ->
                 match error with
@@ -275,10 +275,8 @@ module internal Test =
     let readMatchingWorkspaceReset expectedRevision child =
         match readFrame child with
         | Notification("workspace/reset", parameters) ->
-            Assert.Equal(
-                expectedRevision,
-                field "revision" parameters |> RpcValue.requireInteger "revision"
-            )
+            (field "revision" parameters |> RpcValue.requireInteger "revision")
+            |> should equal (expectedRevision)
 
             parameters
         | frame -> failwithf "Expected matching workspace reset, got %A" frame
@@ -343,12 +341,15 @@ module internal Test =
     let shutdown child id =
         send child id "shutdown" RpcValue.emptyMap
         let result = requireSuccess id child
-        Assert.Equal(Some(RpcValue.Boolean true), RpcValue.tryField "accepted" result)
+
+        (RpcValue.tryField "accepted" result)
+        |> should equal (Some(RpcValue.Boolean true))
+
         child.StandardInput.Close()
-        Assert.True(child.WaitForExit 5000, "The executable did not exit after shutdown.")
-        Assert.Equal(-1, child.StandardOutput.BaseStream.ReadByte())
+        (child.WaitForExit 5000) |> should equal true
+        (child.StandardOutput.BaseStream.ReadByte()) |> should equal (-1)
         child.ExitCode |> should equal 0
-        Assert.Equal(String.Empty, child.StandardError.ReadToEnd())
+        (child.StandardError.ReadToEnd()) |> should equal (String.Empty)
 
     let withWorker directory action =
         let worker = startWorker (currentToolsetPath directory)
@@ -416,15 +417,13 @@ module internal Test =
             if hydratedRevision.IsNone then
                 match readFrame child with
                 | Notification("workspace/delta", parameters) ->
-                    Assert.Equal(
-                        rootRevision,
-                        field "baseRevision" parameters |> RpcValue.requireInteger "baseRevision"
-                    )
+                    (field "baseRevision" parameters |> RpcValue.requireInteger "baseRevision")
+                    |> should equal (rootRevision)
 
                     let revision =
                         field "newRevision" parameters |> RpcValue.requireInteger "newRevision"
 
-                    Assert.True(revision > rootRevision)
+                    (revision > rootRevision) |> should equal true
                     hydratedRevision <- Some revision
                 | frame -> failwithf "Expected hydration delta, got %A" frame
 
@@ -442,10 +441,7 @@ module internal Test =
             hasMore <- continuation.IsSome
             requestId <- requestId + 1u
 
-        Assert.True(
-            projectFileFound,
-            "Fresh project paging did not expose a semantic project file."
-        )
+        (projectFileFound) |> should equal true
 
         hydratedRevision
         |> Option.defaultWith (fun () -> failwith "The hydration delta was not observed.")

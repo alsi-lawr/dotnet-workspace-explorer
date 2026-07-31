@@ -179,12 +179,12 @@ type ProjectFolderDeclarationOwnershipTests() =
 
             let project = File.ReadAllText session.Project
 
-            Assert.Contains(
-                "Include=\"$(MSBuildThisFileDirectory)Other/Old/Unrelated.cs\"",
-                project
-            )
+            (project)
+            |> should
+                haveSubstring
+                ("Include=\"$(MSBuildThisFileDirectory)Other/Old/Unrelated.cs\"")
 
-            Assert.Contains("Include=\"New/Source.cs\"", project)
+            (project) |> should haveSubstring ("Include=\"New/Source.cs\"")
 
             let names = WorkspaceRpcScenario.readAllProjectChildNames session 5u 1L
 

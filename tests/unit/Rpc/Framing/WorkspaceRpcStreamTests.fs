@@ -6,6 +6,7 @@ open System
 open System.IO
 open System.Threading
 open Dotnet.WorkspaceExplorer.Rpc
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("RPC scenarios")>]
@@ -43,11 +44,14 @@ type WorkspaceRpcStreamTests() =
         let large =
             Test.request 2u "large" (Test.map [ "payload", RpcValue.Binary(Array.zeroCreate 3900) ])
 
-        Assert.Equal<byte>(Array.concat [ initialize; shutdown ], fragmented)
-        Assert.Equal<byte>(Array.concat [ initialize; large; shutdown ], coalesced)
-        Assert.InRange(coalesced.Length, 3072, limits.MaximumValueBytes)
-        Assert.Equal(2, (Test.frames fragmented).Length)
-        Assert.Equal(3, (Test.frames coalesced).Length)
+        (fragmented) |> should equal (Array.concat [ initialize; shutdown ])
+        (coalesced) |> should equal (Array.concat [ initialize; large; shutdown ])
+
+        ((coalesced.Length) >= (3072) && (coalesced.Length) <= (limits.MaximumValueBytes))
+        |> should equal true
+
+        ((Test.frames fragmented).Length) |> should equal (2)
+        ((Test.frames coalesced).Length) |> should equal (3)
 
         let configuration =
             { Test.defaultConfiguration profile with
@@ -64,8 +68,8 @@ type WorkspaceRpcStreamTests() =
             let exitCode, stdout, stderr =
                 Test.runStream configuration stream CancellationToken.None |> _.Result
 
-            Assert.True((exitCode = 0), $"{name}: exit {exitCode}, {stderr}")
-            Assert.Equal(expectedFrames, (Test.frames stdout).Length)
+            ((exitCode = 0)) |> should equal true
+            ((Test.frames stdout).Length) |> should equal (expectedFrames)
 
     [<Fact>]
     member _.``should distinguish clean and truncated EOF outcomes``() =
@@ -77,9 +81,9 @@ type WorkspaceRpcStreamTests() =
 
         for name, input, expectedExit, diagnostic in cases do
             let exitCode, stdout, stderr = Test.run configuration input
-            Assert.True((exitCode = expectedExit), $"{name}: exit {exitCode}")
-            Assert.Empty stdout
+            ((exitCode = expectedExit)) |> should equal true
+            (stdout) |> should be Empty
 
             match diagnostic with
-            | Some text -> Assert.Contains(text, stderr)
-            | None -> Assert.Equal(String.Empty, stderr)
+            | Some text -> (stderr) |> should haveSubstring (text)
+            | None -> (stderr) |> should equal (String.Empty)

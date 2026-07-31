@@ -3,6 +3,7 @@ namespace Dotnet.WorkspaceExplorer.Workspaces.UnitTests
 #nowarn "3261"
 
 open Dotnet.WorkspaceExplorer.Workspaces
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("Core contracts")>]
@@ -12,15 +13,13 @@ type WorkspaceIdentityTests() =
         let upper = WorkspacePath.Create "/tmp/dotnet-workspace-explorer/Demo.slnx"
         let lower = WorkspacePath.Create "/tmp/dotnet-workspace-explorer/demo.slnx"
 
-        Assert.Equal(
-            WorkspaceId.Create(upper, FileSystemCaseSensitivity.Insensitive).Value,
-            WorkspaceId.Create(lower, FileSystemCaseSensitivity.Insensitive).Value
-        )
+        (WorkspaceId.Create(lower, FileSystemCaseSensitivity.Insensitive).Value)
+        |> should equal (WorkspaceId.Create(upper, FileSystemCaseSensitivity.Insensitive).Value)
 
-        Assert.NotEqual<string>(
-            WorkspaceId.Create(upper, FileSystemCaseSensitivity.Sensitive).Value,
-            WorkspaceId.Create(lower, FileSystemCaseSensitivity.Sensitive).Value
-        )
+        (WorkspaceId.Create(lower, FileSystemCaseSensitivity.Sensitive).Value)
+        |> should
+            not'
+            (equal (WorkspaceId.Create(upper, FileSystemCaseSensitivity.Sensitive).Value))
 
         let workspace = WorkspaceContractScenario.workspace WorkspaceFormat.Slnx
 
@@ -33,6 +32,8 @@ type WorkspaceIdentityTests() =
                 WorkspaceCapabilityProfile.Full
             )
 
-        Assert.Equal((node "src\\Demo\\Demo.csproj").Id, (node "src/Demo/Demo.csproj").Id)
+        ((node "src/Demo/Demo.csproj").Id)
+        |> should equal ((node "src\\Demo\\Demo.csproj").Id)
 
-        Assert.NotEqual((node "src/Demo/Demo.csproj").Id, (node "src/Demo/Renamed.csproj").Id)
+        ((node "src/Demo/Renamed.csproj").Id)
+        |> should not' (equal ((node "src/Demo/Demo.csproj").Id))

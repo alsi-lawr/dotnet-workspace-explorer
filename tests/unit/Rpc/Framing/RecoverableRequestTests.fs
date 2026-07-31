@@ -91,8 +91,8 @@ type RecoverableRequestTests() =
         for name, bytes, expectedId, expectedCode in recoverable do
             match MessagePackRpcCodec.decodeFrame MessagePackRpcCodec.secureLimits bytes with
             | Ok(RpcFrameDecodeResult.RecoverableError(id, error)) ->
-                Assert.Equal(expectedId, id)
-                Assert.Equal(expectedCode, error.Code)
+                (id) |> should equal (expectedId)
+                (error.Code) |> should equal (expectedCode)
             | result -> failwithf "%s: expected recoverable error, got %A" name result
 
         let input =
@@ -104,13 +104,11 @@ type RecoverableRequestTests() =
         let exitCode, stdout, stderr =
             Test.run (Test.defaultConfiguration WorkspaceRpcProfile.current) input
 
-        Assert.Equal(0, exitCode)
+        (exitCode) |> should equal (0)
         stderr |> should equal String.Empty
 
-        Assert.Equal<(uint32 * string) list>(
-            recoverable |> List.map (fun (_, _, id, code) -> id, code),
-            Test.responseErrors stdout
-        )
+        (Test.responseErrors stdout)
+        |> should equal (recoverable |> List.map (fun (_, _, id, code) -> id, code))
 
         match Test.frames stdout |> List.last with
         | Response(2u, None, _) -> ()

@@ -44,7 +44,7 @@ type WorkspaceEditConfirmationTests() =
             )
             |> WorkspaceEditScenario.assertInvalid
 
-            Assert.Equal("original", File.ReadAllText target)
+            (File.ReadAllText target) |> should equal ("original")
 
             let accepted = WorkspaceEditScenario.preview coordinator request actions
 
@@ -91,7 +91,7 @@ type WorkspaceEditConfirmationTests() =
             | Failure(Conflict _) -> ()
             | outcome -> failwithf "Expected revision conflict, got %A" outcome
 
-            Assert.Equal("original", File.ReadAllText target)
+            (File.ReadAllText target) |> should equal ("original")
         finally
             Directory.Delete(root, true)
 
@@ -125,7 +125,7 @@ type WorkspaceEditConfirmationTests() =
             | Failure(Conflict _) -> ()
             | outcome -> failwithf "Expected fingerprint conflict, got %A" outcome
 
-            Assert.Equal("external", File.ReadAllText target)
+            (File.ReadAllText target) |> should equal ("external")
         finally
             Directory.Delete(root, true)
 
@@ -157,7 +157,7 @@ type WorkspaceEditConfirmationTests() =
             coordinator.Execute(request, actions, preview.Confirmation, CancellationToken.None)
             |> WorkspaceEditScenario.assertInvalid
 
-            Assert.Equal("original", File.ReadAllText target)
+            (File.ReadAllText target) |> should equal ("original")
         finally
             Directory.Delete(root, true)
 
@@ -238,7 +238,7 @@ type WorkspaceEditConfirmationTests() =
             )
             |> WorkspaceEditScenario.assertInvalid
 
-            Assert.True(File.Exists(Path.Combine(nonEmpty, "child.txt")))
+            (File.Exists(Path.Combine(nonEmpty, "child.txt"))) |> should equal true
         finally
             Directory.Delete(root, true)
             Directory.Delete(external, true)

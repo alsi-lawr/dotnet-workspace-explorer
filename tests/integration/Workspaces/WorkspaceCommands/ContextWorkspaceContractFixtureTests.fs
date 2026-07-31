@@ -13,6 +13,7 @@ open Dotnet.WorkspaceExplorer.WorkspaceCommands
 open Dotnet.WorkspaceExplorer.WorkspaceEditing
 open Dotnet.WorkspaceExplorer.WorkspaceIndex
 open Dotnet.WorkspaceExplorer.Workspaces
+open FsUnit.Xunit
 open Xunit
 
 type private ContextNoTrash() =
@@ -97,7 +98,7 @@ type ContextWorkspaceContractFixtureTests() =
                   template "visual-basic" "VB contract" "contract" "VB" "item" 200
                   template "project-collision" "Custom project" "contract" "C#" "project" 200 ]
 
-        Assert.Equal(4, entries.Length)
+        (entries.Length) |> should equal (4)
 
         let item =
             entries
@@ -106,17 +107,17 @@ type ContextWorkspaceContractFixtureTests() =
                 && entry.Language = Some "C#"
                 && entry.Kind = WorkspaceCreateKind.ItemTemplate)
 
-        Assert.Equal("custom-csharp", item.Identity)
+        (item.Identity) |> should equal ("custom-csharp")
 
-        Assert.Contains(
-            entries,
-            fun entry -> entry.Language = Some "F#" && entry.Kind = WorkspaceCreateKind.ItemTemplate
-        )
+        (entries)
+        |> Seq.exists (fun entry ->
+            entry.Language = Some "F#" && entry.Kind = WorkspaceCreateKind.ItemTemplate)
+        |> should equal true
 
-        Assert.Contains(
-            entries,
-            fun entry -> entry.Language = Some "VB" && entry.Kind = WorkspaceCreateKind.ItemTemplate
-        )
+        (entries)
+        |> Seq.exists (fun entry ->
+            entry.Language = Some "VB" && entry.Kind = WorkspaceCreateKind.ItemTemplate)
+        |> should equal true
 
         let project =
             entries
@@ -125,11 +126,17 @@ type ContextWorkspaceContractFixtureTests() =
         let itemArguments = commandArguments item |> forwardedArguments
         let projectArguments = commandArguments project |> forwardedArguments
 
-        Assert.Contains("--type", itemArguments)
-        Assert.Equal("item", itemArguments[Array.IndexOf(itemArguments, "--type") + 1])
-        Assert.DoesNotContain("--no-restore", itemArguments)
-        Assert.Equal("project", projectArguments[Array.IndexOf(projectArguments, "--type") + 1])
-        Assert.Contains("--no-restore", projectArguments)
+        (itemArguments) |> should contain ("--type")
+
+        (itemArguments[Array.IndexOf(itemArguments, "--type") + 1])
+        |> should equal ("item")
+
+        (itemArguments) |> should not' (contain ("--no-restore"))
+
+        (projectArguments[Array.IndexOf(projectArguments, "--type") + 1])
+        |> should equal ("project")
+
+        (projectArguments) |> should contain ("--no-restore")
 
     [<Fact>]
     member _.``catalog fixtures reject ambiguity and invalidate opaque bindings``() =
@@ -138,7 +145,7 @@ type ContextWorkspaceContractFixtureTests() =
               template "second" "Second" "ambiguous" "C#" "item" 300 ]
 
         match WorkspaceTemplateCatalog.parseBytes "catalog-a" (catalogJson templates) with
-        | Error error -> Assert.Equal("template_catalog_ambiguous", error.Code)
+        | Error error -> (error.Code) |> should equal ("template_catalog_ambiguous")
         | Ok entries -> failwithf "Expected catalog ambiguity, got %A" entries
 
         let stable = [ template "custom" "Custom item" "custom" "C#" "item" 100 ]
@@ -156,7 +163,7 @@ type ContextWorkspaceContractFixtureTests() =
                 (WorkspaceTemplateCatalog.binding entry)
                 changedCatalog
         with
-        | Error error -> Assert.Equal("template_catalog_changed", error.Code)
+        | Error error -> (error.Code) |> should equal ("template_catalog_changed")
         | Ok() -> failwith "Expected a changed catalog binding to be rejected."
 
     [<Fact>]
@@ -180,20 +187,22 @@ type ContextWorkspaceContractFixtureTests() =
 
         for kind in Enum.GetValues<WorkspaceNodeKind>() do
             let commands = commandIds false (node kind WorkspaceNodeLoadState.Hydrated)
-            Assert.Equal(List.contains kind createKinds, commands.Contains "workspace.create")
-            Assert.Equal(List.contains kind deleteKinds, commands.Contains "workspace.delete")
 
-        Assert.Empty(
-            ContextWorkspaceCommands.discover
-                false
-                (Some(node WorkspaceNodeKind.Project WorkspaceNodeLoadState.FilteredOut))
-        )
+            (commands.Contains "workspace.create")
+            |> should equal (List.contains kind createKinds)
 
-        Assert.Empty(
-            ContextWorkspaceCommands.discover
-                true
-                (Some(node WorkspaceNodeKind.Project WorkspaceNodeLoadState.Hydrated))
-        )
+            (commands.Contains "workspace.delete")
+            |> should equal (List.contains kind deleteKinds)
+
+        (ContextWorkspaceCommands.discover
+            false
+            (Some(node WorkspaceNodeKind.Project WorkspaceNodeLoadState.FilteredOut)))
+        |> should be Empty
+
+        (ContextWorkspaceCommands.discover
+            true
+            (Some(node WorkspaceNodeKind.Project WorkspaceNodeLoadState.Hydrated)))
+        |> should be Empty
 
         let createParameters =
             ContextWorkspaceCommands.create.Parameters
@@ -204,9 +213,9 @@ type ContextWorkspaceContractFixtureTests() =
             [| "selectionId", CommandParameterType.Text, true
                "name", CommandParameterType.Text, true |]
 
-        Assert.True((createParameters = expectedCreateParameters))
+        ((createParameters = expectedCreateParameters)) |> should equal true
 
-        Assert.Empty(ContextWorkspaceCommands.delete.Parameters)
+        (ContextWorkspaceCommands.delete.Parameters) |> should be Empty
 
         let entries =
             parsed
@@ -244,27 +253,26 @@ type ContextWorkspaceContractFixtureTests() =
 
         let rootOptions = WorkspaceTemplateCatalog.options rootContext catalog
 
-        Assert.All(
-            rootOptions,
-            fun option -> Assert.Equal(WorkspaceCreateKind.ProjectTemplate, option.Kind)
-        )
+        (rootOptions)
+        |> Seq.iter (fun option ->
+            (option.Kind) |> should equal (WorkspaceCreateKind.ProjectTemplate))
 
         let projectOptions = WorkspaceTemplateCatalog.options projectContext catalog
-        Assert.Contains(projectOptions, fun option -> option.Kind = WorkspaceCreateKind.Empty)
 
-        Assert.DoesNotContain(
-            projectOptions,
-            fun option ->
-                option.Kind = WorkspaceCreateKind.ItemTemplate
-                && option.Language |> Option.exists ((<>) "C#")
-        )
+        (projectOptions)
+        |> Seq.exists (fun option -> option.Kind = WorkspaceCreateKind.Empty)
+        |> should equal true
 
-        Assert.Equal(
-            3,
-            projectOptions
-            |> Array.filter (fun option -> option.Kind = WorkspaceCreateKind.ProjectTemplate)
-            |> Array.length
-        )
+        (projectOptions)
+        |> Seq.exists (fun option ->
+            option.Kind = WorkspaceCreateKind.ItemTemplate
+            && option.Language |> Option.exists ((<>) "C#"))
+        |> should equal false
+
+        (projectOptions
+         |> Array.filter (fun option -> option.Kind = WorkspaceCreateKind.ProjectTemplate)
+         |> Array.length)
+        |> should equal (3)
 
     [<Fact>]
     member _.``transactional publication compensates nested parent directories on failure``() =
@@ -311,8 +319,8 @@ type ContextWorkspaceContractFixtureTests() =
             | Success(RolledBack _) -> ()
             | outcome -> failwithf "Expected compensated failure, got %A" outcome
 
-            Assert.False(Directory.Exists(Path.Combine(root, "generated")))
-            Assert.False(File.Exists destination)
+            (Directory.Exists(Path.Combine(root, "generated"))) |> should equal false
+            (File.Exists destination) |> should equal false
         finally
             if Directory.Exists root then
                 Directory.Delete(root, true)
@@ -337,7 +345,7 @@ type ContextWorkspaceContractFixtureTests() =
                        Path.GetFullPath postaction |]
                     |> Array.sort
 
-                Assert.True((expected = outputs))
+                ((expected = outputs)) |> should equal true
         finally
             if Directory.Exists root then
                 Directory.Delete(root, true)

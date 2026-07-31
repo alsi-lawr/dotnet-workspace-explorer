@@ -3,6 +3,7 @@ namespace Dotnet.WorkspaceExplorer.Workspaces.IntegrationTests
 #nowarn "3261"
 
 open Dotnet.WorkspaceExplorer.Rpc
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("Workspace scenarios")>]
@@ -53,6 +54,6 @@ type ProjectPropertyCommandTests() =
             let error, _ =
                 WorkspaceRpcScenario.readFrame session.Child |> WorkspaceRpcScenario.response 3u
 
-            Assert.Equal("unsupported_capability", error.Value.Code)
+            (error.Value.Code) |> should equal ("unsupported_capability")
         finally
             WorkspaceRpcScenario.closeProject session

@@ -3,6 +3,7 @@ namespace Dotnet.WorkspaceExplorer.Rpc.UnitTests
 #nowarn "3261"
 
 open Dotnet.WorkspaceExplorer.Rpc
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("RPC scenarios")>]
@@ -77,23 +78,21 @@ type WorkspaceRpcGoldenFrameTests() =
         for name, frame in cases do
             let golden, decoded = Test.decodeGolden name
             let encoded = MessagePackRpcCodec.encodeFrame frame
-            Assert.True((golden = encoded), sprintf "%s did not match its encoded frame." name)
-            Assert.Equal<byte>(golden, MessagePackRpcCodec.encodeFrame decoded)
+            ((golden = encoded)) |> should equal true
+            (MessagePackRpcCodec.encodeFrame decoded) |> should equal (golden)
 
             match decoded with
-            | Request(7u, "x", RpcValue.Map fields) -> Assert.Empty fields
+            | Request(7u, "x", RpcValue.Map fields) -> (fields) |> should be Empty
             | Response(7u, Some decoded, RpcValue.Map result) ->
-                Assert.Equal("e", decoded.Code)
-                Assert.Equal("m", decoded.Message)
+                (decoded.Code) |> should equal ("e")
+                (decoded.Message) |> should equal ("m")
 
-                Assert.Equal(
-                    Some(RpcValue.Unsigned 1UL),
-                    decoded.Data |> Option.bind (RpcValue.tryField "d")
-                )
+                (decoded.Data |> Option.bind (RpcValue.tryField "d"))
+                |> should equal (Some(RpcValue.Unsigned 1UL))
 
-                Assert.Empty result
+                (result) |> should be Empty
             | Notification("n", parameters) ->
-                Assert.Equal(Some(RpcValue.Boolean true), RpcValue.tryField "v" parameters)
+                (RpcValue.tryField "v" parameters) |> should equal (Some(RpcValue.Boolean true))
             | Request(_, "initialize", _)
             | Request(_, "workspace/root", _)
             | Request(_, "workspace/children", _)

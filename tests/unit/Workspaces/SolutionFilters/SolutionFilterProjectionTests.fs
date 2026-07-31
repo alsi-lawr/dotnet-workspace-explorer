@@ -4,6 +4,7 @@ namespace Dotnet.WorkspaceExplorer.Workspaces.UnitTests
 
 open Dotnet.WorkspaceExplorer.Workspaces
 open Dotnet.WorkspaceExplorer.Solutions
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("Solution contracts")>]
@@ -20,13 +21,11 @@ type SolutionFilterProjectionTests() =
             |> Seq.find (fun project -> not project.IsFilteredOut)
 
         let excluded = workspace.Contents.Projects |> Seq.find _.IsFilteredOut
-        Assert.Equal(WorkspaceFormat.Slnf, workspace.Descriptor.Format)
-        Assert.True workspace.Descriptor.IsReadOnly
-        Assert.Equal(WorkspaceNodeLoadState.Unhydrated, included.Node.LoadState)
-        Assert.Equal(WorkspaceNodeKind.Placeholder, excluded.Node.Kind)
-        Assert.Equal(WorkspaceNodeLoadState.FilteredOut, excluded.Node.LoadState)
+        (workspace.Descriptor.Format) |> should equal (WorkspaceFormat.Slnf)
+        (workspace.Descriptor.IsReadOnly) |> should equal true
+        (included.Node.LoadState) |> should equal (WorkspaceNodeLoadState.Unhydrated)
+        (excluded.Node.Kind) |> should equal (WorkspaceNodeKind.Placeholder)
+        (excluded.Node.LoadState) |> should equal (WorkspaceNodeLoadState.FilteredOut)
 
-        Assert.All(
-            workspace.Contents.Nodes,
-            fun node -> Assert.False(node.Supports WorkspaceCapabilityId.Write)
-        )
+        (workspace.Contents.Nodes)
+        |> Seq.iter (fun node -> (node.Supports WorkspaceCapabilityId.Write) |> should equal false)

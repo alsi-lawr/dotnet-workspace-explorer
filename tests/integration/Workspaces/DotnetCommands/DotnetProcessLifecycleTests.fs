@@ -5,6 +5,7 @@ namespace Dotnet.WorkspaceExplorer.Workspaces.IntegrationTests
 open System
 open System.Diagnostics
 open System.IO
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("Delegated dotnet processes")>]
@@ -15,21 +16,23 @@ type DotnetProcessLifecycleTests() =
 
         try
             let result = DirectCommandProcess.run directory "failure" [ "--json"; "build" ] []
-            Assert.Equal(23, result.ExitCode)
-            Assert.Equal(String.Empty, result.StandardError)
+            (result.ExitCode) |> should equal (23)
+            (result.StandardError) |> should equal (String.Empty)
             use document = DirectCommandProcess.json result
 
             let diagnostic =
                 document.RootElement.GetProperty("diagnostics").EnumerateArray() |> Seq.head
 
-            Assert.False(document.RootElement.GetProperty("success").GetBoolean())
-            Assert.Equal(23, document.RootElement.GetProperty("externalExitCode").GetInt32())
-            Assert.Equal("external_tool_failed", diagnostic.GetProperty("code").GetString())
+            (document.RootElement.GetProperty("success").GetBoolean()) |> should equal false
 
-            Assert.Equal(
-                "failure",
-                document.RootElement.GetProperty("result").GetProperty("standardError").GetString()
-            )
+            (document.RootElement.GetProperty("externalExitCode").GetInt32())
+            |> should equal (23)
+
+            (diagnostic.GetProperty("code").GetString())
+            |> should equal ("external_tool_failed")
+
+            (document.RootElement.GetProperty("result").GetProperty("standardError").GetString())
+            |> should equal ("failure")
         finally
             DirectCommandProcess.delete directory
 
@@ -52,12 +55,12 @@ type DotnetProcessLifecycleTests() =
             let buffer = Array.zeroCreate<char> 5
             let first = child.StandardOutput.ReadAsync(buffer, 0, buffer.Length)
             DirectCommandProcess.waitForFile marker
-            Assert.True(first.Wait 5000, "The first output chunk was not streamed.")
-            Assert.Equal("first", String buffer)
+            (first.Wait 5000) |> should equal true
+            (String buffer) |> should equal ("first")
             File.WriteAllText(release, "continue")
-            Assert.True(child.WaitForExit 10000)
-            Assert.Equal("second", child.StandardOutput.ReadToEnd())
-            Assert.Equal(0, child.ExitCode)
+            (child.WaitForExit 10000) |> should equal true
+            (child.StandardOutput.ReadToEnd()) |> should equal ("second")
+            (child.ExitCode) |> should equal (0)
         finally
             DirectCommandProcess.delete directory
 
@@ -80,20 +83,18 @@ type DotnetProcessLifecycleTests() =
                 let childPid = File.ReadAllText pidFile |> Int32.Parse
                 use signal = Process.Start("kill", $"-INT {child.Id}")
                 signal.WaitForExit()
-                Assert.Equal(0, signal.ExitCode)
-                Assert.True(child.WaitForExit 10000, "The interrupted direct command did not exit.")
-                Assert.Equal(1, child.ExitCode)
+                (signal.ExitCode) |> should equal (0)
+                (child.WaitForExit 10000) |> should equal true
+                (child.ExitCode) |> should equal (1)
 
-                Assert.Equal(
-                    "cancelled",
-                    DirectCommandProcess.diagnosticCode
-                        { ExitCode = child.ExitCode
-                          StandardOutput = child.StandardOutput.ReadToEnd()
-                          StandardError = child.StandardError.ReadToEnd() }
-                )
+                (DirectCommandProcess.diagnosticCode
+                    { ExitCode = child.ExitCode
+                      StandardOutput = child.StandardOutput.ReadToEnd()
+                      StandardError = child.StandardError.ReadToEnd() })
+                |> should equal ("cancelled")
 
-                Assert.Throws<ArgumentException>(fun () ->
-                    Process.GetProcessById childPid |> ignore)
+                (fun () -> Process.GetProcessById childPid |> ignore)
+                |> should throw typeof<ArgumentException>
                 |> ignore
             finally
                 DirectCommandProcess.delete directory

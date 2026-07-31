@@ -5,6 +5,7 @@ namespace Dotnet.WorkspaceExplorer.Rpc.UnitTests
 open System.IO
 open Dotnet.WorkspaceExplorer.Workspaces
 open Dotnet.WorkspaceExplorer.Rpc
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("RPC scenarios")>]
@@ -54,8 +55,8 @@ type WorkspaceRpcInitializationTests() =
             let exitCode, stdout, stderr =
                 requests |> Array.concat |> Test.run (Test.defaultConfiguration profile)
 
-            Assert.True((exitCode = 0), $"{name}: exit {exitCode}, {stderr}")
-            Assert.Equal<(uint32 * string) list>(expectedErrors, Test.responseErrors stdout)
+            ((exitCode = 0)) |> should equal true
+            (Test.responseErrors stdout) |> should equal (expectedErrors)
 
     [<Fact>]
     member _.``should keep public initialization and paging schemas stable``() =
@@ -89,9 +90,9 @@ type WorkspaceRpcInitializationTests() =
             WorkspaceRpc.parseInitialize valid
             |> Result.defaultWith (fun error -> failwith error.Message)
 
-        Assert.Equal(0, request.ProtocolMinor)
-        Assert.Equal(4096, request.MaximumFrameBytes)
-        Assert.Equal(50, request.MaximumPageSize)
+        (request.ProtocolMinor) |> should equal (0)
+        (request.MaximumFrameBytes) |> should equal (4096)
+        (request.MaximumPageSize) |> should equal (50)
 
         let descriptor =
             WorkspaceDescriptor.Create(
@@ -106,10 +107,8 @@ type WorkspaceRpcInitializationTests() =
             WorkspaceRpcResponses.initializeResult descriptor 0L request
             |> RpcValue.requireMap "initialize.result"
 
-        Assert.Equal<string list>(
-            [ "capabilities"; "limits"; "protocolVersion"; "serverInfo"; "workspace" ],
-            resultFields.Keys |> Seq.sort |> Seq.toList
-        )
+        (resultFields.Keys |> Seq.sort |> Seq.toList)
+        |> should equal ([ "capabilities"; "limits"; "protocolVersion"; "serverInfo"; "workspace" ])
 
         let negotiated =
             resultFields["capabilities"]
@@ -117,14 +116,14 @@ type WorkspaceRpcInitializationTests() =
             |> Seq.map (RpcValue.requireString "capability")
             |> Seq.toList
 
-        Assert.Equal<string list>(
-            [ "workspace.create.options"; "workspace.operations.cancel"; "workspace.root" ],
-            negotiated
-        )
+        negotiated
+        |> should
+            equal
+            [ "workspace.create.options"; "workspace.operations.cancel"; "workspace.root" ]
 
         let resultLimits = resultFields["limits"] |> RpcValue.requireMap "limits"
-        Assert.Equal(RpcValue.Integer 4096L, resultLimits["maxFrameBytes"])
-        Assert.Equal(RpcValue.Integer 50L, resultLimits["maxPageSize"])
+        (resultLimits["maxFrameBytes"]) |> should equal (RpcValue.Integer 4096L)
+        (resultLimits["maxPageSize"]) |> should equal (RpcValue.Integer 50L)
 
         let invalid =
             [ "missing fields", Test.empty
@@ -134,7 +133,7 @@ type WorkspaceRpcInitializationTests() =
 
         for name, parameters in invalid do
             match WorkspaceRpc.parseInitialize parameters with
-            | Error error -> Assert.Equal("invalid_params", error.Code)
+            | Error error -> (error.Code) |> should equal ("invalid_params")
             | Ok value -> failwithf "%s: expected invalid initialize, got %A" name value
 
         let defaults =
@@ -142,7 +141,7 @@ type WorkspaceRpcInitializationTests() =
             |> WorkspaceRpc.parseInitialize
             |> Result.defaultWith (fun error -> failwith error.Message)
 
-        Assert.Equal(256, defaults.MaximumPageSize)
+        (defaults.MaximumPageSize) |> should equal (256)
 
         let children pageSize =
             WorkspaceRpc.parseRequest
@@ -157,7 +156,7 @@ type WorkspaceRpcInitializationTests() =
         | result -> failwithf "maximum page and continuation schema changed: %A" result
 
         match children 4097L with
-        | Error error -> Assert.Equal("invalid_params", error.Code)
+        | Error error -> (error.Code) |> should equal ("invalid_params")
         | result -> failwithf "oversized page should be rejected: %A" result
 
         match
@@ -177,5 +176,5 @@ type WorkspaceRpcInitializationTests() =
                 "extra", RpcValue.Boolean true ] ]
         |> List.iter (fun parameters ->
             match WorkspaceRpc.parseRequest "workspace/create/options" parameters with
-            | Error error -> Assert.Equal("invalid_params", error.Code)
+            | Error error -> (error.Code) |> should equal ("invalid_params")
             | result -> failwithf "invalid create options request was accepted: %A" result)

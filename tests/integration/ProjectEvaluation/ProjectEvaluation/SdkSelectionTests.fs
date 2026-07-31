@@ -4,6 +4,7 @@ namespace Dotnet.WorkspaceExplorer.ProjectEvaluation.IntegrationTests
 
 open System.IO
 open Dotnet.WorkspaceExplorer.Rpc
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("Project evaluation scenarios")>]
@@ -27,20 +28,19 @@ type SdkSelectionTests() =
                 let unavailable, observedRevision =
                     Test.requireSuccessAfterWorkspaceNotifications 100u hydratedRevision app
 
-                Assert.Equal(RpcValue.Boolean true, Test.field "reset" unavailable)
+                (Test.field "reset" unavailable) |> should equal (RpcValue.Boolean true)
 
                 let unavailableRevision =
                     Test.field "revision" unavailable |> RpcValue.requireInteger "revision"
 
-                Assert.True(unavailableRevision > observedRevision)
+                (unavailableRevision > observedRevision) |> should equal true
 
                 let reset = Test.readMatchingWorkspaceReset unavailableRevision app
 
-                Assert.Contains(
-                    Test.values "diagnostics" reset,
-                    fun diagnostic ->
-                        Test.stringField "code" diagnostic = "workspace.refresh_unverified"
-                )
+                (Test.values "diagnostics" reset)
+                |> Seq.exists (fun diagnostic ->
+                    Test.stringField "code" diagnostic = "workspace.refresh_unverified")
+                |> should equal true
 
                 Test.writeGlobalJson directory version
                 Test.send app 101u "workspace/refresh" RpcValue.emptyMap
@@ -48,16 +48,16 @@ type SdkSelectionTests() =
                 let recovered, recoveredObservedRevision =
                     Test.requireSuccessAfterWorkspaceNotifications 101u unavailableRevision app
 
-                Assert.Equal(RpcValue.Boolean false, Test.field "reset" recovered)
+                (Test.field "reset" recovered) |> should equal (RpcValue.Boolean false)
 
                 let recoveredRevision =
                     Test.field "revision" recovered |> RpcValue.requireInteger "revision"
 
-                Assert.True(recoveredRevision >= recoveredObservedRevision)
+                (recoveredRevision >= recoveredObservedRevision) |> should equal true
 
                 let freshRevision = Test.hydrateProject app 200u
-                Assert.True(freshRevision > recoveredRevision)
-                Assert.True(File.Exists globalJson)
+                (freshRevision > recoveredRevision) |> should equal true
+                (File.Exists globalJson) |> should equal true
                 300u)
         finally
             Directory.Delete(directory, true)

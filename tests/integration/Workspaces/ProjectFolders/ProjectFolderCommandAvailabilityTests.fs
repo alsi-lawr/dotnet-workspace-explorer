@@ -31,7 +31,7 @@ type ProjectFolderCommandAvailabilityTests() =
                 WorkspaceRpcScenario.readFrame session.Child
                 |> WorkspaceRpcScenario.response requestId
 
-            Assert.True error.IsNone
+            (error.IsNone) |> should equal true
 
             WorkspaceRpcScenario.field "commands" result
             |> RpcValue.requireArray "commands"
@@ -81,7 +81,7 @@ type ProjectFolderCommandAvailabilityTests() =
                     WorkspaceRpcScenario.readFrame writable.Child
                     |> WorkspaceRpcScenario.response requestId
 
-                Assert.True error.IsNone
+                (error.IsNone) |> should equal true
 
                 let command = WorkspaceRpcScenario.field "command" result
 

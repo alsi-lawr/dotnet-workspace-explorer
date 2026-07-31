@@ -5,6 +5,7 @@ namespace Dotnet.WorkspaceExplorer.Workspaces.IntegrationTests
 open System
 open System.IO
 open Dotnet.WorkspaceExplorer.Rpc
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("Workspace scenarios")>]
@@ -34,7 +35,7 @@ type DefaultProjectItemTests() =
                 0L
                 true
 
-            Assert.Equal<byte>(before, File.ReadAllBytes session.Project)
+            (File.ReadAllBytes session.Project) |> should equal (before)
 
             WorkspaceRpcScenario.previewAndExecute
                 session.Child
@@ -47,13 +48,16 @@ type DefaultProjectItemTests() =
                 true
 
             let project = File.ReadAllText session.Project
-            Assert.Contains("<Content Remove=\"appsettings.json\"", project)
-            Assert.Contains("<None Include=\"appsettings.json\"", project)
-            Assert.DoesNotContain("<Content Include=\"appsettings.json\"", project)
+            (project) |> should haveSubstring ("<Content Remove=\"appsettings.json\"")
+            (project) |> should haveSubstring ("<None Include=\"appsettings.json\"")
+
+            (project)
+            |> should not' (haveSubstring ("<Content Include=\"appsettings.json\""))
 
             let names = WorkspaceRpcScenario.readAllProjectChildNames session 7u 2L
 
-            Assert.Equal(1, names |> Array.filter ((=) "appsettings.json") |> Array.length)
+            (names |> Array.filter ((=) "appsettings.json") |> Array.length)
+            |> should equal (1)
         finally
             WorkspaceRpcScenario.closeProject session
 
@@ -84,7 +88,7 @@ type DefaultProjectItemTests() =
                 0L
                 true
 
-            Assert.Equal<byte>(before, File.ReadAllBytes session.Project)
+            (File.ReadAllBytes session.Project) |> should equal (before)
 
             WorkspaceRpcScenario.previewAndExecute
                 session.Child
@@ -97,13 +101,15 @@ type DefaultProjectItemTests() =
                 true
 
             let project = File.ReadAllText session.Project
-            Assert.Contains("<Content Remove=\"wwwroot/site.css\"", project)
-            Assert.Contains("<None Include=\"wwwroot/site.css\"", project)
-            Assert.DoesNotContain("<Content Include=\"wwwroot/site.css\"", project)
+            (project) |> should haveSubstring ("<Content Remove=\"wwwroot/site.css\"")
+            (project) |> should haveSubstring ("<None Include=\"wwwroot/site.css\"")
+
+            (project)
+            |> should not' (haveSubstring ("<Content Include=\"wwwroot/site.css\""))
 
             let names = WorkspaceRpcScenario.readAllProjectChildNames session 7u 2L
 
-            Assert.Equal(1, names |> Array.filter ((=) "site.css") |> Array.length)
+            (names |> Array.filter ((=) "site.css") |> Array.length) |> should equal (1)
         finally
             WorkspaceRpcScenario.closeProject session
 
@@ -135,7 +141,7 @@ type DefaultProjectItemTests() =
                 0L
                 true
 
-            Assert.Equal<byte>(before, File.ReadAllBytes session.Project)
+            (File.ReadAllBytes session.Project) |> should equal (before)
             let excluded = Path.Combine(session.Directory, "Excluded.cs")
 
             WorkspaceRpcScenario.previewAndExecute
@@ -150,7 +156,8 @@ type DefaultProjectItemTests() =
                 1L
                 true
 
-            Assert.Contains("<Compile Include=\"Excluded.cs\"", File.ReadAllText session.Project)
+            (File.ReadAllText session.Project)
+            |> should haveSubstring ("<Compile Include=\"Excluded.cs\"")
         finally
             WorkspaceRpcScenario.closeProject session
 
@@ -181,11 +188,11 @@ type DefaultProjectItemTests() =
                 true
 
             let project = File.ReadAllText session.Project
-            Assert.Contains("<None Remove=\"Assets/**/*\"", project)
-            Assert.Contains("<Content Include=\"Assets/**/*\"", project)
+            (project) |> should haveSubstring ("<None Remove=\"Assets/**/*\"")
+            (project) |> should haveSubstring ("<Content Include=\"Assets/**/*\"")
 
             let names = WorkspaceRpcScenario.readAllProjectChildNames session 5u 1L
 
-            Assert.Equal(1, names |> Array.filter ((=) "Readme.txt") |> Array.length)
+            (names |> Array.filter ((=) "Readme.txt") |> Array.length) |> should equal (1)
         finally
             WorkspaceRpcScenario.closeProject session

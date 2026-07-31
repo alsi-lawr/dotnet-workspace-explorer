@@ -7,6 +7,7 @@ open System.Collections.Generic
 open System.IO
 open Microsoft.VisualStudio.SolutionPersistence.Model
 open Dotnet.WorkspaceExplorer.Rpc
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("Workspace scenarios")>]
@@ -32,7 +33,7 @@ type WorkspaceSessionTests() =
             let initializeError, _ =
                 WorkspaceRpcScenario.readFrame valid |> WorkspaceRpcScenario.response 1u
 
-            Assert.True initializeError.IsNone
+            (initializeError.IsNone) |> should equal true
             WorkspaceRpcScenario.shutdown valid 2u
 
             let invalidForms =
@@ -64,14 +65,16 @@ type WorkspaceSessionTests() =
             for arguments in invalidForms do
                 use invalid = WorkspaceRpcScenario.startApphost arguments []
                 invalid.StandardInput.Close()
-                Assert.True(invalid.WaitForExit 5000, "Invalid startup did not terminate.")
-                Assert.Equal(64, invalid.ExitCode)
-                Assert.Empty(WorkspaceRpcScenario.readRemaining invalid.StandardOutput.BaseStream)
+                (invalid.WaitForExit 5000) |> should equal true
+                (invalid.ExitCode) |> should equal (64)
 
-                Assert.Equal(
-                    "dotnet-workspace-explorer workspace RPC startup failure: invalid invocation.",
-                    invalid.StandardError.ReadToEnd().Trim()
-                )
+                (WorkspaceRpcScenario.readRemaining invalid.StandardOutput.BaseStream)
+                |> should be Empty
+
+                (invalid.StandardError.ReadToEnd().Trim())
+                |> should
+                    equal
+                    ("dotnet-workspace-explorer workspace RPC startup failure: invalid invocation.")
         finally
             if Directory.Exists directory then
                 Directory.Delete(directory, true)
@@ -101,22 +104,18 @@ type WorkspaceSessionTests() =
                 let initializeError, initializeResult =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 1u
 
-                Assert.True initializeError.IsNone
+                (initializeError.IsNone) |> should equal true
 
-                Assert.Equal(
-                    0L,
-                    WorkspaceRpcScenario.field
-                        "minor"
-                        (WorkspaceRpcScenario.field "protocolVersion" initializeResult)
-                    |> RpcValue.requireInteger "minor"
-                )
+                (WorkspaceRpcScenario.field
+                    "minor"
+                    (WorkspaceRpcScenario.field "protocolVersion" initializeResult)
+                 |> RpcValue.requireInteger "minor")
+                |> should equal (0L)
 
-                Assert.Equal(
-                    4,
-                    (WorkspaceRpcScenario.field "capabilities" initializeResult
-                     |> RpcValue.requireArray "capabilities")
-                        .Length
-                )
+                ((WorkspaceRpcScenario.field "capabilities" initializeResult
+                  |> RpcValue.requireArray "capabilities")
+                    .Length)
+                |> should equal (4)
 
                 WorkspaceRpcScenario.send
                     child
@@ -126,13 +125,11 @@ type WorkspaceSessionTests() =
                 let rootError, rootResult =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 2u
 
-                Assert.True rootError.IsNone
+                (rootError.IsNone) |> should equal true
 
-                Assert.Equal(
-                    0L,
-                    WorkspaceRpcScenario.field "revision" rootResult
-                    |> RpcValue.requireInteger "revision"
-                )
+                (WorkspaceRpcScenario.field "revision" rootResult
+                 |> RpcValue.requireInteger "revision")
+                |> should equal (0L)
 
                 let workspaceRootId =
                     WorkspaceRpcScenario.field "nodes" rootResult
@@ -149,7 +146,7 @@ type WorkspaceSessionTests() =
                 let exportError, exportResult =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 3u
 
-                Assert.True exportError.IsNone
+                (exportError.IsNone) |> should equal true
 
                 let operationId =
                     WorkspaceRpcScenario.field "operationId" exportResult
@@ -161,38 +158,30 @@ type WorkspaceSessionTests() =
 
                 while not completed do
                     let frame = WorkspaceRpcScenario.readFrame child
-                    Assert.True(MessagePackRpcCodec.encodeFrame frame |> _.Length <= 1024)
+                    (MessagePackRpcCodec.encodeFrame frame |> _.Length <= 1024) |> should equal true
 
                     match frame with
                     | Notification("workspace/export/chunk", parameters) ->
-                        Assert.Equal(
-                            RpcValue.String operationId,
-                            WorkspaceRpcScenario.field "operationId" parameters
-                        )
+                        (WorkspaceRpcScenario.field "operationId" parameters)
+                        |> should equal (RpcValue.String operationId)
 
-                        Assert.Equal(
-                            sequence,
-                            WorkspaceRpcScenario.field "sequence" parameters
-                            |> RpcValue.requireInteger "sequence"
-                        )
+                        (WorkspaceRpcScenario.field "sequence" parameters
+                         |> RpcValue.requireInteger "sequence")
+                        |> should equal (sequence)
 
                         sequence <- sequence + 1L
                     | Notification("workspace/operations/completed", parameters) ->
-                        Assert.Equal(
-                            RpcValue.String operationId,
-                            WorkspaceRpcScenario.field "operationId" parameters
-                        )
+                        (WorkspaceRpcScenario.field "operationId" parameters)
+                        |> should equal (RpcValue.String operationId)
 
-                        Assert.Equal(
-                            RpcValue.String "succeeded",
-                            WorkspaceRpcScenario.field "outcome" parameters
-                        )
+                        (WorkspaceRpcScenario.field "outcome" parameters)
+                        |> should equal (RpcValue.String "succeeded")
 
                         completions <- completions + 1
                         completed <- true
                     | frame -> failwithf "Unexpected export frame: %A" frame
 
-                Assert.Equal(1, completions)
+                (completions) |> should equal (1)
 
                 WorkspaceRpcScenario.send
                     child
@@ -202,15 +191,14 @@ type WorkspaceSessionTests() =
                 let noOpError, noOpResult =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 4u
 
-                Assert.True noOpError.IsNone
+                (noOpError.IsNone) |> should equal true
 
-                Assert.Equal(
-                    0L,
-                    WorkspaceRpcScenario.field "revision" noOpResult
-                    |> RpcValue.requireInteger "revision"
-                )
+                (WorkspaceRpcScenario.field "revision" noOpResult
+                 |> RpcValue.requireInteger "revision")
+                |> should equal (0L)
 
-                Assert.Equal(RpcValue.Boolean false, WorkspaceRpcScenario.field "reset" noOpResult)
+                (WorkspaceRpcScenario.field "reset" noOpResult)
+                |> should equal (RpcValue.Boolean false)
 
                 let folder = model.AddFolder "/nested/"
                 model.AddProject("Second.fsproj", "Second", folder) |> ignore
@@ -234,21 +222,17 @@ type WorkspaceSessionTests() =
                             WorkspaceRpcScenario.field "revision" changedResult
                             |> RpcValue.requireInteger "revision"
 
-                        Assert.True(changedRevision > observedRevision)
+                        (changedRevision > observedRevision) |> should equal true
 
                         match WorkspaceRpcScenario.readFrame child with
                         | Notification("workspace/delta", parameters) ->
-                            Assert.Equal(
-                                changedRevision - 1L,
-                                WorkspaceRpcScenario.field "baseRevision" parameters
-                                |> RpcValue.requireInteger "baseRevision"
-                            )
+                            (WorkspaceRpcScenario.field "baseRevision" parameters
+                             |> RpcValue.requireInteger "baseRevision")
+                            |> should equal (changedRevision - 1L)
 
-                            Assert.Equal(
-                                changedRevision,
-                                WorkspaceRpcScenario.field "newRevision" parameters
-                                |> RpcValue.requireInteger "newRevision"
-                            )
+                            (WorkspaceRpcScenario.field "newRevision" parameters
+                             |> RpcValue.requireInteger "newRevision")
+                            |> should equal (changedRevision)
 
                             let added = HashSet<string> StringComparer.Ordinal
                             let mutable secondAdded = false
@@ -261,10 +245,9 @@ type WorkspaceSessionTests() =
                                 then
                                     match WorkspaceRpcScenario.field "parentNodeId" change with
                                     | RpcValue.String parentNodeId ->
-                                        Assert.True(
-                                            parentNodeId = workspaceRootId
-                                            || added.Contains parentNodeId
-                                        )
+                                        (parentNodeId = workspaceRootId
+                                         || added.Contains parentNodeId)
+                                        |> should equal true
                                     | RpcValue.Nil -> ()
                                     | value -> failwithf "Unexpected parent ID: %A" value
 
@@ -282,33 +265,29 @@ type WorkspaceSessionTests() =
                                     if name = RpcValue.String "Second" then
                                         secondAdded <- true
 
-                            Assert.True(
-                                secondAdded,
-                                "The refreshed delta did not add the Second project."
-                            )
+                            (secondAdded) |> should equal true
 
                             changedRevision
                         | frame -> failwithf "Expected refresh delta, got %A" frame
                     | Some error ->
-                        Assert.Equal("workspace_conflict", error.Code)
-                        Assert.True(observedRevision > 0L)
+                        (error.Code) |> should equal ("workspace_conflict")
+                        (observedRevision > 0L) |> should equal true
 
-                        Assert.Contains(
-                            observedNotifications,
-                            fun frame ->
-                                match frame with
-                                | Notification("workspace/delta", parameters) ->
-                                    WorkspaceRpcScenario.field "changes" parameters
-                                    |> RpcValue.requireArray "changes"
-                                    |> Seq.exists (fun change ->
-                                        let node = WorkspaceRpcScenario.field "node" change
+                        (observedNotifications)
+                        |> Seq.exists (fun frame ->
+                            match frame with
+                            | Notification("workspace/delta", parameters) ->
+                                WorkspaceRpcScenario.field "changes" parameters
+                                |> RpcValue.requireArray "changes"
+                                |> Seq.exists (fun change ->
+                                    let node = WorkspaceRpcScenario.field "node" change
 
-                                        WorkspaceRpcScenario.field "kind" change = RpcValue.String
-                                            "add"
-                                        && WorkspaceRpcScenario.field "name" node = RpcValue.String
-                                            "Second")
-                                | _ -> false
-                        )
+                                    WorkspaceRpcScenario.field "kind" change = RpcValue.String
+                                        "add"
+                                    && WorkspaceRpcScenario.field "name" node = RpcValue.String
+                                        "Second")
+                            | _ -> false)
+                        |> should equal true
 
                         WorkspaceRpcScenario.send
                             child
@@ -323,18 +302,16 @@ type WorkspaceSessionTests() =
                                 9u
                                 observedRevision
 
-                        Assert.True recoveredError.IsNone
+                        (recoveredError.IsNone) |> should equal true
 
-                        Assert.Equal(
-                            RpcValue.Boolean false,
-                            WorkspaceRpcScenario.field "reset" recoveredResult
-                        )
+                        (WorkspaceRpcScenario.field "reset" recoveredResult)
+                        |> should equal (RpcValue.Boolean false)
 
-                        Assert.True(recoveredRevision >= observedRevision)
-                        Assert.Empty recoveredNotifications
+                        (recoveredRevision >= observedRevision) |> should equal true
+                        (recoveredNotifications) |> should be Empty
                         recoveredRevision
 
-                Assert.True(finalRevision > 0L)
+                (finalRevision > 0L) |> should equal true
 
                 WorkspaceRpcScenario.send
                     child
@@ -344,7 +321,7 @@ type WorkspaceSessionTests() =
                 let staleError, _ =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 6u
 
-                Assert.Equal("workspace_conflict", staleError.Value.Code)
+                (staleError.Value.Code) |> should equal ("workspace_conflict")
 
                 WorkspaceRpcScenario.send
                     child
@@ -354,7 +331,7 @@ type WorkspaceSessionTests() =
                 let workerError, _ =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 7u
 
-                Assert.Equal("unknown_method", workerError.Value.Code)
+                (workerError.Value.Code) |> should equal ("unknown_method")
                 WorkspaceRpcScenario.shutdown child 8u
             finally
                 WorkspaceRpcScenario.disposeProcess child

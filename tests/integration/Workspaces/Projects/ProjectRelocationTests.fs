@@ -105,18 +105,23 @@ type ProjectRelocationTests() =
                 model.AddProject("src/Ref/Ref.fsproj", null, null) |> ignore)
 
         try
-            Assert.Throws<Exception>(fun () ->
-                WorkspaceCommandScenario.beginMutation
-                    session
-                    3u
-                    "project.relocate"
-                    session.ProjectId
-                    (WorkspaceCommandScenario.argumentMap
-                        [ "destination", RpcValue.String "moved/One" ])
-                    0L
-                |> ignore)
-            |> fun error -> error.Message.Contains "macro"
-            |> should equal true
+            let error =
+                try
+                    WorkspaceCommandScenario.beginMutation
+                        session
+                        3u
+                        "project.relocate"
+                        session.ProjectId
+                        (WorkspaceCommandScenario.argumentMap
+                            [ "destination", RpcValue.String "moved/One" ])
+                        0L
+                    |> ignore
+
+                    failwith "The relocation unexpectedly succeeded."
+                with error ->
+                    error
+
+            error.Message |> should haveSubstring "macro"
 
             Directory.Exists(Path.Combine(session.Directory, "src", "One"))
             |> should equal true
@@ -157,18 +162,23 @@ type ProjectRelocationTests() =
                 model.AddProject("src/Ref/Ref.fsproj", null, null) |> ignore)
 
         try
-            Assert.Throws<Exception>(fun () ->
-                WorkspaceCommandScenario.beginMutation
-                    session
-                    3u
-                    "project.relocate"
-                    session.ProjectId
-                    (WorkspaceCommandScenario.argumentMap
-                        [ "destination", RpcValue.String "moved/One" ])
-                    0L
-                |> ignore)
-            |> fun error -> error.Message.Contains "declared by an import"
-            |> should equal true
+            let error =
+                try
+                    WorkspaceCommandScenario.beginMutation
+                        session
+                        3u
+                        "project.relocate"
+                        session.ProjectId
+                        (WorkspaceCommandScenario.argumentMap
+                            [ "destination", RpcValue.String "moved/One" ])
+                        0L
+                    |> ignore
+
+                    failwith "The relocation unexpectedly succeeded."
+                with error ->
+                    error
+
+            error.Message |> should haveSubstring "declared by an import"
 
             Directory.Exists(Path.Combine(session.Directory, "src", "One"))
             |> should equal true

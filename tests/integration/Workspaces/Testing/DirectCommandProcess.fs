@@ -9,6 +9,7 @@ open System.Text.Json
 open System.Threading
 open Microsoft.VisualStudio.SolutionPersistence.Model
 open Microsoft.VisualStudio.SolutionPersistence.Serializer
+open FsUnit.Xunit
 open Xunit
 
 module internal DirectCommandProcess =
@@ -113,10 +114,10 @@ module internal DirectCommandProcess =
 
     let run directory mode arguments environment =
         use child = start directory mode arguments environment
-        Assert.NotNull child
+        (child) |> should not' (be Null)
         let output = child.StandardOutput.ReadToEndAsync()
         let error = child.StandardError.ReadToEndAsync()
-        Assert.True(child.WaitForExit 10000, "The CLI child did not exit.")
+        (child.WaitForExit 10000) |> should equal true
 
         { ExitCode = child.ExitCode
           StandardOutput = output.Result
@@ -150,7 +151,7 @@ module internal DirectCommandProcess =
 
             if not (File.Exists path) then
                 let changes = WatcherChangeTypes.Created ||| WatcherChangeTypes.Renamed
-                Assert.False(watcher.WaitForChanged(changes, 10000).TimedOut)
+                (watcher.WaitForChanged(changes, 10000).TimedOut) |> should equal false
 
     let delete path =
         if Directory.Exists path then

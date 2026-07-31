@@ -138,8 +138,8 @@ type WorkspaceEditCompensationTests() =
             | Success(RolledBack(UnsupportedCapability _)) -> ()
             | result -> failwithf "Expected complete rollback, got %A" result
 
-            Assert.Equal("old", File.ReadAllText target)
-            Assert.Equal("victim", File.ReadAllText victim)
+            (File.ReadAllText target) |> should equal ("old")
+            (File.ReadAllText victim) |> should equal ("victim")
         finally
             Directory.Delete(root, true)
 
@@ -151,10 +151,10 @@ type WorkspaceEditCompensationTests() =
         try
             match outcome with
             | Failure(PartialRecoveryRequired(detail, _)) ->
-                Assert.Contains(target, detail)
-                Assert.Contains("restore", detail)
+                (detail) |> should haveSubstring (target)
+                (detail) |> should haveSubstring ("restore")
             | result -> failwithf "Expected incomplete compensation, got %A" result
 
-            Assert.Equal("new", File.ReadAllText target)
+            (File.ReadAllText target) |> should equal ("new")
         finally
             Directory.Delete(root, true)

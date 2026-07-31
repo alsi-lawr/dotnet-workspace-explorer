@@ -3,6 +3,7 @@ namespace Dotnet.WorkspaceExplorer.Workspaces.UnitTests
 #nowarn "3261"
 
 open Dotnet.WorkspaceExplorer.Workspaces
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("Core contracts")>]
@@ -20,8 +21,11 @@ type WorkspaceConflictTests() =
             )
         with
         | Failure(Conflict(conflictExpected, conflictActual, diagnostic)) ->
-            Assert.Equal(expected, conflictExpected)
-            Assert.Equal(actual, conflictActual)
-            Assert.Equal("workspace_conflict", WorkspaceErrorCode.WorkspaceConflict.Value)
-            Assert.Equal("workspace.test", diagnostic.Code.Value)
+            (conflictExpected) |> should equal (expected)
+            (conflictActual) |> should equal (actual)
+
+            (WorkspaceErrorCode.WorkspaceConflict.Value)
+            |> should equal ("workspace_conflict")
+
+            (diagnostic.Code.Value) |> should equal ("workspace.test")
         | outcome -> failwithf "Expected a typed conflict, got %A" outcome

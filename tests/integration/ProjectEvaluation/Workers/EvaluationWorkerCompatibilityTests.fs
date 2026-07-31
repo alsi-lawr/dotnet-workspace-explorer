@@ -4,6 +4,7 @@ namespace Dotnet.WorkspaceExplorer.ProjectEvaluation.IntegrationTests
 
 open System.IO
 open Dotnet.WorkspaceExplorer.Rpc
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("Project evaluation scenarios")>]
@@ -29,30 +30,26 @@ type EvaluationWorkerCompatibilityTests() =
 
                 Test.send worker 1u "initialize" wrongProfile
                 let rejected, _ = Test.readFrame worker |> Test.response 1u
-                Assert.Equal("invalid_params", rejected.Value.Code)
+                (rejected.Value.Code) |> should equal ("invalid_params")
 
                 Test.send worker 2u "initialize" (Test.workerInitializeVersion 1L 0L 4096)
                 let incompatible, _ = Test.readFrame worker |> Test.response 2u
-                Assert.Equal("invalid_params", incompatible.Value.Code)
+                (incompatible.Value.Code) |> should equal ("invalid_params")
 
                 Test.send worker 3u "initialize" (Test.workerInitialize 4096)
                 let initialized = Test.requireSuccess 3u worker
 
-                Assert.Equal(
-                    2L,
-                    initialized
-                    |> Test.field "protocolVersion"
-                    |> Test.field "major"
-                    |> RpcValue.requireInteger "major"
-                )
+                (initialized
+                 |> Test.field "protocolVersion"
+                 |> Test.field "major"
+                 |> RpcValue.requireInteger "major")
+                |> should equal (2L)
 
-                Assert.Equal(
-                    4096L,
-                    initialized
-                    |> Test.field "limits"
-                    |> Test.field "maxFrameBytes"
-                    |> RpcValue.requireInteger "maxFrameBytes"
-                )
+                (initialized
+                 |> Test.field "limits"
+                 |> Test.field "maxFrameBytes"
+                 |> RpcValue.requireInteger "maxFrameBytes")
+                |> should equal (4096L)
 
                 Test.shutdown worker 4u
             finally

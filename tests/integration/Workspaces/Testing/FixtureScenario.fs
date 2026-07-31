@@ -8,6 +8,7 @@ open System.Text
 open System.Threading
 open Microsoft.VisualStudio.SolutionPersistence.Model
 open Microsoft.VisualStudio.SolutionPersistence.Serializer
+open FsUnit.Xunit
 open Xunit
 
 module private FixtureScenario =
@@ -28,13 +29,11 @@ module private FixtureScenario =
 
     let compareDirectories expected actual =
         let expectedFiles = files expected
-        Assert.Equal<string>(expectedFiles, files actual)
+        (files actual) |> should equal (expectedFiles)
 
         for relative in expectedFiles do
-            Assert.Equal<byte>(
-                File.ReadAllBytes(Path.Combine(expected, relative)),
-                File.ReadAllBytes(Path.Combine(actual, relative))
-            )
+            (File.ReadAllBytes(Path.Combine(actual, relative)))
+            |> should equal (File.ReadAllBytes(Path.Combine(expected, relative)))
 
     let private normalizeSlnx path =
         File.ReadAllLines path

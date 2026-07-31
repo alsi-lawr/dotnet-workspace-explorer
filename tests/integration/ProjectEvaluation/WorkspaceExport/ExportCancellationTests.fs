@@ -4,6 +4,7 @@ namespace Dotnet.WorkspaceExplorer.ProjectEvaluation.IntegrationTests
 
 open System.IO
 open Dotnet.WorkspaceExplorer.Rpc
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("Project evaluation scenarios")>]
@@ -36,17 +37,17 @@ type ExportCancellationTests() =
                     match Test.readFrame app with
                     | Notification("workspace/export/chunk", _) -> ()
                     | Response(3u, error, result) ->
-                        Assert.True error.IsNone
-                        Assert.Equal(RpcValue.Boolean true, Test.field "accepted" result)
+                        (error.IsNone) |> should equal true
+                        (Test.field "accepted" result) |> should equal (RpcValue.Boolean true)
                         cancelAccepted <- true
                     | Notification("workspace/operations/completed", parameters) ->
-                        Assert.Equal(operationId, Test.stringField "operationId" parameters)
-                        Assert.Equal("cancelled", Test.stringField "outcome" parameters)
+                        (Test.stringField "operationId" parameters) |> should equal (operationId)
+                        (Test.stringField "outcome" parameters) |> should equal ("cancelled")
                         completions <- completions + 1
                     | frame -> failwithf "Unexpected cancellation frame: %A" frame
 
-                Assert.True cancelAccepted
-                Assert.Equal(1, completions)
+                (cancelAccepted) |> should equal true
+                (completions) |> should equal (1)
                 4u)
         finally
             Directory.Delete(directory, true)

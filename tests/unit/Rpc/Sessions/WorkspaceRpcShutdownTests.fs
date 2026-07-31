@@ -6,6 +6,7 @@ open System
 open System.Threading
 open System.Threading.Tasks
 open Dotnet.WorkspaceExplorer.Rpc
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("RPC scenarios")>]
@@ -22,9 +23,9 @@ type WorkspaceRpcShutdownTests() =
                 cancellation.Token
             |> _.Result
 
-        Assert.Equal(130, exitCode)
-        Assert.Empty stdout
-        Assert.Equal(String.Empty, stderr)
+        (exitCode) |> should equal (130)
+        (stdout) |> should be Empty
+        (stderr) |> should equal (String.Empty)
 
     [<Fact>]
     member _.``should cancel background work before the final shutdown response``() =
@@ -61,12 +62,12 @@ type WorkspaceRpcShutdownTests() =
             Test.configuration profile (fun _ _ -> Task.FromResult(Ok Test.empty)) dispatch
 
         let exitCode, stdout, stderr = Test.run configuration input
-        Assert.Equal(0, exitCode)
-        Assert.Equal(String.Empty, stderr)
+        (exitCode) |> should equal (0)
+        (stderr) |> should equal (String.Empty)
 
         match Test.frames stdout with
         | [ Response(1u, None, _)
             Response(2u, None, _)
             Notification("workspace/operations/completed", RpcValue.Map fields)
-            Response(3u, None, _) ] -> Assert.Empty fields
+            Response(3u, None, _) ] -> (fields) |> should be Empty
         | frames -> failwithf "Shutdown ordering changed: %A" frames

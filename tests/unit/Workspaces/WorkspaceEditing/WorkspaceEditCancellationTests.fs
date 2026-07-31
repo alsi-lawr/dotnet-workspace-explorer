@@ -85,11 +85,12 @@ type WorkspaceEditCancellationTests() =
             match
                 coordinator.Execute(request, actions, preview.Confirmation, cancellation.Token)
             with
-            | Failure(PartialRecoveryRequired(detail, _)) -> Assert.Contains(victim, detail)
+            | Failure(PartialRecoveryRequired(detail, _)) ->
+                (detail) |> should haveSubstring (victim)
             | result -> failwithf "Expected partial cancellation result, got %A" result
 
-            Assert.Equal("old", File.ReadAllText target)
-            Assert.False(File.Exists victim)
-            Assert.Equal("victim", File.ReadAllText holding)
+            (File.ReadAllText target) |> should equal ("old")
+            (File.Exists victim) |> should equal false
+            (File.ReadAllText holding) |> should equal ("victim")
         finally
             Directory.Delete(root, true)

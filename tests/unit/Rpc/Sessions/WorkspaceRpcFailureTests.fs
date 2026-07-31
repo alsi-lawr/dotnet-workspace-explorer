@@ -7,6 +7,7 @@ open System.IO
 open System.Threading
 open System.Threading.Tasks
 open Dotnet.WorkspaceExplorer.Rpc
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("RPC scenarios")>]
@@ -26,8 +27,8 @@ type WorkspaceRpcFailureTests() =
                 CancellationToken.None
             |> _.Result
 
-        Assert.Equal(65, exitCode)
-        Assert.Contains("failed while reading or writing", errors.ToString())
+        (exitCode) |> should equal (65)
+        (errors.ToString()) |> should haveSubstring ("failed while reading or writing")
 
     [<Fact>]
     member _.``should treat background faults as fatal while reading and during shutdown``() =
@@ -82,6 +83,6 @@ type WorkspaceRpcFailureTests() =
             let exitCode, stdout, stderr =
                 Test.runStream configuration source CancellationToken.None |> _.Result
 
-            Assert.True((exitCode = 65), $"{name}: exit {exitCode}")
-            Assert.Equal(2, (Test.frames stdout).Length)
-            Assert.Contains("background RPC operation failed", stderr)
+            ((exitCode = 65)) |> should equal true
+            ((Test.frames stdout).Length) |> should equal (2)
+            (stderr) |> should haveSubstring ("background RPC operation failed")

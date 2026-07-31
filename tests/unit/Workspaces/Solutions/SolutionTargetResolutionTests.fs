@@ -6,6 +6,7 @@ open System.IO
 open Microsoft.VisualStudio.SolutionPersistence.Model
 open Dotnet.WorkspaceExplorer.Workspaces
 open Dotnet.WorkspaceExplorer.Solutions
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("Solution contracts")>]
@@ -24,7 +25,7 @@ type SolutionTargetResolutionTests() =
 
             let workspace = SolutionScenario.openWorkspace directory
 
-            Assert.Equal(Path.GetFullPath rootSolution, workspace.SolutionPath.Value)
+            (workspace.SolutionPath.Value) |> should equal (Path.GetFullPath rootSolution)
         finally
             SolutionScenario.delete directory
 
@@ -51,7 +52,7 @@ type SolutionTargetResolutionTests() =
 
                 match name, SolutionWorkspaceReader.OpenAsync(path).Result with
                 | "Missing.slnf", Failure(NotFound(target, _)) ->
-                    Assert.EndsWith("Absent.sln", target)
+                    (target) |> should endWith ("Absent.sln")
                 | _, Failure(InvalidInput("filter", _)) -> ()
                 | _, outcome ->
                     failwithf "Expected a typed filter failure for %s, got %A" name outcome
@@ -73,16 +74,16 @@ type SolutionTargetResolutionTests() =
             let semantics = FileSystemCaseSensitivityDetector.DetectFromExistingPath solution
 
             let identity =
-                (Assert.Single((SolutionScenario.openWorkspace solution).Contents.Projects))
+                (((SolutionScenario.openWorkspace solution).Contents.Projects) |> Seq.exactlyOne)
                     .Node.Identity.Value
 
-            Assert.Equal(
-                (if semantics = FileSystemCaseSensitivity.Sensitive then
-                     "project:src/Case.csproj"
-                 else
-                     "project:SRC/CASE.CSPROJ"),
-                identity
-            )
+            let expectedIdentity =
+                if semantics = FileSystemCaseSensitivity.Sensitive then
+                    "project:src/Case.csproj"
+                else
+                    "project:SRC/CASE.CSPROJ"
+
+            identity |> should equal expectedIdentity
 
             File.WriteAllText(
                 filter,
@@ -92,10 +93,9 @@ type SolutionTargetResolutionTests() =
             match semantics, SolutionWorkspaceReader.OpenAsync(filter).Result with
             | FileSystemCaseSensitivity.Sensitive, Failure(InvalidInput("filter", _)) -> ()
             | FileSystemCaseSensitivity.Insensitive, Success workspace ->
-                Assert.Single(
-                    workspace.Contents.Projects
-                    |> Seq.filter (fun project -> not project.IsFilteredOut)
-                )
+                (workspace.Contents.Projects
+                 |> Seq.filter (fun project -> not project.IsFilteredOut))
+                |> Seq.exactlyOne
                 |> ignore
             | _, outcome ->
                 failwithf "Filter membership did not follow host case semantics: %A" outcome

@@ -36,10 +36,10 @@ type VirtualProjectFolderTests() =
 
             let project = File.ReadAllText session.Project
 
-            Assert.Contains(
-                "<Link>Virtual/Linked/%(RecursiveDir)%(Filename)%(Extension)</Link>",
-                project
-            )
+            (project)
+            |> should
+                haveSubstring
+                ("<Link>Virtual/Linked/%(RecursiveDir)%(Filename)%(Extension)</Link>")
 
             Directory.Exists(Path.Combine(session.Directory, "Virtual"))
             |> should equal false

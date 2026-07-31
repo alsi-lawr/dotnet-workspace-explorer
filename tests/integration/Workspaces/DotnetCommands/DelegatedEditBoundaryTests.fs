@@ -113,9 +113,9 @@ type DelegatedEditBoundaryTests() =
                         ("--json" :: arguments)
                         [ "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_DOTNET_STARTED_PATH", marker ]
 
-                Assert.False(DirectCommandProcess.success result)
-                Assert.Equal(expectedCode, DirectCommandProcess.diagnosticCode result)
-                Assert.False(File.Exists marker)
+                (DirectCommandProcess.success result) |> should equal false
+                (DirectCommandProcess.diagnosticCode result) |> should equal (expectedCode)
+                (File.Exists marker) |> should equal false
         finally
             DirectCommandProcess.delete directory
 
@@ -137,11 +137,10 @@ type DelegatedEditBoundaryTests() =
                     else
                         [ "--json"; "solution"; solution; "add"; operand ]
 
-                Assert.True(
-                    DirectCommandProcess.success (
-                        DirectCommandProcess.run directory "capture" arguments []
-                    )
-                )
+                (DirectCommandProcess.success (
+                    DirectCommandProcess.run directory "capture" arguments []
+                ))
+                |> should equal true
 
             let caseSemantics =
                 Dotnet.WorkspaceExplorer.Workspaces.FileSystemCaseSensitivityDetector.DetectFromExistingPath
@@ -159,6 +158,6 @@ type DelegatedEditBoundaryTests() =
                         [ "--json"; "solution"; solution; "add"; mismatched ]
                         []
 
-                Assert.False(DirectCommandProcess.success result)
+                (DirectCommandProcess.success result) |> should equal false
         finally
             DirectCommandProcess.delete directory

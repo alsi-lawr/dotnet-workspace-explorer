@@ -6,6 +6,7 @@ open System
 open System.IO
 open Microsoft.VisualStudio.SolutionPersistence.Model
 open Dotnet.WorkspaceExplorer.Rpc
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("Workspace scenarios")>]
@@ -74,11 +75,11 @@ type WorkspaceEndpointLimitTests() =
                 let probeRootError, probeRoot =
                     WorkspaceRpcScenario.readFrame probe |> WorkspaceRpcScenario.response 2u
 
-                Assert.True probeRootError.IsNone
+                (probeRootError.IsNone) |> should equal true
                 let probeRootChildren = WorkspaceRpcScenario.rootChildren probe 20u probeRoot
 
                 let probeProjectIds = projectIds probeRootChildren
-                Assert.Equal(2, probeProjectIds.Length)
+                (probeProjectIds.Length) |> should equal (2)
 
                 for index in 0..1 do
                     WorkspaceRpcScenario.send
@@ -95,16 +96,13 @@ type WorkspaceEndpointLimitTests() =
                         WorkspaceRpcScenario.readFrame probe
                         |> WorkspaceRpcScenario.response (uint32 (3 + index))
 
-                    Assert.True probeChildrenError.IsNone
+                    (probeChildrenError.IsNone) |> should equal true
 
                     match WorkspaceRpcScenario.readFrame probe with
                     | Notification("workspace/delta", _) as delta when index = 1 ->
                         let deltaSize = (MessagePackRpcCodec.encodeFrame delta).Length
 
-                        Assert.True(
-                            deltaSize > 1024,
-                            $"Expected a delta above 1024 bytes, got {deltaSize}."
-                        )
+                        (deltaSize > 1024) |> should equal true
                     | Notification("workspace/delta", _) -> ()
                     | frame -> failwithf "Expected child-hydration delta, got %A" frame
 
@@ -121,7 +119,7 @@ type WorkspaceEndpointLimitTests() =
                     (WorkspaceRpcScenario.request 10u "initialize" (initialize 1024L))
 
                 let initializeFrame, initializeSize = WorkspaceRpcScenario.readFrameWithSize child
-                Assert.True(initializeSize <= 1024)
+                (initializeSize <= 1024) |> should equal true
                 WorkspaceRpcScenario.response 10u initializeFrame |> ignore
 
                 WorkspaceRpcScenario.send
@@ -130,14 +128,12 @@ type WorkspaceEndpointLimitTests() =
                     (WorkspaceRpcScenario.request 11u "workspace/root" RpcValue.emptyMap)
 
                 let rootFrame, rootSize = WorkspaceRpcScenario.readFrameWithSize child
-                Assert.True(rootSize <= 1024)
+                (rootSize <= 1024) |> should equal true
                 let rootError, root = WorkspaceRpcScenario.response 11u rootFrame
-                Assert.True(rootError.IsNone, $"Expected bounded root, got {rootError}.")
+                (rootError.IsNone) |> should equal true
 
-                Assert.Equal(
-                    0L,
-                    WorkspaceRpcScenario.field "revision" root |> RpcValue.requireInteger "revision"
-                )
+                (WorkspaceRpcScenario.field "revision" root |> RpcValue.requireInteger "revision")
+                |> should equal (0L)
 
                 let workspaceRootId =
                     WorkspaceRpcScenario.field "nodes" root
@@ -159,14 +155,14 @@ type WorkspaceEndpointLimitTests() =
                 let rootChildrenFrame, rootChildrenSize =
                     WorkspaceRpcScenario.readFrameWithSize child
 
-                Assert.True(rootChildrenSize <= 1024)
+                (rootChildrenSize <= 1024) |> should equal true
 
                 let rootChildrenError, rootChildren =
                     WorkspaceRpcScenario.response 20u rootChildrenFrame
 
-                Assert.True rootChildrenError.IsNone
+                (rootChildrenError.IsNone) |> should equal true
                 let childProjectIds = projectIds rootChildren
-                Assert.Equal(2, childProjectIds.Length)
+                (childProjectIds.Length) |> should equal (2)
 
                 WorkspaceRpcScenario.send
                     child
@@ -179,32 +175,26 @@ type WorkspaceEndpointLimitTests() =
                               "pageSize", RpcValue.Integer 1L ]))
 
                 let firstFrame, firstSize = WorkspaceRpcScenario.readFrameWithSize child
-                Assert.True(firstSize <= 1024)
+                (firstSize <= 1024) |> should equal true
                 let firstError, firstPage = WorkspaceRpcScenario.response 12u firstFrame
-                Assert.True firstError.IsNone
+                (firstError.IsNone) |> should equal true
 
-                Assert.Equal(
-                    1L,
-                    WorkspaceRpcScenario.field "revision" firstPage
-                    |> RpcValue.requireInteger "revision"
-                )
+                (WorkspaceRpcScenario.field "revision" firstPage
+                 |> RpcValue.requireInteger "revision")
+                |> should equal (1L)
 
                 let firstDelta, firstDeltaSize = WorkspaceRpcScenario.readFrameWithSize child
-                Assert.True(firstDeltaSize <= 1024)
+                (firstDeltaSize <= 1024) |> should equal true
 
                 match firstDelta with
                 | Notification("workspace/delta", parameters) ->
-                    Assert.Equal(
-                        0L,
-                        WorkspaceRpcScenario.field "baseRevision" parameters
-                        |> RpcValue.requireInteger "baseRevision"
-                    )
+                    (WorkspaceRpcScenario.field "baseRevision" parameters
+                     |> RpcValue.requireInteger "baseRevision")
+                    |> should equal (0L)
 
-                    Assert.Equal(
-                        1L,
-                        WorkspaceRpcScenario.field "newRevision" parameters
-                        |> RpcValue.requireInteger "newRevision"
-                    )
+                    (WorkspaceRpcScenario.field "newRevision" parameters
+                     |> RpcValue.requireInteger "newRevision")
+                    |> should equal (1L)
                 | frame -> failwithf "Expected in-limit child-hydration delta, got %A" frame
 
                 WorkspaceRpcScenario.send
@@ -218,35 +208,29 @@ type WorkspaceEndpointLimitTests() =
                               "pageSize", RpcValue.Integer 1L ]))
 
                 let childrenFrame, childrenSize = WorkspaceRpcScenario.readFrameWithSize child
-                Assert.True(childrenSize <= 1024)
+                (childrenSize <= 1024) |> should equal true
                 let childrenError, page = WorkspaceRpcScenario.response 13u childrenFrame
-                Assert.True childrenError.IsNone
+                (childrenError.IsNone) |> should equal true
 
-                Assert.Equal(
-                    2L,
-                    WorkspaceRpcScenario.field "revision" page |> RpcValue.requireInteger "revision"
-                )
+                (WorkspaceRpcScenario.field "revision" page |> RpcValue.requireInteger "revision")
+                |> should equal (2L)
 
                 let resetFrame, resetSize = WorkspaceRpcScenario.readFrameWithSize child
-                Assert.True(resetSize <= 1024)
+                (resetSize <= 1024) |> should equal true
 
                 match resetFrame with
                 | Notification("workspace/reset", parameters) ->
-                    Assert.Equal(
-                        3L,
-                        WorkspaceRpcScenario.field "revision" parameters
-                        |> RpcValue.requireInteger "revision"
-                    )
+                    (WorkspaceRpcScenario.field "revision" parameters
+                     |> RpcValue.requireInteger "revision")
+                    |> should equal (3L)
 
                     let diagnostic =
                         WorkspaceRpcScenario.field "diagnostics" parameters
                         |> RpcValue.requireArray "diagnostics"
                         |> Seq.exactlyOne
 
-                    Assert.Equal(
-                        RpcValue.String "workspace.delta_pressure",
-                        WorkspaceRpcScenario.field "code" diagnostic
-                    )
+                    (WorkspaceRpcScenario.field "code" diagnostic)
+                    |> should equal (RpcValue.String "workspace.delta_pressure")
                 | frame -> failwithf "Expected bounded child-hydration reset, got %A" frame
 
                 WorkspaceRpcScenario.send
@@ -255,15 +239,13 @@ type WorkspaceEndpointLimitTests() =
                     (WorkspaceRpcScenario.request 14u "workspace/root" RpcValue.emptyMap)
 
                 let freshFrame, freshSize = WorkspaceRpcScenario.readFrameWithSize child
-                Assert.True(freshSize <= 1024)
+                (freshSize <= 1024) |> should equal true
                 let freshError, freshRoot = WorkspaceRpcScenario.response 14u freshFrame
-                Assert.True freshError.IsNone
+                (freshError.IsNone) |> should equal true
 
-                Assert.Equal(
-                    3L,
-                    WorkspaceRpcScenario.field "revision" freshRoot
-                    |> RpcValue.requireInteger "revision"
-                )
+                (WorkspaceRpcScenario.field "revision" freshRoot
+                 |> RpcValue.requireInteger "revision")
+                |> should equal (3L)
 
                 WorkspaceRpcScenario.shutdown child 15u
             finally
@@ -299,7 +281,7 @@ type WorkspaceEndpointLimitTests() =
                     (WorkspaceRpcScenario.request 1u "initialize" WorkspaceRpcScenario.initialize)
 
                 let initializeFrame, initializeSize = WorkspaceRpcScenario.readFrameWithSize child
-                Assert.True(initializeSize <= 1024)
+                (initializeSize <= 1024) |> should equal true
                 WorkspaceRpcScenario.response 1u initializeFrame |> ignore
 
                 WorkspaceRpcScenario.send
@@ -308,9 +290,9 @@ type WorkspaceEndpointLimitTests() =
                     (WorkspaceRpcScenario.request 2u "workspace/root" RpcValue.emptyMap)
 
                 let rootFrame, rootSize = WorkspaceRpcScenario.readFrameWithSize child
-                Assert.True(rootSize <= 1024)
+                (rootSize <= 1024) |> should equal true
                 let rootError, root = WorkspaceRpcScenario.response 2u rootFrame
-                Assert.True rootError.IsNone
+                (rootError.IsNone) |> should equal true
 
                 let workspaceRootId =
                     WorkspaceRpcScenario.field "nodes" root
@@ -330,9 +312,9 @@ type WorkspaceEndpointLimitTests() =
                               "pageSize", RpcValue.Integer 50L ]))
 
                 let childrenFrame, childrenSize = WorkspaceRpcScenario.readFrameWithSize child
-                Assert.True(childrenSize <= 1024)
+                (childrenSize <= 1024) |> should equal true
                 let childrenError, _ = WorkspaceRpcScenario.response 20u childrenFrame
-                Assert.True childrenError.IsNone
+                (childrenError.IsNone) |> should equal true
 
                 let unknownMethod = String('m', 3000)
 
@@ -342,9 +324,9 @@ type WorkspaceEndpointLimitTests() =
                     (WorkspaceRpcScenario.request 3u unknownMethod RpcValue.emptyMap)
 
                 let errorFrame, errorSize = WorkspaceRpcScenario.readFrameWithSize child
-                Assert.True(errorSize <= 1024)
+                (errorSize <= 1024) |> should equal true
                 let methodError, _ = WorkspaceRpcScenario.response 3u errorFrame
-                Assert.Equal("response_too_large", methodError.Value.Code)
+                (methodError.Value.Code) |> should equal ("response_too_large")
 
                 WorkspaceRpcScenario.send
                     child
@@ -352,9 +334,9 @@ type WorkspaceEndpointLimitTests() =
                     (WorkspaceRpcScenario.request 4u "workspace/export/start" RpcValue.emptyMap)
 
                 let exportFrame, exportSize = WorkspaceRpcScenario.readFrameWithSize child
-                Assert.True(exportSize <= 1024)
+                (exportSize <= 1024) |> should equal true
                 let exportError, exportResult = WorkspaceRpcScenario.response 4u exportFrame
-                Assert.True exportError.IsNone
+                (exportError.IsNone) |> should equal true
 
                 let operationId =
                     WorkspaceRpcScenario.field "operationId" exportResult
@@ -364,19 +346,15 @@ type WorkspaceEndpointLimitTests() =
 
                 while not completed do
                     let frame, size = WorkspaceRpcScenario.readFrameWithSize child
-                    Assert.True(size <= 1024)
+                    (size <= 1024) |> should equal true
 
                     match frame with
                     | Notification("workspace/operations/completed", parameters) ->
-                        Assert.Equal(
-                            RpcValue.String operationId,
-                            WorkspaceRpcScenario.field "operationId" parameters
-                        )
+                        (WorkspaceRpcScenario.field "operationId" parameters)
+                        |> should equal (RpcValue.String operationId)
 
-                        Assert.Equal(
-                            RpcValue.String "succeeded",
-                            WorkspaceRpcScenario.field "outcome" parameters
-                        )
+                        (WorkspaceRpcScenario.field "outcome" parameters)
+                        |> should equal (RpcValue.String "succeeded")
 
                         completed <- true
                     | Notification("workspace/export/chunk", _) -> ()

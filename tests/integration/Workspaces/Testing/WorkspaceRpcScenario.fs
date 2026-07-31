@@ -10,6 +10,7 @@ open System.Threading
 open Microsoft.VisualStudio.SolutionPersistence.Model
 open Microsoft.VisualStudio.SolutionPersistence.Serializer
 open Dotnet.WorkspaceExplorer.Rpc
+open FsUnit.Xunit
 open Xunit
 
 module internal WorkspaceRpcScenario =
@@ -221,13 +222,13 @@ module internal WorkspaceRpcScenario =
                 let nextRevision =
                     field "newRevision" parameters |> RpcValue.requireInteger "newRevision"
 
-                Assert.Equal(revision, baseRevision)
-                Assert.True(nextRevision > baseRevision)
+                (baseRevision) |> should equal (revision)
+                (nextRevision > baseRevision) |> should equal true
                 revision <- nextRevision
                 notifications.Add(Notification("workspace/delta", parameters))
             | Notification("workspace/reset", parameters) ->
                 let nextRevision = field "revision" parameters |> RpcValue.requireInteger "revision"
-                Assert.True(nextRevision > revision)
+                (nextRevision > revision) |> should equal true
                 revision <- nextRevision
                 notifications.Add(Notification("workspace/reset", parameters))
             | Response(actual, error, value) when actual = id -> result <- Some(error, value)
@@ -246,19 +247,19 @@ module internal WorkspaceRpcScenario =
             | Notification("workspace/delta", _)
             | Notification("workspace/reset", _) -> ()
             | Response(actual, error, result) when actual = id ->
-                Assert.True(size <= 1024)
+                (size <= 1024) |> should equal true
                 completed <- Some(error, result)
             | Response _ -> ()
             | value -> failwithf "Expected shutdown response %d, got %A" id value
 
         let error, result = completed.Value
-        Assert.True error.IsNone
-        Assert.Equal(RpcValue.Boolean true, field "accepted" result)
+        (error.IsNone) |> should equal true
+        (field "accepted" result) |> should equal (RpcValue.Boolean true)
         child.StandardInput.Close()
-        Assert.True(child.WaitForExit 5000, "The executable did not exit after shutdown.")
-        Assert.Equal(-1, child.StandardOutput.BaseStream.ReadByte())
-        Assert.Equal(0, child.ExitCode)
-        Assert.Equal(String.Empty, child.StandardError.ReadToEnd())
+        (child.WaitForExit 5000) |> should equal true
+        (child.StandardOutput.BaseStream.ReadByte()) |> should equal (-1)
+        (child.ExitCode) |> should equal (0)
+        (child.StandardError.ReadToEnd()) |> should equal (String.Empty)
 
     type ExportCapture =
         { Revision: int64
@@ -278,21 +279,17 @@ module internal WorkspaceRpcScenario =
 
         while completed.IsNone do
             let frame, size = readFrameWithSize child
-            Assert.True(size <= 1024, $"Export emitted a {size}-byte frame.")
+            (size <= 1024) |> should equal true
 
             match frame with
             | Notification("workspace/export/chunk", parameters) ->
-                Assert.Equal(RpcValue.String operationId, field "operationId" parameters)
+                (field "operationId" parameters) |> should equal (RpcValue.String operationId)
 
-                Assert.Equal(
-                    expectedRevision,
-                    field "revision" parameters |> RpcValue.requireInteger "revision"
-                )
+                (field "revision" parameters |> RpcValue.requireInteger "revision")
+                |> should equal (expectedRevision)
 
-                Assert.Equal(
-                    sequence,
-                    field "sequence" parameters |> RpcValue.requireInteger "sequence"
-                )
+                (field "sequence" parameters |> RpcValue.requireInteger "sequence")
+                |> should equal (sequence)
 
                 field "nodes" parameters |> RpcValue.requireArray "nodes" |> Seq.iter nodes.Add
 
@@ -305,17 +302,15 @@ module internal WorkspaceRpcScenario =
                 lastValues.Add last
                 sequence <- sequence + 1L
             | Notification("workspace/operations/completed", parameters) ->
-                Assert.Equal(RpcValue.String operationId, field "operationId" parameters)
+                (field "operationId" parameters) |> should equal (RpcValue.String operationId)
 
-                Assert.Equal(
-                    expectedRevision,
-                    field "revision" parameters |> RpcValue.requireInteger "revision"
-                )
+                (field "revision" parameters |> RpcValue.requireInteger "revision")
+                |> should equal (expectedRevision)
 
                 let completionSequence =
                     field "sequence" parameters |> RpcValue.requireInteger "sequence"
 
-                Assert.Equal(sequence, completionSequence)
+                (completionSequence) |> should equal (sequence)
 
                 let diagnosticCodes =
                     field "diagnostics" parameters
@@ -344,7 +339,7 @@ module internal WorkspaceRpcScenario =
     let startExport child requestId =
         send child false (request requestId "workspace/export/start" RpcValue.emptyMap)
         let error, result = readFrame child |> response requestId
-        Assert.True error.IsNone
+        (error.IsNone) |> should equal true
 
         field "operationId" result |> RpcValue.requireString "operationId",
         field "revision" result |> RpcValue.requireInteger "revision"
@@ -495,7 +490,7 @@ module internal WorkspaceRpcScenario =
                       "expectedRevision", RpcValue.Integer revision ]))
 
         let error, _ = readFrame session.Child |> response id
-        Assert.Equal("invalid_input", error.Value.Code)
+        (error.Value.Code) |> should equal ("invalid_input")
 
     let readAllProjectChildNames session firstRequestId expectedRevision =
         let names = ResizeArray<string>()
@@ -523,7 +518,7 @@ module internal WorkspaceRpcScenario =
                 let (error, page), observedRevision, _ =
                     responseAfterWorkspaceNotifications session.Child requestId revision
 
-                Assert.True error.IsNone
+                (error.IsNone) |> should equal true
                 revision <- observedRevision
 
                 field "nodes" page

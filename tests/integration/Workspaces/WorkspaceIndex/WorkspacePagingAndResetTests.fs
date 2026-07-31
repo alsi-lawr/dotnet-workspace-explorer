@@ -7,6 +7,7 @@ open System.IO
 open System.Threading.Tasks
 open Microsoft.VisualStudio.SolutionPersistence.Model
 open Dotnet.WorkspaceExplorer.Rpc
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("Workspace scenarios")>]
@@ -62,7 +63,7 @@ type WorkspacePagingAndResetTests() =
                 let initializeError, initializeResult =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 1u
 
-                Assert.True initializeError.IsNone
+                (initializeError.IsNone) |> should equal true
 
                 let workspaceId =
                     WorkspaceRpcScenario.field "workspace" initializeResult
@@ -96,7 +97,7 @@ type WorkspacePagingAndResetTests() =
                 let rootChildrenError, rootPage =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 3u
 
-                Assert.True rootChildrenError.IsNone
+                (rootChildrenError.IsNone) |> should equal true
 
                 let projectId =
                     WorkspaceRpcScenario.field "nodes" rootPage
@@ -119,26 +120,21 @@ type WorkspacePagingAndResetTests() =
                 let childError, page =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 4u
 
-                Assert.True childError.IsNone
+                (childError.IsNone) |> should equal true
 
-                Assert.Single(
-                    WorkspaceRpcScenario.field "nodes" page |> RpcValue.requireArray "nodes"
-                )
+                (WorkspaceRpcScenario.field "nodes" page |> RpcValue.requireArray "nodes")
+                |> Seq.exactlyOne
                 |> ignore
 
                 match WorkspaceRpcScenario.readFrame child with
                 | Notification("workspace/delta", parameters) ->
-                    Assert.Equal(
-                        0L,
-                        WorkspaceRpcScenario.field "baseRevision" parameters
-                        |> RpcValue.requireInteger "revision"
-                    )
+                    (WorkspaceRpcScenario.field "baseRevision" parameters
+                     |> RpcValue.requireInteger "revision")
+                    |> should equal (0L)
 
-                    Assert.Equal(
-                        1L,
-                        WorkspaceRpcScenario.field "newRevision" parameters
-                        |> RpcValue.requireInteger "revision"
-                    )
+                    (WorkspaceRpcScenario.field "newRevision" parameters
+                     |> RpcValue.requireInteger "revision")
+                    |> should equal (1L)
                 | frame -> failwithf "Expected hydration delta, got %A" frame
 
                 let token =
@@ -166,7 +162,7 @@ type WorkspacePagingAndResetTests() =
                 let tokenError, _ =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 5u
 
-                Assert.Equal("invalid_params", tokenError.Value.Code)
+                (tokenError.Value.Code) |> should equal ("invalid_params")
 
                 File.WriteAllText(Path.Combine(directory, "Changed.fs"), "module Changed")
 
@@ -183,26 +179,21 @@ type WorkspacePagingAndResetTests() =
 
                 let watching = Task.Run(fun () -> WorkspaceRpcScenario.readFrame child)
 
-                Assert.True(
-                    watching.Wait(TimeSpan.FromSeconds 10.0),
-                    "The watcher did not publish a transition."
-                )
+                (watching.Wait(TimeSpan.FromSeconds 10.0)) |> should equal true
 
                 let mutable watchedRevision = 1L
 
                 match watching.Result with
                 | Notification("workspace/delta", parameters) ->
-                    Assert.Equal(
-                        1L,
-                        WorkspaceRpcScenario.field "baseRevision" parameters
-                        |> RpcValue.requireInteger "revision"
-                    )
+                    (WorkspaceRpcScenario.field "baseRevision" parameters
+                     |> RpcValue.requireInteger "revision")
+                    |> should equal (1L)
 
                     watchedRevision <-
                         WorkspaceRpcScenario.field "newRevision" parameters
                         |> RpcValue.requireInteger "revision"
 
-                    Assert.True(watchedRevision > 1L)
+                    (watchedRevision > 1L) |> should equal true
                 | frame -> failwithf "Expected watcher delta, got %A" frame
 
                 let mutable continuation = None
@@ -230,13 +221,11 @@ type WorkspacePagingAndResetTests() =
                         WorkspaceRpcScenario.readFrame child
                         |> WorkspaceRpcScenario.response requestId
 
-                    Assert.True projectError.IsNone
+                    (projectError.IsNone) |> should equal true
 
-                    Assert.Equal(
-                        watchedRevision,
-                        WorkspaceRpcScenario.field "revision" projectPage
-                        |> RpcValue.requireInteger "revision"
-                    )
+                    (WorkspaceRpcScenario.field "revision" projectPage
+                     |> RpcValue.requireInteger "revision")
+                    |> should equal (watchedRevision)
 
                     changedFileFound <-
                         WorkspaceRpcScenario.field "nodes" projectPage
@@ -256,15 +245,12 @@ type WorkspacePagingAndResetTests() =
                     hasMore <- continuation.IsSome
                     requestId <- requestId + 1u
 
-                Assert.True(changedFileFound, "Fresh project paging did not expose Changed.fs.")
+                (changedFileFound) |> should equal true
 
                 File.Copy(WorkspaceRpcScenario.globalJson, Path.Combine(directory, "global.json"))
                 let selection = Task.Run(fun () -> WorkspaceRpcScenario.readFrame child)
 
-                Assert.True(
-                    selection.Wait(TimeSpan.FromSeconds 10.0),
-                    "global.json creation was not observed."
-                )
+                (selection.Wait(TimeSpan.FromSeconds 10.0)) |> should equal true
 
                 match selection.Result with
                 | Notification("workspace/reset", parameters) ->
@@ -272,7 +258,7 @@ type WorkspacePagingAndResetTests() =
                         WorkspaceRpcScenario.field "revision" parameters
                         |> RpcValue.requireInteger "revision"
 
-                    Assert.True(resetRevision > watchedRevision)
+                    (resetRevision > watchedRevision) |> should equal true
 
                     WorkspaceRpcScenario.send
                         child
@@ -282,13 +268,11 @@ type WorkspacePagingAndResetTests() =
                     let freshError, freshRoot =
                         WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 100u
 
-                    Assert.True freshError.IsNone
+                    (freshError.IsNone) |> should equal true
 
-                    Assert.Equal(
-                        resetRevision,
-                        WorkspaceRpcScenario.field "revision" freshRoot
-                        |> RpcValue.requireInteger "revision"
-                    )
+                    (WorkspaceRpcScenario.field "revision" freshRoot
+                     |> RpcValue.requireInteger "revision")
+                    |> should equal (resetRevision)
 
                     let workspaceTarget =
                         WorkspaceRpcScenario.map [ "targetNodeId", RpcValue.String workspaceId ]
@@ -301,14 +285,14 @@ type WorkspacePagingAndResetTests() =
                     let commandError, commands =
                         WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 101u
 
-                    Assert.True commandError.IsNone
+                    (commandError.IsNone) |> should equal true
 
                     WorkspaceRpcScenario.field "commands" commands
                     |> RpcValue.requireArray "commands"
                     |> Seq.exists (fun command ->
                         WorkspaceRpcScenario.field "id" command = RpcValue.String
                             "solution.project.add")
-                    |> Assert.True
+                    |> should equal true
                 | frame -> failwithf "Expected a toolset reset, got %A" frame
 
                 WorkspaceRpcScenario.shutdown child 102u

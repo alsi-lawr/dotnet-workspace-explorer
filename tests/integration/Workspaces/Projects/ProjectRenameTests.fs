@@ -7,6 +7,7 @@ open System.Diagnostics
 open System.IO
 open Microsoft.VisualStudio.SolutionPersistence.Model
 open Dotnet.WorkspaceExplorer.Rpc
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("Workspace scenarios")>]
@@ -16,10 +17,13 @@ type ProjectRenameTests() =
         let missing = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.slnx")
         use startup = WorkspaceRpcScenario.startWorkspaceRpc "solution" missing
         startup.StandardInput.Close()
-        Assert.True(startup.WaitForExit 5000)
-        Assert.Equal(64, startup.ExitCode)
-        Assert.Empty(WorkspaceRpcScenario.readRemaining startup.StandardOutput.BaseStream)
-        Assert.Contains("startup failure", startup.StandardError.ReadToEnd())
+        (startup.WaitForExit 5000) |> should equal true
+        (startup.ExitCode) |> should equal (64)
+
+        (WorkspaceRpcScenario.readRemaining startup.StandardOutput.BaseStream)
+        |> should be Empty
+
+        (startup.StandardError.ReadToEnd()) |> should haveSubstring ("startup failure")
 
         let directory = WorkspaceRpcScenario.temporaryDirectory "pipe-fatal"
 
@@ -29,10 +33,13 @@ type ProjectRenameTests() =
             use fatal = WorkspaceRpcScenario.startWorkspaceRpc "solution" solution
             fatal.StandardInput.BaseStream.Write [| 0xd4uy; 0uy; 0uy |]
             fatal.StandardInput.Close()
-            Assert.True(fatal.WaitForExit 5000)
-            Assert.Equal(65, fatal.ExitCode)
-            Assert.Empty(WorkspaceRpcScenario.readRemaining fatal.StandardOutput.BaseStream)
-            Assert.Contains("protocol failure", fatal.StandardError.ReadToEnd())
+            (fatal.WaitForExit 5000) |> should equal true
+            (fatal.ExitCode) |> should equal (65)
+
+            (WorkspaceRpcScenario.readRemaining fatal.StandardOutput.BaseStream)
+            |> should be Empty
+
+            (fatal.StandardError.ReadToEnd()) |> should haveSubstring ("protocol failure")
 
             use orderlyEof = WorkspaceRpcScenario.startWorkspaceRpc "solution" solution
 
@@ -56,13 +63,10 @@ type ProjectRenameTests() =
 
             orderlyEof.StandardInput.Close()
 
-            Assert.True(
-                orderlyEof.WaitForExit 5000,
-                "The watched workspace RPC did not exit after stdin closed."
-            )
+            (orderlyEof.WaitForExit 5000) |> should equal true
 
-            Assert.Equal(0, orderlyEof.ExitCode)
-            Assert.Equal(String.Empty, orderlyEof.StandardError.ReadToEnd())
+            (orderlyEof.ExitCode) |> should equal (0)
+            (orderlyEof.StandardError.ReadToEnd()) |> should equal (String.Empty)
         finally
             if Directory.Exists directory then
                 Directory.Delete(directory, true)
@@ -84,11 +88,11 @@ type ProjectRenameTests() =
                 WorkspaceRpcScenario.readFrame invalidInitialize
                 |> WorkspaceRpcScenario.response 1u
 
-            Assert.Equal("invalid_params", initializeError.Value.Code)
+            (initializeError.Value.Code) |> should equal ("invalid_params")
             invalidInitialize.StandardInput.Close()
-            Assert.True(invalidInitialize.WaitForExit 5000)
-            Assert.Equal(0, invalidInitialize.ExitCode)
-            Assert.Equal(String.Empty, invalidInitialize.StandardError.ReadToEnd())
+            (invalidInitialize.WaitForExit 5000) |> should equal true
+            (invalidInitialize.ExitCode) |> should equal (0)
+            (invalidInitialize.StandardError.ReadToEnd()) |> should equal (String.Empty)
         finally
             if Directory.Exists invalidDirectory then
                 Directory.Delete(invalidDirectory, true)
@@ -99,7 +103,7 @@ type ProjectRenameTests() =
         start.RedirectStandardOutput <- true
         start.RedirectStandardError <- true
         use direct = Process.Start start
-        Assert.NotNull direct
-        Assert.True(direct.WaitForExit 5000)
-        Assert.NotEqual(0, direct.ExitCode)
-        Assert.StartsWith("{", direct.StandardOutput.ReadToEnd().TrimStart())
+        (direct) |> should not' (be Null)
+        (direct.WaitForExit 5000) |> should equal true
+        (direct.ExitCode) |> should not' (equal (0))
+        (direct.StandardOutput.ReadToEnd().TrimStart()) |> should startWith ("{")

@@ -5,6 +5,7 @@ namespace Dotnet.WorkspaceExplorer.ProjectEvaluation.IntegrationTests
 open System
 open System.IO
 open Dotnet.WorkspaceExplorer.Rpc
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("Project evaluation scenarios")>]
@@ -35,7 +36,7 @@ type ProjectCapabilityTests() =
 
             Test.withWorker directory (fun worker ->
                 let error, snapshot = Test.evaluate worker 2u project
-                Assert.True error.IsNone
+                (error.IsNone) |> should equal true
 
                 let dimension =
                     Test.values "dimensions" snapshot
@@ -50,17 +51,14 @@ type ProjectCapabilityTests() =
                         Test.field "ordinal" value |> RpcValue.requireInteger "ordinal")
                     |> Seq.toArray
 
-                Assert.Equal<string array>(
-                    [| "A/First.fs"; "B/Second.fs"; "A/Third.fs" |],
-                    ordered |> Array.map fst
-                )
+                (ordered |> Array.map fst)
+                |> should equal ([| "A/First.fs"; "B/Second.fs"; "A/Third.fs" |])
 
-                Assert.True(
-                    ordered
-                    |> Array.map snd
-                    |> Array.pairwise
-                    |> Array.forall (fun (left, right) -> left < right)
-                )
+                (ordered
+                 |> Array.map snd
+                 |> Array.pairwise
+                 |> Array.forall (fun (left, right) -> left < right))
+                |> should equal true
 
                 3u)
         finally
@@ -78,9 +76,9 @@ type ProjectCapabilityTests() =
 
             Test.withWorker directory (fun worker ->
                 let error, snapshot = Test.evaluate worker 2u project
-                Assert.True error.IsNone
+                (error.IsNone) |> should equal true
                 let dimensions = Test.values "dimensions" snapshot
-                Assert.Equal(3, dimensions.Length)
+                (dimensions.Length) |> should equal (3)
 
                 let dimension framework =
                     dimensions
@@ -90,10 +88,10 @@ type ProjectCapabilityTests() =
                 let includes value =
                     Test.values "items" value |> Seq.map (Test.stringField "include")
 
-                Assert.Contains("Eight.cs", dimension "net8.0" |> includes)
-                Assert.DoesNotContain("Eight.cs", dimension "net9.0" |> includes)
-                Assert.Contains(props, Test.strings "imports" snapshot)
-                Assert.Contains(generatedDirectory, Test.strings "globRoots" snapshot)
+                (dimension "net8.0" |> includes) |> should contain ("Eight.cs")
+                (dimension "net9.0" |> includes) |> should not' (contain ("Eight.cs"))
+                (Test.strings "imports" snapshot) |> should contain (props)
+                (Test.strings "globRoots" snapshot) |> should contain (generatedDirectory)
 
                 let importedProperties =
                     dimensions
@@ -101,26 +99,27 @@ type ProjectCapabilityTests() =
                     |> Seq.filter (fun value -> Test.stringField "name" value = "ImportedProperty")
                     |> Seq.map (Test.stringField "value")
 
-                Assert.Contains("before", importedProperties)
+                (importedProperties) |> should contain ("before")
 
                 let generated = Path.Combine(generatedDirectory, "New.cs")
                 Test.write generated "class New {}"
 
                 let globInvalidation = Test.invalidate worker 3u [ generated ]
-                Assert.Contains(project, Test.strings "invalidatedProjects" globInvalidation)
+
+                (Test.strings "invalidatedProjects" globInvalidation)
+                |> should contain (project)
 
                 let _, withGenerated = Test.evaluate worker 4u project
 
-                Assert.Contains(
-                    withGenerated
-                    |> Test.values "dimensions"
-                    |> Seq.collect (Test.values "items")
-                    |> Seq.map (Test.stringField "include"),
-                    fun itemInclude ->
-                        itemInclude
-                            .Replace('\\', '/')
-                            .EndsWith("Generated/New.cs", StringComparison.Ordinal)
-                )
+                (withGenerated
+                 |> Test.values "dimensions"
+                 |> Seq.collect (Test.values "items")
+                 |> Seq.map (Test.stringField "include"))
+                |> Seq.exists (fun itemInclude ->
+                    itemInclude
+                        .Replace('\\', '/')
+                        .EndsWith("Generated/New.cs", StringComparison.Ordinal))
+                |> should equal true
 
                 Test.write
                     props
@@ -129,15 +128,17 @@ type ProjectCapabilityTests() =
                      + "</PropertyGroup></Project>")
 
                 let importInvalidation = Test.invalidate worker 5u [ props ]
-                Assert.Contains(project, Test.strings "invalidatedProjects" importInvalidation)
+
+                (Test.strings "invalidatedProjects" importInvalidation)
+                |> should contain (project)
+
                 let _, changed = Test.evaluate worker 6u project
 
-                Assert.Contains(
-                    changed |> Test.values "dimensions" |> Seq.collect (Test.values "properties"),
-                    fun value ->
-                        Test.stringField "name" value = "ImportedProperty"
-                        && Test.stringField "value" value = "after"
-                )
+                (changed |> Test.values "dimensions" |> Seq.collect (Test.values "properties"))
+                |> Seq.exists (fun value ->
+                    Test.stringField "name" value = "ImportedProperty"
+                    && Test.stringField "value" value = "after")
+                |> should equal true
 
                 7u)
         finally
@@ -158,11 +159,16 @@ type ProjectCapabilityTests() =
             Test.withWorker directory (fun worker ->
                 for index, (project, expectedProfile, expectedWrite) in Seq.indexed projects do
                     let error, snapshot = Test.evaluate worker (uint32 index + 2u) project
-                    Assert.True error.IsNone
-                    Assert.Equal(expectedProfile, Test.stringField "capabilityProfile" snapshot)
+                    (error.IsNone) |> should equal true
+
+                    (Test.stringField "capabilityProfile" snapshot)
+                    |> should equal (expectedProfile)
+
                     let capabilities = Test.strings "capabilities" snapshot |> Seq.toArray
-                    Assert.Contains("workspace.read", capabilities)
-                    Assert.Equal(expectedWrite, capabilities |> Array.contains "workspace.write")
+                    (capabilities) |> should contain ("workspace.read")
+
+                    (capabilities |> Array.contains "workspace.write")
+                    |> should equal (expectedWrite)
 
                 4u)
         finally

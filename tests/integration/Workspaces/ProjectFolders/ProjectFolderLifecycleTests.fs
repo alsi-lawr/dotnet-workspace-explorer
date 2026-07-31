@@ -30,7 +30,9 @@ type ProjectFolderLifecycleTests() =
                 true
 
             Directory.Exists folder |> should equal true
-            Assert.Contains("<Folder Include=\"Empty/\"", File.ReadAllText session.Project)
+
+            (File.ReadAllText session.Project)
+            |> should haveSubstring ("<Folder Include=\"Empty/\"")
         finally
             WorkspaceRpcScenario.closeProject session
 
@@ -91,8 +93,12 @@ type ProjectFolderLifecycleTests() =
                 true
 
             let project = File.ReadAllText session.Project
-            Assert.Contains($"Include=\"{external.Replace('\\', '/')}/**/*\"", project)
-            Assert.Contains("<Link>Linked/%(RecursiveDir)%(Filename)%(Extension)</Link>", project)
+
+            (project)
+            |> should haveSubstring ($"Include=\"{external.Replace('\\', '/')}/**/*\"")
+
+            (project)
+            |> should haveSubstring ("<Link>Linked/%(RecursiveDir)%(Filename)%(Extension)</Link>")
 
             Directory.Exists(Path.Combine(session.Directory, "Linked"))
             |> should equal false
@@ -129,8 +135,8 @@ type ProjectFolderLifecycleTests() =
             |> should equal true
 
             let project = File.ReadAllText session.Project
-            Assert.Contains("Include=\"New/Source.txt\"", project)
-            Assert.Contains("<Link>New/Source.txt</Link>", project)
+            (project) |> should haveSubstring ("Include=\"New/Source.txt\"")
+            (project) |> should haveSubstring ("<Link>New/Source.txt</Link>")
 
             let names = WorkspaceRpcScenario.readAllProjectChildNames session 5u 1L
 
@@ -164,10 +170,8 @@ type ProjectFolderLifecycleTests() =
 
             File.Exists(Path.Combine(folder, "Source.txt")) |> should equal true
 
-            Assert.Contains(
-                "<Content Remove=\"Assets/Source.txt\"",
-                File.ReadAllText session.Project
-            )
+            (File.ReadAllText session.Project)
+            |> should haveSubstring ("<Content Remove=\"Assets/Source.txt\"")
 
             let names = WorkspaceRpcScenario.readAllProjectChildNames session 5u 1L
 
@@ -207,9 +211,12 @@ type ProjectFolderLifecycleTests() =
 
             File.Exists(Path.Combine(destination, "Source.txt")) |> should equal true
             let project = File.ReadAllText session.Project
-            Assert.Contains("Include=\"Moved/Source.txt\"", project)
-            Assert.Contains("Condition=\"'$(Configuration)' == 'Debug'\"", project)
-            Assert.Contains("<Link>Moved/Source.txt</Link>", project)
+            (project) |> should haveSubstring ("Include=\"Moved/Source.txt\"")
+
+            (project)
+            |> should haveSubstring ("Condition=\"'$(Configuration)' == 'Debug'\"")
+
+            (project) |> should haveSubstring ("<Link>Moved/Source.txt</Link>")
 
             let names = WorkspaceRpcScenario.readAllProjectChildNames session 5u 1L
 

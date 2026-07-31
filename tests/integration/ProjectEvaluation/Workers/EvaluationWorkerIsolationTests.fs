@@ -6,6 +6,7 @@ open System.IO
 open System.Threading
 open Dotnet.WorkspaceExplorer.Workspaces
 open Dotnet.WorkspaceExplorer.ProjectEvaluation
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("Project evaluation scenarios")>]
@@ -69,9 +70,9 @@ type EvaluationWorkerIsolationTests() =
                         | Success snapshot -> snapshot
                         | Failure failure -> failwithf "Export evaluation failed: %A" failure
 
-                    Assert.Equal("before", evaluate () |> marker)
+                    (evaluate () |> marker) |> should equal ("before")
                     writeMarker "after"
-                    Assert.Equal("after", evaluate () |> marker)
+                    (evaluate () |> marker) |> should equal ("after")
                 finally
                     session.DisposeAsync().AsTask().GetAwaiter().GetResult()
             finally

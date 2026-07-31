@@ -3,6 +3,7 @@ namespace Dotnet.WorkspaceExplorer.Workspaces.UnitTests
 #nowarn "3261"
 
 open Dotnet.WorkspaceExplorer.Workspaces
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("Core contracts")>]
@@ -29,7 +30,7 @@ type WorkspaceCapabilityTests() =
                 WorkspaceCapabilityProfile.UnknownProjectSystem
             )
 
-        Assert.True filtered.IsReadOnly
-        Assert.False(filteredProject.Supports WorkspaceCapabilityId.Write)
-        Assert.True(unknownProject.Supports WorkspaceCapabilityId.Read)
-        Assert.False(unknownProject.Supports WorkspaceCapabilityId.Write)
+        (filtered.IsReadOnly) |> should equal true
+        (filteredProject.Supports WorkspaceCapabilityId.Write) |> should equal false
+        (unknownProject.Supports WorkspaceCapabilityId.Read) |> should equal true
+        (unknownProject.Supports WorkspaceCapabilityId.Write) |> should equal false

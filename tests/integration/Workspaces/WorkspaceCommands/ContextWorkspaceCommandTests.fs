@@ -9,6 +9,7 @@ open Microsoft.VisualStudio.SolutionPersistence.Model
 open Dotnet.WorkspaceExplorer.Rpc
 open Dotnet.WorkspaceExplorer.Solutions
 open Dotnet.WorkspaceExplorer.Workspaces
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("Workspace scenarios")>]
@@ -51,11 +52,9 @@ type ContextWorkspaceCommandTests() =
             | Notification(name, parameters) when
                 name.StartsWith("workspace/operations/", StringComparison.Ordinal)
                 ->
-                Assert.Equal(
-                    operationId,
-                    WorkspaceRpcScenario.field "operationId" parameters
-                    |> RpcValue.requireString "operationId"
-                )
+                (WorkspaceRpcScenario.field "operationId" parameters
+                 |> RpcValue.requireString "operationId")
+                |> should equal (operationId)
 
                 if name = "workspace/operations/output" then
                     output.Add(
@@ -104,11 +103,11 @@ type ContextWorkspaceCommandTests() =
         start.ArgumentList.Add "restore"
         start.ArgumentList.Add project
         use child = Process.Start start
-        Assert.NotNull child
+        (child) |> should not' (be Null)
         let output = child.StandardOutput.ReadToEndAsync()
         let error = child.StandardError.ReadToEndAsync()
-        Assert.True(child.WaitForExit 30000, "The project restore did not finish.")
-        Assert.True(child.ExitCode = 0, $"{output.Result}\n{error.Result}")
+        (child.WaitForExit 30000) |> should equal true
+        (child.ExitCode = 0) |> should equal true
 
     [<Fact>]
     member _.``should preview and execute every contextual delete cascade``() =
@@ -275,57 +274,62 @@ type ContextWorkspaceCommandTests() =
                 findNode "projectFolder" "Generated" projectChildren |> nodeIdentifier
 
             let filePreview = preview 10u looseId revision
-            Assert.True((operations filePreview = [| "removeFromProject", false; "trash", false |]))
+
+            ((operations filePreview = [| "removeFromProject", false; "trash", false |]))
+            |> should equal true
 
             let folderPreview = preview 11u generatedId revision
             let folderOperations = operations folderPreview
 
-            Assert.Equal(
-                2,
-                folderOperations
-                |> Array.filter (fst >> (=) "removeFromProject")
-                |> Array.length
-            )
+            (folderOperations
+             |> Array.filter (fst >> (=) "removeFromProject")
+             |> Array.length)
+            |> should equal (2)
 
-            Assert.True(Array.contains ("trash", true) folderOperations)
+            (Array.contains ("trash", true) folderOperations) |> should equal true
 
             let projectPreview = preview 12u standaloneId revision
-            Assert.True((operations projectPreview = [| "removeFromSolution", false |]))
+
+            ((operations projectPreview = [| "removeFromSolution", false |]))
+            |> should equal true
 
             let itemPreview = preview 13u solutionItemId revision
 
             let expectedItemOperations = [| "removeFromSolution", false; "trash", false |]
 
-            Assert.True((operations itemPreview = expectedItemOperations))
+            ((operations itemPreview = expectedItemOperations)) |> should equal true
 
             let logicalPreview = preview 14u solutionFolderId revision
             let logicalOperations = operations logicalPreview
-            Assert.True(Array.contains ("removeFromSolution", true) logicalOperations)
-            Assert.True(logicalOperations.Length >= 3)
+
+            (Array.contains ("removeFromSolution", true) logicalOperations)
+            |> should equal true
+
+            (logicalOperations.Length >= 3) |> should equal true
 
             let mutable current = execute 20u looseId revision filePreview
-            Assert.False(File.Exists loose)
+            (File.Exists loose) |> should equal false
 
             let nextFolderPreview = preview 22u generatedId current
             current <- execute 23u generatedId current nextFolderPreview
-            Assert.False(Directory.Exists generated)
+            (Directory.Exists generated) |> should equal false
 
             let nextProjectPreview = preview 25u standaloneId current
             current <- execute 26u standaloneId current nextProjectPreview
-            Assert.True(File.Exists standaloneProject)
+            (File.Exists standaloneProject) |> should equal true
 
             let nextItemPreview = preview 28u solutionItemId current
             current <- execute 29u solutionItemId current nextItemPreview
-            Assert.False(File.Exists solutionItem)
+            (File.Exists solutionItem) |> should equal false
 
             let nextLogicalPreview = preview 31u solutionFolderId current
             execute 32u solutionFolderId current nextLogicalPreview |> ignore
-            Assert.True(File.Exists nestedProject)
-            Assert.True(File.Exists nestedSource)
+            (File.Exists nestedProject) |> should equal true
+            (File.Exists nestedSource) |> should equal true
 
             let reopened = WorkspaceCommandScenario.openSolution solution
-            Assert.Empty reopened.SolutionProjects
-            Assert.Empty reopened.SolutionFolders
+            (reopened.SolutionProjects) |> should be Empty
+            (reopened.SolutionFolders) |> should be Empty
             WorkspaceRpcScenario.shutdown child 40u
         finally
             WorkspaceRpcScenario.disposeProcess child
@@ -428,7 +432,7 @@ type ContextWorkspaceCommandTests() =
                 let initializeError, _ =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 1u
 
-                Assert.True initializeError.IsNone
+                (initializeError.IsNone) |> should equal true
 
                 WorkspaceRpcScenario.send
                     child
@@ -491,7 +495,7 @@ type ContextWorkspaceCommandTests() =
                 let optionsError, options =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 5u
 
-                Assert.True optionsError.IsNone
+                (optionsError.IsNone) |> should equal true
 
                 let selectionId =
                     WorkspaceRpcScenario.field "options" options
@@ -557,7 +561,7 @@ type ContextWorkspaceCommandTests() =
                 let executeError, executeResult =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 7u
 
-                Assert.True executeError.IsNone
+                (executeError.IsNone) |> should equal true
 
                 let operationId =
                     WorkspaceRpcScenario.field "operationId" executeResult
@@ -592,12 +596,10 @@ type ContextWorkspaceCommandTests() =
                         while not accepted || completed.IsNone do
                             match WorkspaceRpcScenario.readFrame child with
                             | Response(70u, error, result) ->
-                                Assert.True error.IsNone
+                                (error.IsNone) |> should equal true
 
-                                Assert.Equal(
-                                    RpcValue.Boolean true,
-                                    WorkspaceRpcScenario.field "accepted" result
-                                )
+                                (WorkspaceRpcScenario.field "accepted" result)
+                                |> should equal (RpcValue.Boolean true)
 
                                 accepted <- true
                             | Notification("workspace/operations/progress", _) -> ()
@@ -619,38 +621,37 @@ type ContextWorkspaceCommandTests() =
                 let destination = Path.Combine(directory, "Nested", "IContract.cs")
 
                 if postactionExpected then
-                    Assert.Equal("failed", outcome)
-                    Assert.Contains("template_output_changed", diagnostic.Value)
-                    Assert.False(Directory.Exists(Path.Combine(directory, "Generated")))
+                    (outcome) |> should equal ("failed")
+                    (diagnostic.Value) |> should haveSubstring ("template_output_changed")
+                    (Directory.Exists(Path.Combine(directory, "Generated"))) |> should equal false
 
                     let reopened = WorkspaceCommandScenario.openSolution solution
-                    Assert.Equal(1, reopened.SolutionProjects.Count)
+                    (reopened.SolutionProjects.Count) |> should equal (1)
                 elif nestedProjectExpected then
-                    Assert.Equal("succeeded", outcome)
+                    (outcome) |> should equal ("succeeded")
 
-                    Assert.True(
-                        File.Exists(Path.Combine(directory, "Generated", "src", "Nested.csproj"))
-                    )
+                    (File.Exists(Path.Combine(directory, "Generated", "src", "Nested.csproj")))
+                    |> should equal true
 
                     let reopened = WorkspaceCommandScenario.openSolution solution
-                    Assert.Equal(2, reopened.SolutionProjects.Count)
+                    (reopened.SolutionProjects.Count) |> should equal (2)
                 elif cancellationExpected then
-                    Assert.Equal("cancelled", outcome)
-                    Assert.False(File.Exists destination)
-                    Assert.False(Directory.Exists(Path.GetDirectoryName destination))
+                    (outcome) |> should equal ("cancelled")
+                    (File.Exists destination) |> should equal false
+                    (Directory.Exists(Path.GetDirectoryName destination)) |> should equal false
                 elif failureExpected then
-                    Assert.Equal("failed", outcome)
+                    (outcome) |> should equal ("failed")
 
                     if partialRecoveryExpected then
-                        Assert.Contains("partial_recovery_required", diagnostic.Value)
+                        (diagnostic.Value) |> should haveSubstring ("partial_recovery_required")
                     else
-                        Assert.Contains("external_tool_failed", diagnostic.Value)
+                        (diagnostic.Value) |> should haveSubstring ("external_tool_failed")
 
-                    Assert.False(File.Exists destination)
-                    Assert.False(Directory.Exists(Path.GetDirectoryName destination))
+                    (File.Exists destination) |> should equal false
+                    (Directory.Exists(Path.GetDirectoryName destination)) |> should equal false
                 else
-                    Assert.Equal("succeeded", outcome)
-                    Assert.True(File.Exists destination)
+                    (outcome) |> should equal ("succeeded")
+                    (File.Exists destination) |> should equal true
 
                 WorkspaceRpcScenario.shutdown child 8u
             finally
@@ -750,7 +751,7 @@ type ContextWorkspaceCommandTests() =
 
         try
             let initializeError, _ = response 1u "initialize" initialize
-            Assert.True initializeError.IsNone
+            (initializeError.IsNone) |> should equal true
 
             let _, root = response 2u "workspace/root" RpcValue.emptyMap
             let rootId = nodeId "workspace" root
@@ -789,7 +790,7 @@ type ContextWorkspaceCommandTests() =
                         [ "targetNodeId", RpcValue.String projectId
                           "expectedRevision", RpcValue.Integer revision ])
 
-            Assert.True optionsError.IsNone
+            (optionsError.IsNone) |> should equal true
 
             let selectionId =
                 WorkspaceRpcScenario.field "options" options
@@ -811,7 +812,7 @@ type ContextWorkspaceCommandTests() =
 
             let previewError, preview = response 6u "workspace/commands/preview" request
 
-            Assert.True previewError.IsNone
+            (previewError.IsNone) |> should equal true
             File.AppendAllText(cache, Environment.NewLine)
 
             let executeRequest =
@@ -826,9 +827,9 @@ type ContextWorkspaceCommandTests() =
 
             let executeError, _ = response 7u "workspace/commands/execute" executeRequest
 
-            Assert.Equal("template_catalog_changed", executeError.Value.Code)
-            Assert.False(File.Exists started)
-            Assert.False(Directory.Exists(Path.Combine(directory, "Nested")))
+            (executeError.Value.Code) |> should equal ("template_catalog_changed")
+            (File.Exists started) |> should equal false
+            (Directory.Exists(Path.Combine(directory, "Nested"))) |> should equal false
             WorkspaceRpcScenario.shutdown child 8u
         finally
             WorkspaceRpcScenario.disposeProcess child
@@ -970,7 +971,7 @@ type ContextWorkspaceCommandTests() =
                     |> Seq.sort
                     |> Seq.toArray
 
-                Assert.True((itemLanguages = [| None; Some language |]))
+                ((itemLanguages = [| None; Some language |])) |> should equal true
                 WorkspaceRpcScenario.shutdown child 6u
             finally
                 WorkspaceRpcScenario.disposeProcess child
@@ -1034,13 +1035,13 @@ type ContextWorkspaceCommandTests() =
             let initializeError, initialized =
                 WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 1u
 
-            Assert.True initializeError.IsNone
+            (initializeError.IsNone) |> should equal true
 
             let negotiated =
                 WorkspaceRpcScenario.field "capabilities" initialized
                 |> RpcValue.requireArray "capabilities"
 
-            Assert.Contains(RpcValue.String "workspace.create.options", negotiated)
+            (negotiated) |> should contain (RpcValue.String "workspace.create.options")
 
             WorkspaceRpcScenario.send
                 child
@@ -1080,7 +1081,7 @@ type ContextWorkspaceCommandTests() =
             let (childrenError, projectChildren), _, _ =
                 WorkspaceRpcScenario.responseAfterWorkspaceNotifications child 4u 0L
 
-            Assert.True childrenError.IsNone
+            (childrenError.IsNone) |> should equal true
 
             let revision =
                 WorkspaceRpcScenario.field "revision" projectChildren
@@ -1107,7 +1108,7 @@ type ContextWorkspaceCommandTests() =
             let staleOptionsError, _ =
                 WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 55u
 
-            Assert.Equal("workspace_conflict", staleOptionsError.Value.Code)
+            (staleOptionsError.Value.Code) |> should equal ("workspace_conflict")
 
             WorkspaceRpcScenario.send
                 child
@@ -1122,7 +1123,7 @@ type ContextWorkspaceCommandTests() =
             let dependencyChildrenError, dependencyChildren =
                 WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 56u
 
-            Assert.True dependencyChildrenError.IsNone
+            (dependencyChildrenError.IsNone) |> should equal true
             let dependencyId = nodeId "dependency" dependencyChildren
 
             for requestId, targetId in [ 57u, dependencyContainerId; 58u, dependencyId ] do
@@ -1137,7 +1138,7 @@ type ContextWorkspaceCommandTests() =
                 let dependencyListError, dependencyList =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response requestId
 
-                Assert.True dependencyListError.IsNone
+                (dependencyListError.IsNone) |> should equal true
 
                 let dependencyCommands =
                     WorkspaceRpcScenario.field "commands" dependencyList
@@ -1147,8 +1148,8 @@ type ContextWorkspaceCommandTests() =
                     )
                     |> Seq.toArray
 
-                Assert.Contains("workspace.create", dependencyCommands)
-                Assert.DoesNotContain("workspace.delete", dependencyCommands)
+                (dependencyCommands) |> should contain ("workspace.create")
+                (dependencyCommands) |> should not' (contain ("workspace.delete"))
 
                 WorkspaceRpcScenario.send
                     child
@@ -1164,13 +1165,13 @@ type ContextWorkspaceCommandTests() =
                     WorkspaceRpcScenario.readFrame child
                     |> WorkspaceRpcScenario.response (requestId + 10u)
 
-                Assert.True dependencyOptionsError.IsNone
+                (dependencyOptionsError.IsNone) |> should equal true
 
-                Assert.Contains(
-                    WorkspaceRpcScenario.field "options" dependencyOptions
-                    |> RpcValue.requireArray "options",
-                    fun option -> WorkspaceRpcScenario.field "kind" option = RpcValue.String "empty"
-                )
+                (WorkspaceRpcScenario.field "options" dependencyOptions
+                 |> RpcValue.requireArray "options")
+                |> Seq.exists (fun option ->
+                    WorkspaceRpcScenario.field "kind" option = RpcValue.String "empty")
+                |> should equal true
 
                 let rejected requestOffset methodName parameters =
                     WorkspaceRpcScenario.send
@@ -1185,7 +1186,7 @@ type ContextWorkspaceCommandTests() =
                         WorkspaceRpcScenario.readFrame child
                         |> WorkspaceRpcScenario.response (requestId + requestOffset)
 
-                    Assert.Equal("not_found", error.Value.Code)
+                    (error.Value.Code) |> should equal ("not_found")
 
                 rejected
                     20u
@@ -1223,7 +1224,7 @@ type ContextWorkspaceCommandTests() =
             let listError, listed =
                 WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 5u
 
-            Assert.True listError.IsNone
+            (listError.IsNone) |> should equal true
 
             let commandIds =
                 WorkspaceRpcScenario.field "commands" listed
@@ -1231,8 +1232,8 @@ type ContextWorkspaceCommandTests() =
                 |> Seq.map (WorkspaceRpcScenario.field "id" >> RpcValue.requireString "command.id")
                 |> Seq.toArray
 
-            Assert.Contains("workspace.create", commandIds)
-            Assert.Contains("workspace.delete", commandIds)
+            (commandIds) |> should contain ("workspace.create")
+            (commandIds) |> should contain ("workspace.delete")
 
             WorkspaceRpcScenario.send
                 child
@@ -1247,14 +1248,14 @@ type ContextWorkspaceCommandTests() =
             let describeError, described =
                 WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 50u
 
-            Assert.True describeError.IsNone
+            (describeError.IsNone) |> should equal true
 
             let parameters =
                 WorkspaceRpcScenario.field "command" described
                 |> WorkspaceRpcScenario.field "parameters"
                 |> RpcValue.requireArray "parameters"
 
-            Assert.Equal(2, parameters.Length)
+            (parameters.Length) |> should equal (2)
 
             let parameterIds =
                 parameters
@@ -1263,7 +1264,7 @@ type ContextWorkspaceCommandTests() =
                     |> RpcValue.requireString "parameter.id")
                 |> Seq.toArray
 
-            Assert.True((parameterIds = [| "selectionId"; "name" |]))
+            ((parameterIds = [| "selectionId"; "name" |])) |> should equal true
 
             WorkspaceRpcScenario.send
                 child
@@ -1282,39 +1283,33 @@ type ContextWorkspaceCommandTests() =
             | Some error -> failwithf "Create options failed: %s: %s" error.Code error.Message
             | None -> ()
 
-            Assert.Equal(
-                revision,
-                WorkspaceRpcScenario.field "revision" optionsResult
-                |> RpcValue.requireInteger "revision"
-            )
+            (WorkspaceRpcScenario.field "revision" optionsResult
+             |> RpcValue.requireInteger "revision")
+            |> should equal (revision)
 
             let empty =
                 let options =
                     WorkspaceRpcScenario.field "options" optionsResult
                     |> RpcValue.requireArray "options"
 
-                Assert.Contains(
-                    options,
-                    fun option ->
-                        WorkspaceRpcScenario.field "kind" option = RpcValue.String "projectTemplate"
-                )
+                (options)
+                |> Seq.exists (fun option ->
+                    WorkspaceRpcScenario.field "kind" option = RpcValue.String "projectTemplate")
+                |> should equal true
 
-                Assert.DoesNotContain(
-                    options,
-                    fun option ->
-                        WorkspaceRpcScenario.field "kind" option = RpcValue.String "itemTemplate"
-                        && (RpcValue.tryField "language" option
-                            |> Option.exists ((<>) (RpcValue.String "C#")))
-                )
+                (options)
+                |> Seq.exists (fun option ->
+                    WorkspaceRpcScenario.field "kind" option = RpcValue.String "itemTemplate"
+                    && (RpcValue.tryField "language" option
+                        |> Option.exists ((<>) (RpcValue.String "C#"))))
+                |> should equal false
 
                 options
                 |> Seq.find (fun option ->
                     WorkspaceRpcScenario.field "kind" option = RpcValue.String "empty")
 
-            Assert.Equal(
-                RpcValue.String "transaction",
-                WorkspaceRpcScenario.field "execution" empty
-            )
+            (WorkspaceRpcScenario.field "execution" empty)
+            |> should equal (RpcValue.String "transaction")
 
             let createArguments =
                 WorkspaceRpcScenario.map
@@ -1336,13 +1331,15 @@ type ContextWorkspaceCommandTests() =
             let previewError, preview =
                 WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 7u
 
-            Assert.True previewError.IsNone
-            Assert.NotEqual(RpcValue.Nil, WorkspaceRpcScenario.field "summary" preview)
+            (previewError.IsNone) |> should equal true
+
+            (WorkspaceRpcScenario.field "summary" preview)
+            |> should not' (equal (RpcValue.Nil))
 
             let effects =
                 WorkspaceRpcScenario.field "effects" preview |> RpcValue.requireArray "effects"
 
-            Assert.Equal(2, effects.Length)
+            (effects.Length) |> should equal (2)
 
             let effectOperations =
                 effects |> Seq.map (WorkspaceRpcScenario.field "operation") |> Seq.toArray
@@ -1350,13 +1347,15 @@ type ContextWorkspaceCommandTests() =
             let expectedEffectOperations =
                 [| RpcValue.String "create"; RpcValue.String "addToProject" |]
 
-            Assert.True((effectOperations = expectedEffectOperations))
+            ((effectOperations = expectedEffectOperations)) |> should equal true
 
             for effect in effects do
                 let fields = WorkspaceRpcScenario.fields effect |> Seq.map _.Key |> Set.ofSeq
 
-                Assert.True((fields = set [ "operation"; "target"; "recursive" ]))
-                Assert.Equal(RpcValue.Boolean false, WorkspaceRpcScenario.field "recursive" effect)
+                ((fields = set [ "operation"; "target"; "recursive" ])) |> should equal true
+
+                (WorkspaceRpcScenario.field "recursive" effect)
+                |> should equal (RpcValue.Boolean false)
 
             WorkspaceRpcScenario.send
                 child
@@ -1375,9 +1374,12 @@ type ContextWorkspaceCommandTests() =
             let executeError, executeResult =
                 WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 8u
 
-            Assert.True executeError.IsNone
-            Assert.Equal(RpcValue.Boolean true, WorkspaceRpcScenario.field "applied" executeResult)
-            Assert.True(File.Exists created)
+            (executeError.IsNone) |> should equal true
+
+            (WorkspaceRpcScenario.field "applied" executeResult)
+            |> should equal (RpcValue.Boolean true)
+
+            (File.Exists created) |> should equal true
 
             let nextRevision =
                 WorkspaceRpcScenario.field "revision" executeResult
@@ -1452,14 +1454,9 @@ type ContextWorkspaceCommandTests() =
             let itemOutcome, itemRevision, itemDiagnostic, itemOutput =
                 operationCompletion child itemOperationId
 
-            Assert.True(
-                (itemOutcome = "succeeded"),
-                itemDiagnostic
-                |> Option.defaultValue "Item template operation failed."
-                |> fun message -> $"{message}\n{itemOutput}"
-            )
+            ((itemOutcome = "succeeded")) |> should equal true
 
-            Assert.True(File.Exists(Path.Combine(directory, "IGenerated.cs")))
+            (File.Exists(Path.Combine(directory, "IGenerated.cs"))) |> should equal true
 
             WorkspaceRpcScenario.send
                 child
@@ -1518,7 +1515,7 @@ type ContextWorkspaceCommandTests() =
                         WorkspaceRpcScenario.readFrame child
                         |> WorkspaceRpcScenario.response (requestId + requestOffset)
 
-                    Assert.True(error.IsSome, $"{methodName} accepted an unsupported target.")
+                    (error.IsSome) |> should equal true
 
                 let target =
                     WorkspaceRpcScenario.map [ "targetNodeId", RpcValue.String unsupportedTargetId ]
@@ -1557,7 +1554,7 @@ type ContextWorkspaceCommandTests() =
 
                 rejected "workspace/commands/execute" 4u unsupportedExecute
 
-            Assert.False(Directory.Exists(Path.Combine(directory, "Generated")))
+            (Directory.Exists(Path.Combine(directory, "Generated"))) |> should equal false
 
             WorkspaceRpcScenario.send
                 child
@@ -1600,17 +1597,13 @@ type ContextWorkspaceCommandTests() =
             let outcome, projectRevision, diagnostic, output =
                 operationCompletion child operationId
 
-            Assert.True(
-                (outcome = "succeeded"),
-                diagnostic
-                |> Option.defaultValue "Project template operation failed."
-                |> fun message -> $"{message}\n{output}"
-            )
+            ((outcome = "succeeded")) |> should equal true
 
-            Assert.True(File.Exists(Path.Combine(directory, "Generated", "Generated.csproj")))
+            (File.Exists(Path.Combine(directory, "Generated", "Generated.csproj")))
+            |> should equal true
 
             let reopened = WorkspaceCommandScenario.openSolution solution
-            Assert.Equal(2, reopened.SolutionProjects.Count)
+            (reopened.SolutionProjects.Count) |> should equal (2)
 
             let mutable routedRevision = projectRevision
 
@@ -1626,14 +1619,13 @@ type ContextWorkspaceCommandTests() =
                 let listError, listResult =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response requestId
 
-                Assert.True listError.IsNone
+                (listError.IsNone) |> should equal true
 
-                Assert.Contains(
-                    WorkspaceRpcScenario.field "commands" listResult
-                    |> RpcValue.requireArray "commands",
-                    fun command ->
-                        WorkspaceRpcScenario.field "id" command = RpcValue.String "workspace.create"
-                )
+                (WorkspaceRpcScenario.field "commands" listResult
+                 |> RpcValue.requireArray "commands")
+                |> Seq.exists (fun command ->
+                    WorkspaceRpcScenario.field "id" command = RpcValue.String "workspace.create")
+                |> should equal true
 
                 WorkspaceRpcScenario.send
                     child
@@ -1649,7 +1641,7 @@ type ContextWorkspaceCommandTests() =
                     WorkspaceRpcScenario.readFrame child
                     |> WorkspaceRpcScenario.response (requestId + 1u)
 
-                Assert.True describeError.IsNone
+                (describeError.IsNone) |> should equal true
 
                 WorkspaceRpcScenario.send
                     child
@@ -1665,7 +1657,7 @@ type ContextWorkspaceCommandTests() =
                     WorkspaceRpcScenario.readFrame child
                     |> WorkspaceRpcScenario.response (requestId + 2u)
 
-                Assert.True optionsError.IsNone
+                (optionsError.IsNone) |> should equal true
 
                 let emptySelection =
                     WorkspaceRpcScenario.field "options" options
@@ -1697,7 +1689,7 @@ type ContextWorkspaceCommandTests() =
                     WorkspaceRpcScenario.readFrame child
                     |> WorkspaceRpcScenario.response (requestId + 3u)
 
-                Assert.True previewError.IsNone
+                (previewError.IsNone) |> should equal true
 
                 let executeRequest =
                     match previewRequest with
@@ -1721,7 +1713,7 @@ type ContextWorkspaceCommandTests() =
                     WorkspaceRpcScenario.readFrame child
                     |> WorkspaceRpcScenario.response (requestId + 4u)
 
-                Assert.True executeError.IsNone
+                (executeError.IsNone) |> should equal true
 
                 routedRevision <-
                     WorkspaceRpcScenario.field "revision" executeResult
@@ -1732,7 +1724,7 @@ type ContextWorkspaceCommandTests() =
                 | Notification("workspace/reset", _) -> ()
                 | frame -> failwithf "Expected routed creation notification, got %A" frame
 
-                Assert.True(File.Exists destination)
+                (File.Exists destination) |> should equal true
 
             routeCreate
                 100u
@@ -1761,8 +1753,8 @@ type ContextWorkspaceCommandTests() =
                 routedRevision
                 true
 
-            Assert.False(File.Exists existing)
-            Assert.True(File.Exists created)
+            (File.Exists existing) |> should equal false
+            (File.Exists created) |> should equal true
             WorkspaceRpcScenario.shutdown child 30u
         finally
             WorkspaceRpcScenario.disposeProcess child

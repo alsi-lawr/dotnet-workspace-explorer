@@ -30,13 +30,12 @@ type ProjectCreationCommandTests() =
                 WorkspaceRpcScenario.readFrame session.Child
                 |> WorkspaceRpcScenario.response 30u
 
-            Assert.True listError.IsNone
+            (listError.IsNone) |> should equal true
 
-            Assert.Contains(
-                WorkspaceRpcScenario.field "commands" list |> RpcValue.requireArray "commands",
-                fun command ->
-                    WorkspaceRpcScenario.field "id" command = RpcValue.String "solution.project.add"
-            )
+            (WorkspaceRpcScenario.field "commands" list |> RpcValue.requireArray "commands")
+            |> Seq.exists (fun command ->
+                WorkspaceRpcScenario.field "id" command = RpcValue.String "solution.project.add")
+            |> should equal true
 
             WorkspaceRpcScenario.send
                 session.Child
@@ -52,7 +51,7 @@ type ProjectCreationCommandTests() =
                 WorkspaceRpcScenario.readFrame session.Child
                 |> WorkspaceRpcScenario.response 31u
 
-            Assert.True describeError.IsNone
+            (describeError.IsNone) |> should equal true
 
             let arguments =
                 WorkspaceCommandScenario.argumentMap

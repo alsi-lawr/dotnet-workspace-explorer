@@ -6,6 +6,7 @@ open System
 open System.IO
 open Microsoft.VisualStudio.SolutionPersistence.Model
 open Dotnet.WorkspaceExplorer.Rpc
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("Workspace scenarios")>]
@@ -53,15 +54,15 @@ type WorkspaceExportStreamingTests() =
                 let secondId, secondRevision = WorkspaceRpcScenario.startExport child 3u
                 let second = WorkspaceRpcScenario.readExport child secondId secondRevision
 
-                Assert.Equal(firstRevision, secondRevision)
-                Assert.Equal("succeeded", first.Outcome)
-                Assert.Equal("succeeded", second.Outcome)
-                Assert.True(first.ChunkSizes.Length > 1)
-                Assert.True(first.ChunkSizes |> Array.max >= 768)
-                Assert.Equal<bool array>([| true |], first.LastValues |> Array.filter id)
-                Assert.True(first.LastValues[first.LastValues.Length - 1])
-                Assert.Equal(first.Nodes.Length, second.Nodes.Length)
-                Assert.Equal<int array>(first.ChunkSizes, second.ChunkSizes)
+                (secondRevision) |> should equal (firstRevision)
+                (first.Outcome) |> should equal ("succeeded")
+                (second.Outcome) |> should equal ("succeeded")
+                (first.ChunkSizes.Length > 1) |> should equal true
+                (first.ChunkSizes |> Array.max >= 768) |> should equal true
+                (first.LastValues |> Array.filter id) |> should equal ([| true |])
+                (first.LastValues[first.LastValues.Length - 1]) |> should equal true
+                (second.Nodes.Length) |> should equal (first.Nodes.Length)
+                (second.ChunkSizes) |> should equal (first.ChunkSizes)
 
                 let nodeShape node =
                     let capabilities =
@@ -81,13 +82,13 @@ type WorkspaceExportStreamingTests() =
 
                 let firstShapes = first.Nodes |> Array.map nodeShape
                 let secondShapes = second.Nodes |> Array.map nodeShape
-                Assert.Equal<string array>(firstShapes, secondShapes)
+                (secondShapes) |> should equal (firstShapes)
 
                 let nodeIds =
                     first.Nodes
                     |> Array.map (WorkspaceRpcScenario.field "id" >> RpcValue.requireString "id")
 
-                Assert.Equal(nodeIds.Length, nodeIds |> Array.distinct |> Array.length)
+                (nodeIds |> Array.distinct |> Array.length) |> should equal (nodeIds.Length)
 
                 let projectNames =
                     first.Nodes
@@ -97,7 +98,7 @@ type WorkspaceExportStreamingTests() =
                         WorkspaceRpcScenario.field "name" >> RpcValue.requireString "name"
                     )
 
-                Assert.Equal<string array>([| "Alpha"; "Middle"; "Zulu" |], projectNames)
+                (projectNames) |> should equal ([| "Alpha"; "Middle"; "Zulu" |])
                 WorkspaceRpcScenario.shutdown child 4u
             finally
                 WorkspaceRpcScenario.disposeProcess child
@@ -137,11 +138,11 @@ type WorkspaceExportStreamingTests() =
                 let operationId, revision = WorkspaceRpcScenario.startExport child 2u
                 let exported = WorkspaceRpcScenario.readExport child operationId revision
 
-                Assert.Equal("failed", exported.Outcome)
-                Assert.Contains("not_found", exported.DiagnosticCodes)
-                Assert.True(exported.ChunkSizes.Length > 0)
-                Assert.DoesNotContain(true, exported.LastValues)
-                Assert.Equal(int64 exported.ChunkSizes.Length, exported.CompletionSequence)
+                (exported.Outcome) |> should equal ("failed")
+                (exported.DiagnosticCodes) |> should contain ("not_found")
+                (exported.ChunkSizes.Length > 0) |> should equal true
+                (exported.LastValues) |> should not' (contain (true))
+                (exported.CompletionSequence) |> should equal (int64 exported.ChunkSizes.Length)
 
                 WorkspaceRpcScenario.send
                     child
@@ -154,12 +155,10 @@ type WorkspaceExportStreamingTests() =
                 let cancelError, cancelResult =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 3u
 
-                Assert.True cancelError.IsNone
+                (cancelError.IsNone) |> should equal true
 
-                Assert.Equal(
-                    RpcValue.Boolean false,
-                    WorkspaceRpcScenario.field "accepted" cancelResult
-                )
+                (WorkspaceRpcScenario.field "accepted" cancelResult)
+                |> should equal (RpcValue.Boolean false)
 
                 WorkspaceRpcScenario.shutdown child 4u
             finally

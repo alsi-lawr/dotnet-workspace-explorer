@@ -67,7 +67,7 @@ type FilteredWorkspaceCommandTests() =
                 let initializeError, initializeResult =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 1u
 
-                Assert.True initializeError.IsNone
+                (initializeError.IsNone) |> should equal true
 
                 let workspaceId =
                     WorkspaceRpcScenario.field "workspace" initializeResult
@@ -85,14 +85,14 @@ type FilteredWorkspaceCommandTests() =
                 let workspaceListError, workspaceList =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 30u
 
-                Assert.True workspaceListError.IsNone
+                (workspaceListError.IsNone) |> should equal true
 
                 WorkspaceRpcScenario.field "commands" workspaceList
                 |> RpcValue.requireArray "commands"
                 |> Seq.exists (fun command ->
                     WorkspaceRpcScenario.field "id" command = RpcValue.String
                         "solution.project.add")
-                |> Assert.True
+                |> should equal true
 
                 WorkspaceRpcScenario.send
                     child
@@ -102,7 +102,7 @@ type FilteredWorkspaceCommandTests() =
                 let rootError, rootResult =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 2u
 
-                Assert.True rootError.IsNone
+                (rootError.IsNone) |> should equal true
                 let rootChildren = WorkspaceRpcScenario.rootChildren child 20u rootResult
 
                 let projectId =
@@ -127,21 +127,17 @@ type FilteredWorkspaceCommandTests() =
                 let hydrationError, _ =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 3u
 
-                Assert.True hydrationError.IsNone
+                (hydrationError.IsNone) |> should equal true
 
                 match WorkspaceRpcScenario.readFrame child with
                 | Notification("workspace/delta", parameters) ->
-                    Assert.Equal(
-                        0L,
-                        WorkspaceRpcScenario.field "baseRevision" parameters
-                        |> RpcValue.requireInteger "revision"
-                    )
+                    (WorkspaceRpcScenario.field "baseRevision" parameters
+                     |> RpcValue.requireInteger "revision")
+                    |> should equal (0L)
 
-                    Assert.Equal(
-                        1L,
-                        WorkspaceRpcScenario.field "newRevision" parameters
-                        |> RpcValue.requireInteger "revision"
-                    )
+                    (WorkspaceRpcScenario.field "newRevision" parameters
+                     |> RpcValue.requireInteger "revision")
+                    |> should equal (1L)
                 | frame -> failwithf "Expected the hydration delta, got %A" frame
 
                 let target = WorkspaceRpcScenario.map [ "targetNodeId", RpcValue.String projectId ]
@@ -154,14 +150,14 @@ type FilteredWorkspaceCommandTests() =
                 let listError, listResult =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 4u
 
-                Assert.True listError.IsNone
+                (listError.IsNone) |> should equal true
 
                 WorkspaceRpcScenario.field "commands" listResult
                 |> RpcValue.requireArray "commands"
                 |> Seq.exists (fun command ->
                     WorkspaceRpcScenario.field "id" command = RpcValue.String
                         "solution.project.rename")
-                |> Assert.True
+                |> should equal true
 
                 let arguments = WorkspaceRpcScenario.map [ "name", RpcValue.String "Renamed" ]
 
@@ -180,7 +176,7 @@ type FilteredWorkspaceCommandTests() =
                 let revisionError, _ =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 20u
 
-                Assert.Equal("invalid_params", revisionError.Value.Code)
+                (revisionError.Value.Code) |> should equal ("invalid_params")
 
                 let malformedPreview =
                     WorkspaceRpcScenario.map
@@ -198,7 +194,7 @@ type FilteredWorkspaceCommandTests() =
                 let confirmationTokenError, _ =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 21u
 
-                Assert.Equal("invalid_params", confirmationTokenError.Value.Code)
+                (confirmationTokenError.Value.Code) |> should equal ("invalid_params")
 
                 let preview =
                     WorkspaceRpcScenario.map
@@ -215,13 +211,13 @@ type FilteredWorkspaceCommandTests() =
                 let previewError, previewResult =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 5u
 
-                Assert.True previewError.IsNone
+                (previewError.IsNone) |> should equal true
 
                 let confirmationToken =
                     WorkspaceRpcScenario.field "confirmationToken" previewResult
                     |> RpcValue.requireString "confirmationToken"
 
-                Assert.True(File.Exists source)
+                (File.Exists source) |> should equal true
 
                 File.ReadAllText incoming
                 |> fun contents -> contents.Contains "One.fsproj"
@@ -243,34 +239,28 @@ type FilteredWorkspaceCommandTests() =
                 let executeError, executeResult =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 6u
 
-                Assert.True executeError.IsNone
+                (executeError.IsNone) |> should equal true
 
-                Assert.Equal(
-                    2L,
-                    WorkspaceRpcScenario.field "revision" executeResult
-                    |> RpcValue.requireInteger "revision"
-                )
+                (WorkspaceRpcScenario.field "revision" executeResult
+                 |> RpcValue.requireInteger "revision")
+                |> should equal (2L)
 
                 match WorkspaceRpcScenario.readFrame child with
                 | Notification("workspace/delta", parameters) ->
-                    Assert.Equal(
-                        1L,
-                        WorkspaceRpcScenario.field "baseRevision" parameters
-                        |> RpcValue.requireInteger "baseRevision"
-                    )
+                    (WorkspaceRpcScenario.field "baseRevision" parameters
+                     |> RpcValue.requireInteger "baseRevision")
+                    |> should equal (1L)
 
-                    Assert.Equal(
-                        2L,
-                        WorkspaceRpcScenario.field "newRevision" parameters
-                        |> RpcValue.requireInteger "newRevision"
-                    )
+                    (WorkspaceRpcScenario.field "newRevision" parameters
+                     |> RpcValue.requireInteger "newRevision")
+                    |> should equal (2L)
                 | frame ->
                     failwithf
                         "Expected the transaction delta after the execute response, got %A"
                         frame
 
-                Assert.False(File.Exists source)
-                Assert.True(File.Exists destination)
+                (File.Exists source) |> should equal false
+                (File.Exists destination) |> should equal true
 
                 File.ReadAllText incoming
                 |> fun contents -> contents.Contains "Renamed.fsproj"
@@ -289,11 +279,11 @@ type FilteredWorkspaceCommandTests() =
 
                 reopened.SolutionProjects
                 |> Seq.exists (fun project -> project.FilePath = "Renamed.fsproj")
-                |> Assert.True
+                |> should equal true
 
                 reopened.SolutionProjects
                 |> Seq.exists (fun project -> project.FilePath = "One.fsproj")
-                |> Assert.False
+                |> should equal false
 
                 WorkspaceRpcScenario.send
                     child
@@ -303,7 +293,7 @@ type FilteredWorkspaceCommandTests() =
                 let duplicateError, _ =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 7u
 
-                Assert.Equal("not_found", duplicateError.Value.Code)
+                (duplicateError.Value.Code) |> should equal ("not_found")
                 WorkspaceRpcScenario.shutdown child 8u
             finally
                 WorkspaceRpcScenario.disposeProcess child
@@ -366,7 +356,7 @@ type FilteredWorkspaceCommandTests() =
                 let rootError, rootResult =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 20u
 
-                Assert.True rootError.IsNone
+                (rootError.IsNone) |> should equal true
 
                 let rootId =
                     WorkspaceRpcScenario.field "nodes" rootResult
@@ -397,12 +387,12 @@ type FilteredWorkspaceCommandTests() =
                     WorkspaceRpcScenario.field "options" optionsResult
                     |> RpcValue.requireArray "options"
 
-                Assert.NotEmpty options
+                (options) |> should not' (be Empty)
 
                 options
                 |> Seq.forall (fun option ->
                     WorkspaceRpcScenario.field "kind" option = RpcValue.String "projectTemplate")
-                |> Assert.True
+                |> should equal true
 
                 WorkspaceRpcScenario.send
                     child
@@ -412,7 +402,7 @@ type FilteredWorkspaceCommandTests() =
                 let listError, listResult =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 2u
 
-                Assert.True listError.IsNone
+                (listError.IsNone) |> should equal true
 
                 WorkspaceRpcScenario.field "commands" listResult
                 |> RpcValue.requireArray "commands"
@@ -438,7 +428,7 @@ type FilteredWorkspaceCommandTests() =
                 let describeError, _ =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 3u
 
-                Assert.Equal("not_found", describeError.Value.Code)
+                (describeError.Value.Code) |> should equal ("not_found")
 
                 let arguments = WorkspaceRpcScenario.map [ "name", RpcValue.String "src" ]
 
@@ -456,7 +446,7 @@ type FilteredWorkspaceCommandTests() =
                 let previewError, _ =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 4u
 
-                Assert.Equal("unsupported_capability", previewError.Value.Code)
+                (previewError.Value.Code) |> should equal ("unsupported_capability")
 
                 let contextPreview =
                     WorkspaceRpcScenario.map
@@ -476,7 +466,7 @@ type FilteredWorkspaceCommandTests() =
                 let contextPreviewError, _ =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 22u
 
-                Assert.Equal("unsupported_capability", contextPreviewError.Value.Code)
+                (contextPreviewError.Value.Code) |> should equal ("unsupported_capability")
 
                 let execute =
                     WorkspaceRpcScenario.map
@@ -493,8 +483,8 @@ type FilteredWorkspaceCommandTests() =
                 let executeError, _ =
                     WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 5u
 
-                Assert.Equal("unsupported_capability", executeError.Value.Code)
-                Assert.Equal<byte>(before, File.ReadAllBytes solution)
+                (executeError.Value.Code) |> should equal ("unsupported_capability")
+                (File.ReadAllBytes solution) |> should equal (before)
                 WorkspaceRpcScenario.shutdown child 6u
             finally
                 WorkspaceRpcScenario.disposeProcess child

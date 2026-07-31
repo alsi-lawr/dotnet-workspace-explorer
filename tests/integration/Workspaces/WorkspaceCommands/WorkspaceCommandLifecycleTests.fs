@@ -247,7 +247,8 @@ type WorkspaceCommandLifecycleTests() =
             completions |> should equal 1
             File.ReadAllBytes project |> should equal before
 
-            Assert.Throws<ArgumentException>(fun () -> Process.GetProcessById childPid |> ignore)
+            (fun () -> Process.GetProcessById childPid |> ignore)
+            |> should throw typeof<ArgumentException>
             |> ignore
 
             WorkspaceRpcScenario.send

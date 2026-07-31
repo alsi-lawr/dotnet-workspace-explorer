@@ -10,6 +10,7 @@ open Dotnet.WorkspaceExplorer.ProjectEvaluation
 open Dotnet.WorkspaceExplorer.Solutions
 open Dotnet.WorkspaceExplorer.WorkspaceIndex
 open Dotnet.WorkspaceExplorer.Workspaces
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("Workspace scenarios")>]
@@ -179,9 +180,9 @@ type SemanticWorkspaceTreeTests() =
                 WorkspaceIndexDiff.placements false (indexed (snapshot outerItems) 0L)
 
             let roots = placements |> Array.filter _.ParentWorkspaceNodeId.IsNone
-            let root = Assert.Single roots
-            Assert.Equal(WorkspaceNodeKind.Workspace, root.Node.Kind)
-            Assert.Equal("Semantic", root.Node.Name)
+            let root = (roots) |> Seq.exactlyOne
+            (root.Node.Kind) |> should equal (WorkspaceNodeKind.Workspace)
+            (root.Node.Name) |> should equal ("Semantic")
 
             let childrenFor (source: IndexedNode array) (parentId: WorkspaceNodeId) =
                 source
@@ -192,25 +193,20 @@ type SemanticWorkspaceTreeTests() =
 
             let rootChildren = children root.Node.Id
 
-            Assert.Equal<string array>(
-                [| "src"; "Library"; "VisualBasic" |],
-                rootChildren |> Array.map _.Node.Name
-            )
+            (rootChildren |> Array.map _.Node.Name)
+            |> should equal ([| "src"; "Library"; "VisualBasic" |])
 
-            Assert.DoesNotContain(
-                rootChildren,
-                fun node ->
-                    node.Node.Kind = WorkspaceNodeKind.Configuration
-                    || node.Node.Kind = WorkspaceNodeKind.Platform
-            )
+            (rootChildren)
+            |> Seq.exists (fun node ->
+                node.Node.Kind = WorkspaceNodeKind.Configuration
+                || node.Node.Kind = WorkspaceNodeKind.Platform)
+            |> should equal false
 
             let src = rootChildren |> Array.find (fun value -> value.Node.Name = "src")
             let srcChildren = children src.Node.Id
 
-            Assert.Equal<string array>(
-                [| "Directory.Build.props"; "App" |],
-                srcChildren |> Array.map _.Node.Name
-            )
+            (srcChildren |> Array.map _.Node.Name)
+            |> should equal ([| "Directory.Build.props"; "App" |])
 
             let appNode =
                 srcChildren
@@ -218,42 +214,35 @@ type SemanticWorkspaceTreeTests() =
 
             let appChildren = children appNode.Node.Id
 
-            Assert.Equal<string array>(
-                [| "Dependencies"; "A"; "B"; "Root.txt" |],
-                appChildren |> Array.map _.Node.Name
-            )
+            (appChildren |> Array.map _.Node.Name)
+            |> should equal ([| "Dependencies"; "A"; "B"; "Root.txt" |])
 
             let folderA = appChildren |> Array.find (fun value -> value.Node.Name = "A")
             let folderB = appChildren |> Array.find (fun value -> value.Node.Name = "B")
 
-            Assert.Equal<string array>(
-                [| "First.fs"; "Third.fs" |],
-                children folderA.Node.Id |> Array.map _.Node.Name
-            )
+            (children folderA.Node.Id |> Array.map _.Node.Name)
+            |> should equal ([| "First.fs"; "Third.fs" |])
 
-            Assert.Equal<string array>(
-                [| "Second.fs" |],
-                children folderB.Node.Id |> Array.map _.Node.Name
-            )
+            (children folderB.Node.Id |> Array.map _.Node.Name)
+            |> should equal ([| "Second.fs" |])
 
             let dependencies =
                 appChildren |> Array.find (fun value -> value.Node.Name = "Dependencies")
 
-            Assert.Equal<string array>(
+            (children dependencies.Node.Id |> Array.map _.Node.Name)
+            |> should
+                equal
                 [| "Library"
                    "Newtonsoft.Json (13.0.3)"
                    "Newtonsoft.Json (14.0.1)"
                    "System.Xml"
-                   "Analyzer.dll" |],
-                children dependencies.Node.Id |> Array.map _.Node.Name
-            )
+                   "Analyzer.dll" |]
 
-            Assert.DoesNotContain(
-                placements,
-                fun placement ->
-                    [ "Generated.fs"; "Generated.txt"; "Generated.resources"; "Ignored.custom" ]
-                    |> List.contains placement.Node.Name
-            )
+            (placements)
+            |> Seq.exists (fun placement ->
+                [ "Generated.fs"; "Generated.txt"; "Generated.resources"; "Ignored.custom" ]
+                |> List.contains placement.Node.Name)
+            |> should equal false
 
             let exported =
                 let hydrated = (indexed (snapshot outerItems) 0L).Hydrated
@@ -283,11 +272,9 @@ type SemanticWorkspaceTreeTests() =
             if indexedNodes <> exported then
                 failwith "Flat export did not contain the indexed semantic node set."
 
-            Assert.True(
-                WorkspaceIndexDiff.diff workspace.Descriptor.Id 0L placements placements
-                |> Option.isNone,
-                "A no-op projection should preserve semantic IDs and ordering."
-            )
+            (WorkspaceIndexDiff.diff workspace.Descriptor.Id 0L placements placements
+             |> Option.isNone)
+            |> should equal true
 
             let targetFrameworkDimension targetFramework items =
                 ProjectEvaluationDimension(
@@ -335,14 +322,12 @@ type SemanticWorkspaceTreeTests() =
                     placement.ParentWorkspaceNodeId = Some fallbackApp.Node.Id
                     && placement.Node.Name = "A")
 
-            Assert.Equal<string array>(
-                [| "Preferred.fs"; "Shared.fs" |],
-                fallbackPlacements
-                |> Array.filter (fun placement ->
-                    placement.ParentWorkspaceNodeId = Some fallbackFolder.Node.Id)
-                |> Array.sortBy _.Index
-                |> Array.map _.Node.Name
-            )
+            (fallbackPlacements
+             |> Array.filter (fun placement ->
+                 placement.ParentWorkspaceNodeId = Some fallbackFolder.Node.Id)
+             |> Array.sortBy _.Index
+             |> Array.map _.Node.Name)
+            |> should equal ([| "Preferred.fs"; "Shared.fs" |])
 
             let insensitiveItems =
                 ImmutableArray.CreateRange
@@ -375,9 +360,9 @@ type SemanticWorkspaceTreeTests() =
                         "src",
                         StringComparison.OrdinalIgnoreCase
                     ))
-                |> Assert.Single
+                |> Seq.exactlyOne
 
-            Assert.Equal("src", insensitiveSource.Node.Name)
+            (insensitiveSource.Node.Name) |> should equal ("src")
 
             let insensitiveApi =
                 childrenFor insensitivePlacements insensitiveSource.Node.Id
@@ -388,15 +373,13 @@ type SemanticWorkspaceTreeTests() =
                         "Api",
                         StringComparison.OrdinalIgnoreCase
                     ))
-                |> Assert.Single
+                |> Seq.exactlyOne
 
-            Assert.Equal("Api", insensitiveApi.Node.Name)
+            (insensitiveApi.Node.Name) |> should equal ("Api")
 
-            Assert.Equal<string array>(
-                [| "First.fs"; "Second.fs" |],
-                childrenFor insensitivePlacements insensitiveApi.Node.Id
-                |> Array.map _.Node.Name
-            )
+            (childrenFor insensitivePlacements insensitiveApi.Node.Id
+             |> Array.map _.Node.Name)
+            |> should equal ([| "First.fs"; "Second.fs" |])
 
             let fileReorderedItems =
                 outerItems
@@ -414,7 +397,7 @@ type SemanticWorkspaceTreeTests() =
                 WorkspaceIndexDiff.diff workspace.Descriptor.Id 0L placements fileReordered
                 |> Option.defaultWith (fun () -> failwith "Expected a semantic file-order delta.")
 
-            Assert.Equal(2, fileReorderDelta.Changes.Length)
+            (fileReorderDelta.Changes.Length) |> should equal (2)
 
             let nameFor nodeId =
                 placements
@@ -431,19 +414,14 @@ type SemanticWorkspaceTreeTests() =
                     | _ -> None)
                 |> Seq.toArray
 
-            Assert.Equal<(string * int * int) array>(
-                [| "First.fs", 0, 1; "Third.fs", 1, 0 |],
-                fileMoves
-            )
+            (fileMoves) |> should equal ([| "First.fs", 0, 1; "Third.fs", 1, 0 |])
 
             let fileReorderedFolderA =
                 fileReordered
                 |> Array.find (fun placement -> placement.Node.Id = folderA.Node.Id)
 
-            Assert.Equal<string array>(
-                [| "Third.fs"; "First.fs" |],
-                childrenFor fileReordered fileReorderedFolderA.Node.Id |> Array.map _.Node.Name
-            )
+            (childrenFor fileReordered fileReorderedFolderA.Node.Id |> Array.map _.Node.Name)
+            |> should equal ([| "Third.fs"; "First.fs" |])
 
             let folderReorderedItems =
                 outerItems
@@ -462,7 +440,7 @@ type SemanticWorkspaceTreeTests() =
                 WorkspaceIndexDiff.diff workspace.Descriptor.Id 0L placements folderReordered
                 |> Option.defaultWith (fun () -> failwith "Expected a semantic folder-order delta.")
 
-            Assert.Equal(2, folderReorderDelta.Changes.Length)
+            (folderReorderDelta.Changes.Length) |> should equal (2)
 
             let folderMoves =
                 folderReorderDelta.Changes
@@ -474,16 +452,14 @@ type SemanticWorkspaceTreeTests() =
                     | _ -> None)
                 |> Seq.toArray
 
-            Assert.Equal<(string * int * int) array>([| "A", 1, 2; "B", 2, 1 |], folderMoves)
+            (folderMoves) |> should equal ([| "A", 1, 2; "B", 2, 1 |])
 
             let folderReorderedApp =
                 folderReordered
                 |> Array.find (fun placement -> placement.Node.Id = appNode.Node.Id)
 
-            Assert.Equal<string array>(
-                [| "Dependencies"; "B"; "A"; "Root.txt" |],
-                childrenFor folderReordered folderReorderedApp.Node.Id |> Array.map _.Node.Name
-            )
+            (childrenFor folderReordered folderReorderedApp.Node.Id |> Array.map _.Node.Name)
+            |> should equal ([| "Dependencies"; "B"; "A"; "Root.txt" |])
 
             let changedItems =
                 outerItems
@@ -501,16 +477,15 @@ type SemanticWorkspaceTreeTests() =
                 WorkspaceIndexDiff.diff workspace.Descriptor.Id 0L placements changed
                 |> Option.defaultWith (fun () -> failwith "Expected a semantic file delta.")
 
-            Assert.Contains(
-                delta.Changes,
-                fun change ->
-                    match change with
-                    | Added(node, parent, _) ->
-                        node.Kind = WorkspaceNodeKind.ProjectFile
-                        && node.Name = "Fourth.fs"
-                        && parent = Some folderA.Node.Id
-                    | _ -> false
-            )
+            (delta.Changes)
+            |> Seq.exists (fun change ->
+                match change with
+                | Added(node, parent, _) ->
+                    node.Kind = WorkspaceNodeKind.ProjectFile
+                    && node.Name = "Fourth.fs"
+                    && parent = Some folderA.Node.Id
+                | _ -> false)
+            |> should equal true
         finally
             if Directory.Exists directory then
                 Directory.Delete(directory, true)

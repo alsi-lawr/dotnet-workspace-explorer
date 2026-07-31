@@ -99,13 +99,13 @@ type WorkspaceInvalidationTests() =
             let services =
                 { OpenAsync =
                     fun observedTarget _ ->
-                        Assert.Equal(filter, observedTarget)
+                        (observedTarget) |> should equal (filter)
                         openCount <- openCount + 1
                         Task.FromResult<WorkspaceOutcome<SolutionWorkspace>>(Success workspace)
                   EvaluateAsync =
                     fun observedProject observedBacking _ ->
-                        Assert.Equal(project, observedProject.Value)
-                        Assert.Equal(solution, observedBacking.Value)
+                        (observedProject.Value) |> should equal (project)
+                        (observedBacking.Value) |> should equal (solution)
 
                         Task.FromResult<WorkspaceOutcome<ProjectEvaluationSnapshot>>(
                             Success evaluated
@@ -149,7 +149,7 @@ type WorkspaceInvalidationTests() =
                 | Ok page -> page
                 | Error error -> failwithf "Could not hydrate invalidation fixture: %A" error
 
-            Assert.Equal(1L, hydratedPage.Revision)
+            (hydratedPage.Revision) |> should equal (1L)
 
             let itemsFolder =
                 hydratedPage.Nodes
@@ -185,12 +185,12 @@ type WorkspaceInvalidationTests() =
                     .GetAwaiter()
                     .GetResult()
 
-            Assert.Equal(0, openCount)
+            (openCount) |> should equal (0)
 
             match changed with
             | WorkspaceProjectInvalidationResult.Delta delta ->
-                Assert.Equal(1L, delta.BaseRevision.Value)
-                Assert.Equal(2L, delta.NewRevision.Value)
+                (delta.BaseRevision.Value) |> should equal (1L)
+                (delta.NewRevision.Value) |> should equal (2L)
 
                 let removedParent =
                     delta.Changes
@@ -208,10 +208,10 @@ type WorkspaceInvalidationTests() =
                         | _ -> None)
                     |> Seq.exactlyOne
 
-                Assert.NotEqual(oldItem.Id, newNode.Id)
-                Assert.Equal(Some itemsFolder.Id, removedParent)
-                Assert.Equal(removedParent, addedParent)
-                Assert.Equal("N0001-false.cs", newNode.Name)
+                (newNode.Id) |> should not' (equal (oldItem.Id))
+                (removedParent) |> should equal (Some itemsFolder.Id)
+                (addedParent) |> should equal (removedParent)
+                (newNode.Name) |> should equal ("N0001-false.cs")
             | result -> failwithf "Expected a project-file replacement delta, got %A" result
 
             let watchPlan =
@@ -224,17 +224,16 @@ type WorkspaceInvalidationTests() =
                     && spec.Directory = Path.GetDirectoryName path
                     && spec.Filters.Contains(Path.GetFileName path))
 
-            Assert.True(watchesExact freshImport)
-            Assert.True(watchesExact freshWatch)
-            Assert.False(watchesExact oldImport)
+            (watchesExact freshImport) |> should equal true
+            (watchesExact freshWatch) |> should equal true
+            (watchesExact oldImport) |> should equal false
 
-            Assert.Contains(
-                watchPlan,
-                fun spec ->
-                    spec.Kind = WorkspaceWatchKind.RecursiveGlob
-                    && spec.Directory = freshGlob
-                    && spec.IncludeSubdirectories
-            )
+            (watchPlan)
+            |> Seq.exists (fun spec ->
+                spec.Kind = WorkspaceWatchKind.RecursiveGlob
+                && spec.Directory = freshGlob
+                && spec.IncludeSubdirectories)
+            |> should equal true
 
             for solutionPath in [ filter; solution ] do
                 let reopened =
@@ -246,9 +245,9 @@ type WorkspaceInvalidationTests() =
                         .GetAwaiter()
                         .GetResult()
 
-                Assert.Equal(WorkspaceProjectInvalidationResult.None, reopened)
+                (reopened) |> should equal (WorkspaceProjectInvalidationResult.None)
 
-            Assert.Equal(2, openCount)
+            (openCount) |> should equal (2)
             invalidationKind <- ProjectEvaluationInvalidationKind.DotnetSdkSelection
 
             let toolsetChanged =
@@ -264,12 +263,12 @@ type WorkspaceInvalidationTests() =
 
             match toolsetChanged with
             | WorkspaceProjectInvalidationResult.Reset reset ->
-                Assert.Equal(3L, reset.Revision.Value)
-                Assert.Equal("workspace.toolset_changed", reset.Diagnostics[0].Code.Value)
+                (reset.Revision.Value) |> should equal (3L)
+                (reset.Diagnostics[0].Code.Value) |> should equal ("workspace.toolset_changed")
             | result -> failwithf "Expected a toolset reset, got %A" result
 
-            Assert.Equal(2, openCount)
-            Assert.Equal(1, refreshCount)
+            (openCount) |> should equal (2)
+            (refreshCount) |> should equal (1)
             state.DisposeAsync().GetAwaiter().GetResult()
         finally
             if Directory.Exists directory then
@@ -414,7 +413,7 @@ type WorkspaceInvalidationTests() =
                         invalidations.Add values
 
                         if invalidations.Count = 1 then
-                            Assert.Equal<string array>([| sharedImport |], values)
+                            (values) |> should equal ([| sharedImport |])
                             cache.Clear()
                             phase <- "first-stage"
                         else
@@ -459,7 +458,7 @@ type WorkspaceInvalidationTests() =
                 | Ok page -> hydratedRevision <- page.Revision
                 | Error error -> failwithf "Could not hydrate retry fixture: %A" error
 
-            Assert.Equal(2L, hydratedRevision)
+            (hydratedRevision) |> should equal (2L)
 
             let changed =
                 state
@@ -472,8 +471,8 @@ type WorkspaceInvalidationTests() =
 
             match changed with
             | WorkspaceProjectInvalidationResult.Delta delta ->
-                Assert.Equal(hydratedRevision, delta.BaseRevision.Value)
-                Assert.Equal(hydratedRevision + 1L, delta.NewRevision.Value)
+                (delta.BaseRevision.Value) |> should equal (hydratedRevision)
+                (delta.NewRevision.Value) |> should equal (hydratedRevision + 1L)
 
                 let added =
                     delta.Changes
@@ -484,30 +483,26 @@ type WorkspaceInvalidationTests() =
                     |> Seq.sort
                     |> Seq.toArray
 
-                Assert.Equal<string array>(
-                    [| "Alpha-final-Alpha.cs"; "Beta-final-Beta.cs" |],
-                    added
-                )
+                (added) |> should equal ([| "Alpha-final-Alpha.cs"; "Beta-final-Beta.cs" |])
 
-                Assert.DoesNotContain(
-                    delta.Changes,
-                    fun change ->
-                        match change with
-                        | Added(node, _, _) -> node.Name.Contains "intermediate"
-                        | _ -> false
-                )
+                (delta.Changes)
+                |> Seq.exists (fun change ->
+                    match change with
+                    | Added(node, _, _) -> node.Name.Contains "intermediate"
+                    | _ -> false)
+                |> should equal false
             | result -> failwithf "Expected one complete final-state delta, got %A" result
 
-            Assert.Equal(2, invalidations.Count)
+            (invalidations.Count) |> should equal (2)
 
             invalidations[1]
             |> Seq.sort
             |> Seq.toArray
             |> should equal (projects |> Array.sort)
 
-            Assert.Equal(0, openCount)
-            Assert.Equal(0, refreshCount)
-            Assert.Equal(6, evaluations.Count)
+            (openCount) |> should equal (0)
+            (refreshCount) |> should equal (0)
+            (evaluations.Count) |> should equal (6)
             state.DisposeAsync().GetAwaiter().GetResult()
         finally
             if Directory.Exists directory then
@@ -639,7 +634,7 @@ type WorkspaceInvalidationTests() =
                         .GetAwaiter()
                         .GetResult()
                 with
-                | Ok page -> Assert.Equal(1L, page.Revision)
+                | Ok page -> (page.Revision) |> should equal (1L)
                 | Error error -> failwithf "Could not hydrate retry-bound fixture: %A" error
 
                 let changed =
@@ -700,23 +695,22 @@ type WorkspaceInvalidationTests() =
 
         match invalidRecovered with
         | WorkspaceProjectInvalidationResult.Delta delta ->
-            Assert.Equal(1L, delta.BaseRevision.Value)
-            Assert.Equal(2L, delta.NewRevision.Value)
+            (delta.BaseRevision.Value) |> should equal (1L)
+            (delta.NewRevision.Value) |> should equal (2L)
 
-            Assert.Contains(
-                delta.Changes,
-                fun change ->
-                    match change with
-                    | Added(node, _, _) ->
-                        node.Kind = WorkspaceNodeKind.ProjectFile && node.Name = "Demo-final.cs"
-                    | _ -> false
-            )
+            (delta.Changes)
+            |> Seq.exists (fun change ->
+                match change with
+                | Added(node, _, _) ->
+                    node.Kind = WorkspaceNodeKind.ProjectFile && node.Name = "Demo-final.cs"
+                | _ -> false)
+            |> should equal true
         | result -> failwithf "Expected an invalid-input recovery delta, got %A" result
 
-        Assert.Equal(2, invalidRecoveryEvaluations)
-        Assert.Equal(1, invalidRecoveryRetries)
-        Assert.Equal(0, invalidRecoveryRefreshes)
-        Assert.Equal(2L, invalidRecoveryRevision)
+        (invalidRecoveryEvaluations) |> should equal (2)
+        (invalidRecoveryRetries) |> should equal (1)
+        (invalidRecoveryRefreshes) |> should equal (0)
+        (invalidRecoveryRevision) |> should equal (2L)
 
         let (internalExhausted,
              internalExhaustedEvaluations,
@@ -738,14 +732,14 @@ type WorkspaceInvalidationTests() =
 
         match internalExhausted with
         | WorkspaceProjectInvalidationResult.Reset reset ->
-            Assert.Equal(2L, reset.Revision.Value)
-            Assert.Equal("workspace.watch_unverified", reset.Diagnostics[0].Code.Value)
+            (reset.Revision.Value) |> should equal (2L)
+            (reset.Diagnostics[0].Code.Value) |> should equal ("workspace.watch_unverified")
         | result -> failwithf "Expected an internal-error exhaustion reset, got %A" result
 
-        Assert.Equal(21, internalExhaustedEvaluations)
-        Assert.Equal(20, internalExhaustedRetries)
-        Assert.Equal(1, internalExhaustedRefreshes)
-        Assert.Equal(2L, internalExhaustedRevision)
+        (internalExhaustedEvaluations) |> should equal (21)
+        (internalExhaustedRetries) |> should equal (20)
+        (internalExhaustedRefreshes) |> should equal (1)
+        (internalExhaustedRevision) |> should equal (2L)
 
         let (invalidExhausted,
              invalidExhaustedEvaluations,
@@ -766,14 +760,14 @@ type WorkspaceInvalidationTests() =
 
         match invalidExhausted with
         | WorkspaceProjectInvalidationResult.Reset reset ->
-            Assert.Equal(2L, reset.Revision.Value)
-            Assert.Equal("workspace.watch_unverified", reset.Diagnostics[0].Code.Value)
+            (reset.Revision.Value) |> should equal (2L)
+            (reset.Diagnostics[0].Code.Value) |> should equal ("workspace.watch_unverified")
         | result -> failwithf "Expected an invalid-input exhaustion reset, got %A" result
 
-        Assert.Equal(21, invalidExhaustedEvaluations)
-        Assert.Equal(20, invalidExhaustedRetries)
-        Assert.Equal(1, invalidExhaustedRefreshes)
-        Assert.Equal(2L, invalidExhaustedRevision)
+        (invalidExhaustedEvaluations) |> should equal (21)
+        (invalidExhaustedRetries) |> should equal (20)
+        (invalidExhaustedRefreshes) |> should equal (1)
+        (invalidExhaustedRevision) |> should equal (2L)
 
         let (cancelled,
              cancelledEvaluations,
@@ -795,11 +789,11 @@ type WorkspaceInvalidationTests() =
                     ))
                 (fun () -> new CancellationTokenSource())
 
-        Assert.Equal(WorkspaceProjectInvalidationResult.None, cancelled)
-        Assert.Equal(1, cancelledEvaluations)
-        Assert.Equal(0, cancelledRetries)
-        Assert.Equal(0, cancelledRefreshes)
-        Assert.Equal(1L, cancelledRevision)
+        (cancelled) |> should equal (WorkspaceProjectInvalidationResult.None)
+        (cancelledEvaluations) |> should equal (1)
+        (cancelledRetries) |> should equal (0)
+        (cancelledRefreshes) |> should equal (0)
+        (cancelledRevision) |> should equal (1L)
 
         let (transactionReset,
              transactionEvaluations,
@@ -821,11 +815,11 @@ type WorkspaceInvalidationTests() =
 
         match transactionReset with
         | WorkspaceProjectInvalidationResult.Reset reset ->
-            Assert.Equal(2L, reset.Revision.Value)
-            Assert.Equal("workspace.watch_unverified", reset.Diagnostics[0].Code.Value)
+            (reset.Revision.Value) |> should equal (2L)
+            (reset.Diagnostics[0].Code.Value) |> should equal ("workspace.watch_unverified")
         | result -> failwithf "Expected a transaction staging reset, got %A" result
 
-        Assert.Equal(1, transactionEvaluations)
-        Assert.Equal(0, transactionRetries)
-        Assert.Equal(1, transactionRefreshes)
-        Assert.Equal(2L, transactionRevision)
+        (transactionEvaluations) |> should equal (1)
+        (transactionRetries) |> should equal (0)
+        (transactionRefreshes) |> should equal (1)
+        (transactionRevision) |> should equal (2L)

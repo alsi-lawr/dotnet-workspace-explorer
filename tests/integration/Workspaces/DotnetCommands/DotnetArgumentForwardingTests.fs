@@ -106,6 +106,6 @@ type DotnetArgumentForwardingTests() =
                 let result =
                     DirectCommandProcess.run directory mode ("--json" :: arguments) environment
 
-                Assert.True(DirectCommandProcess.success result, result.StandardOutput)
+                (DirectCommandProcess.success result) |> should equal true
         finally
             DirectCommandProcess.delete directory

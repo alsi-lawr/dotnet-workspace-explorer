@@ -5,6 +5,7 @@ namespace Dotnet.WorkspaceExplorer.ProjectEvaluation.IntegrationTests
 open System
 open System.IO
 open Dotnet.WorkspaceExplorer.Rpc
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("Project evaluation scenarios")>]
@@ -23,9 +24,9 @@ type ProjectInputFailureTests() =
                 let missing, _ =
                     Test.evaluate worker 2u (Path.Combine(directory, "Missing.csproj"))
 
-                Assert.Equal("msbuild.project_not_found", missing.Value.Code)
+                (missing.Value.Code) |> should equal ("msbuild.project_not_found")
                 let malformedFailure, _ = Test.evaluate worker 3u malformed
-                Assert.Equal("msbuild.project_malformed", malformedFailure.Value.Code)
+                (malformedFailure.Value.Code) |> should equal ("msbuild.project_malformed")
                 4u)
 
             let incompatibleToolset = Path.Combine(directory, "not-an-sdk")
@@ -35,9 +36,9 @@ type ProjectInputFailureTests() =
             let stderr = incompatible.StandardError.ReadToEnd()
             incompatible.WaitForExit()
 
-            Assert.Equal(70, incompatible.ExitCode)
-            Assert.Equal(String.Empty, stdout)
-            Assert.Equal("project-evaluation-host:sdk-load-failed", stderr.Trim())
+            (incompatible.ExitCode) |> should equal (70)
+            (stdout) |> should equal (String.Empty)
+            (stderr.Trim()) |> should equal ("project-evaluation-host:sdk-load-failed")
         finally
             Directory.Delete(directory, true)
 
@@ -61,7 +62,7 @@ type ProjectInputFailureTests() =
 
             Test.withWorker directory (fun worker ->
                 let failed, _ = Test.evaluate worker 2u project
-                Assert.Equal("msbuild.project_malformed", failed.Value.Code)
+                (failed.Value.Code) |> should equal ("msbuild.project_malformed")
 
                 Test.write
                     brokenImport
@@ -69,20 +70,19 @@ type ProjectInputFailureTests() =
                      + "</PropertyGroup></Project>")
 
                 let repairedError, repaired = Test.evaluate worker 3u project
-                Assert.True repairedError.IsNone
-                Assert.Equal(3, (Test.values "dimensions" repaired).Length)
+                (repairedError.IsNone) |> should equal true
+                ((Test.values "dimensions" repaired).Length) |> should equal (3)
 
                 let net9 =
                     Test.values "dimensions" repaired
                     |> Seq.find (fun value ->
                         Test.field "targetFramework" value = RpcValue.String "net9.0")
 
-                Assert.Contains(
-                    Test.values "properties" net9,
-                    fun value ->
-                        Test.stringField "name" value = "RepairMarker"
-                        && Test.stringField "value" value = "repaired"
-                )
+                (Test.values "properties" net9)
+                |> Seq.exists (fun value ->
+                    Test.stringField "name" value = "RepairMarker"
+                    && Test.stringField "value" value = "repaired")
+                |> should equal true
 
                 4u)
         finally

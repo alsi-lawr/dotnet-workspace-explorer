@@ -77,7 +77,9 @@ type ProjectFolderDeletionTests() =
                 true
 
             Directory.Exists deleted |> should equal false
-            Assert.Contains("<Content Remove=\"Delete/Source.txt\"", File.ReadAllText project)
+
+            (File.ReadAllText project)
+            |> should haveSubstring ("<Content Remove=\"Delete/Source.txt\"")
 
             if OperatingSystem.IsLinux() then
                 Directory.EnumerateDirectories(Path.Combine(trashHome, "Trash", "files"))

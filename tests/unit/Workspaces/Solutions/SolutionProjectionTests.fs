@@ -5,6 +5,7 @@ namespace Dotnet.WorkspaceExplorer.Workspaces.UnitTests
 open System.IO
 open Dotnet.WorkspaceExplorer.Workspaces
 open Dotnet.WorkspaceExplorer.Solutions
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("Solution contracts")>]
@@ -19,35 +20,39 @@ type SolutionProjectionTests() =
         let workspace = SolutionScenario.openWorkspace path
         let root = workspace.Contents
         let externalProject = root.Projects |> Seq.find _.Path.IsExternal
-        let folder = Assert.Single root.Folders
+        let folder = (root.Folders) |> Seq.exactlyOne
 
         let included =
             root.Projects |> Seq.find (fun project -> project.Node.Name = "Included")
 
-        Assert.Equal(
-            (if extension = ".sln" then
-                 WorkspaceFormat.Sln
-             else
-                 WorkspaceFormat.Slnx),
-            workspace.Descriptor.Format
-        )
+        let expectedFormat =
+            if extension = ".sln" then
+                WorkspaceFormat.Sln
+            else
+                WorkspaceFormat.Slnx
 
-        Assert.Equal(
+        workspace.Descriptor.Format |> should equal expectedFormat
+
+        let expectedExternalPath =
             Path.GetFullPath(
                 Path.Combine(Path.GetDirectoryName path, "../external/External.csproj")
-            ),
-            externalProject.Path.AbsolutePath.Value
-        )
+            )
 
-        Assert.Equal(
-            Path.Combine("..", "external", "External.csproj"),
-            externalProject.Path.SolutionRelativePath
-        )
+        externalProject.Path.AbsolutePath.Value |> should equal expectedExternalPath
 
-        Assert.Equal("/src/", folder.Path)
-        Assert.Equal(Some folder.Path, included.ParentFolderPath)
-        Assert.Single root.Items |> ignore
-        Assert.Equal(2, root.Projects.Length)
-        Assert.Single root.Dependencies |> ignore
-        Assert.Contains(root.BuildTypes, fun node -> node.Name = "Debug")
-        Assert.Contains(root.Platforms, fun node -> node.Name = "Any CPU")
+        externalProject.Path.SolutionRelativePath
+        |> should equal (Path.Combine("..", "external", "External.csproj"))
+
+        folder.Path |> should equal "/src/"
+        included.ParentFolderPath |> should equal (Some folder.Path)
+        root.Items |> should haveLength 1
+        root.Projects.Length |> should equal 2
+        root.Dependencies |> should haveLength 1
+
+        root.BuildTypes
+        |> Seq.exists (fun node -> node.Name = "Debug")
+        |> should equal true
+
+        root.Platforms
+        |> Seq.exists (fun node -> node.Name = "Any CPU")
+        |> should equal true

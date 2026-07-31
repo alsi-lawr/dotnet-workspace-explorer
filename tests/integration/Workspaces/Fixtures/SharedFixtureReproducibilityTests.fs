@@ -5,6 +5,7 @@ namespace Dotnet.WorkspaceExplorer.Workspaces.IntegrationTests
 open System
 open System.IO
 open System.Xml.Linq
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("Workspace scenarios")>]
@@ -29,15 +30,13 @@ type SharedFixtureReproducibilityTests() =
                         includePath.Value.Contains("Fixtures", StringComparison.Ordinal))
                 |> Seq.toArray
 
-            Assert.NotEmpty items
+            (items) |> should not' (be Empty)
 
-            Assert.All(
-                items,
-                fun item ->
-                    match item.Attribute(XName.Get "Pack") with
-                    | null -> failwith "Conformance assets must declare Pack=false."
-                    | pack -> Assert.Equal("false", pack.Value)
-            )
+            (items)
+            |> Seq.iter (fun item ->
+                match item.Attribute(XName.Get "Pack") with
+                | null -> failwith "Conformance assets must declare Pack=false."
+                | pack -> (pack.Value) |> should equal ("false"))
 
         let fixtureRoot = Path.Combine(root, "tests", "Fixtures")
 
@@ -67,17 +66,17 @@ type SharedFixtureReproducibilityTests() =
                 (Path.Combine(fixtureRoot, "ProjectEvaluation", "MultiTargetProject"))
                 (Path.Combine(small, "MSBuild", "Projection"))
 
-            Assert.Equal<byte>(
-                File.ReadAllBytes(
+            (File.ReadAllBytes(Path.Combine(small, "MSBuild", "Unknown.proj")))
+            |> should
+                equal
+                (File.ReadAllBytes(
                     Path.Combine(
                         fixtureRoot,
                         "ProjectEvaluation",
                         "UnsupportedProject",
                         "Unknown.proj"
                     )
-                ),
-                File.ReadAllBytes(Path.Combine(small, "MSBuild", "Unknown.proj"))
-            )
+                ))
 
             let firstSolution = FixtureScenario.generateScale first
             let _ = FixtureScenario.generateScale second
@@ -90,23 +89,19 @@ type SharedFixtureReproducibilityTests() =
                 )
                 |> Seq.toArray
 
-            Assert.Equal(
-                500,
-                File.ReadLines firstSolution
-                |> Seq.filter _.Contains("<Project Path=")
-                |> Seq.length
-            )
+            (File.ReadLines firstSolution
+             |> Seq.filter _.Contains("<Project Path=")
+             |> Seq.length)
+            |> should equal (500)
 
-            Assert.Equal(500, firstProjects.Length)
+            (firstProjects.Length) |> should equal (500)
 
-            Assert.Equal(
-                250000,
-                firstProjects
-                |> Seq.sumBy (fun project ->
-                    File.ReadLines project
-                    |> Seq.filter _.Contains("<Compile Include=")
-                    |> Seq.length)
-            )
+            (firstProjects
+             |> Seq.sumBy (fun project ->
+                 File.ReadLines project
+                 |> Seq.filter _.Contains("<Compile Include=")
+                 |> Seq.length))
+            |> should equal (250000)
 
             FixtureScenario.compareDirectories first second
         finally

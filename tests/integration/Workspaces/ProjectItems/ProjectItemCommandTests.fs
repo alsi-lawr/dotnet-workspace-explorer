@@ -7,6 +7,7 @@ open System.IO
 open System.Text
 open Microsoft.VisualStudio.SolutionPersistence.Model
 open Dotnet.WorkspaceExplorer.Rpc
+open FsUnit.Xunit
 open Xunit
 
 [<Collection("Workspace scenarios")>]
@@ -38,7 +39,8 @@ type ProjectItemCommandTests() =
                 0L
                 true
 
-            Assert.Equal("copy", File.ReadAllText(Path.Combine(session.Directory, "Source.txt")))
+            (File.ReadAllText(Path.Combine(session.Directory, "Source.txt")))
+            |> should equal ("copy")
 
             WorkspaceRpcScenario.previewAndExecute
                 session.Child
@@ -52,8 +54,10 @@ type ProjectItemCommandTests() =
                 1L
                 true
 
-            Assert.False(File.Exists(Path.Combine(session.Directory, "Link.txt")))
-            Assert.Contains("<Link>Link.txt</Link>", File.ReadAllText session.Project)
+            (File.Exists(Path.Combine(session.Directory, "Link.txt"))) |> should equal false
+
+            (File.ReadAllText session.Project)
+            |> should haveSubstring ("<Link>Link.txt</Link>")
 
             WorkspaceRpcScenario.previewFailure
                 session
@@ -89,7 +93,8 @@ type ProjectItemCommandTests() =
                 0L
                 true
 
-            Assert.Contains("<Compile Update=\"Source.cs\"", File.ReadAllText session.Project)
+            (File.ReadAllText session.Project)
+            |> should haveSubstring ("<Compile Update=\"Source.cs\"")
 
             WorkspaceRpcScenario.previewAndExecute
                 session.Child
@@ -101,7 +106,8 @@ type ProjectItemCommandTests() =
                 1L
                 true
 
-            Assert.Contains("<Content Include=\"Source.cs\"", File.ReadAllText session.Project)
+            (File.ReadAllText session.Project)
+            |> should haveSubstring ("<Content Include=\"Source.cs\"")
         finally
             WorkspaceRpcScenario.closeProject session
 
@@ -166,10 +172,8 @@ type ProjectItemCommandTests() =
                 0L
                 true
 
-            Assert.Contains(
-                "<RootNamespace>Demo.Root</RootNamespace>",
-                File.ReadAllText session.Project
-            )
+            (File.ReadAllText session.Project)
+            |> should haveSubstring ("<RootNamespace>Demo.Root</RootNamespace>")
         finally
             WorkspaceRpcScenario.closeProject session
 
@@ -216,9 +220,13 @@ type ProjectItemCommandTests() =
                 2L
                 true
 
-            Assert.True(File.Exists moved)
-            Assert.Contains("<None Remove=\"Moved.txt\"", File.ReadAllText session.Project)
-            Assert.DoesNotContain("<None Include=\"Moved.txt\"", File.ReadAllText session.Project)
+            (File.Exists moved) |> should equal true
+
+            (File.ReadAllText session.Project)
+            |> should haveSubstring ("<None Remove=\"Moved.txt\"")
+
+            (File.ReadAllText session.Project)
+            |> should not' (haveSubstring ("<None Include=\"Moved.txt\""))
         finally
             WorkspaceRpcScenario.closeProject session
 
@@ -260,11 +268,14 @@ type ProjectItemCommandTests() =
                 true
 
             let contents = File.ReadAllText(props, encoding)
-            Assert.Contains("encoding=\"iso-8859-1\"", contents)
-            Assert.Contains("<!-- café shared -->", contents)
-            Assert.Contains("\r\n", contents)
-            Assert.Contains("Condition=\"'$(MSBuildProjectName)' == 'Demo'\"", contents)
-            Assert.Contains("<AssemblyName>After</AssemblyName>", contents)
+            (contents) |> should haveSubstring ("encoding=\"iso-8859-1\"")
+            (contents) |> should haveSubstring ("<!-- café shared -->")
+            (contents) |> should haveSubstring ("\r\n")
+
+            (contents)
+            |> should haveSubstring ("Condition=\"'$(MSBuildProjectName)' == 'Demo'\"")
+
+            (contents) |> should haveSubstring ("<AssemblyName>After</AssemblyName>")
 
             WorkspaceRpcScenario.send
                 session.Child
@@ -279,7 +290,7 @@ type ProjectItemCommandTests() =
             let (childrenError, children), _, _ =
                 WorkspaceRpcScenario.responseAfterWorkspaceNotifications session.Child 5u 1L
 
-            Assert.True childrenError.IsNone
+            (childrenError.IsNone) |> should equal true
 
             let names = ResizeArray<string>()
 
@@ -320,7 +331,7 @@ type ProjectItemCommandTests() =
                         requestId
                         1L
 
-                Assert.True pageError.IsNone
+                (pageError.IsNone) |> should equal true
                 appendNames page
 
                 continuation <-
@@ -332,12 +343,11 @@ type ProjectItemCommandTests() =
 
                 requestId <- requestId + 1u
 
-            Assert.DoesNotContain(
-                names,
-                fun name ->
-                    name.StartsWith("Evaluated ", StringComparison.Ordinal)
-                    || name.StartsWith("Declared ", StringComparison.Ordinal)
-            )
+            (names)
+            |> Seq.exists (fun name ->
+                name.StartsWith("Evaluated ", StringComparison.Ordinal)
+                || name.StartsWith("Declared ", StringComparison.Ordinal))
+            |> should equal false
         finally
             WorkspaceRpcScenario.closeProject session
             Directory.Delete(external, true)
@@ -399,15 +409,17 @@ type ProjectItemCommandTests() =
                 0L
                 true
 
-            Assert.False(File.Exists deleted)
-            Assert.Contains("<None Remove=\"Delete.txt\"", File.ReadAllText project)
+            (File.Exists deleted) |> should equal false
+
+            (File.ReadAllText project)
+            |> should haveSubstring ("<None Remove=\"Delete.txt\"")
 
             if OperatingSystem.IsLinux() then
                 let trashed =
                     Directory.EnumerateFiles(Path.Combine(trashHome, "Trash", "files"))
                     |> Seq.exactlyOne
 
-                Assert.Equal("delete", File.ReadAllText trashed)
+                (File.ReadAllText trashed) |> should equal ("delete")
 
             WorkspaceRpcScenario.shutdown child 5u
         finally
