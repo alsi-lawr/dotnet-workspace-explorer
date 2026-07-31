@@ -13,7 +13,7 @@ open Xunit
 [<Collection("Workspace scenarios")>]
 type ProjectItemCommandTests() =
     [<Fact>]
-    member _.``should copy or link external project files without local directory operands``() =
+    member _.``copies or links external project files and rejects local directory operands``() =
         let external = WorkspaceRpcScenario.temporaryDirectory "external-item-scenario"
         let source = Path.Combine(external, "Source.txt")
         let link = Path.Combine(external, "Link.txt")
@@ -71,7 +71,7 @@ type ProjectItemCommandTests() =
             Directory.Delete(external, true)
 
     [<Fact>]
-    member _.``should set metadata and build action through public project commands``() =
+    member _.``sets project item metadata and build action through public commands``() =
         let session =
             WorkspaceRpcScenario.openProject
                 "metadata-scenario"
@@ -112,7 +112,7 @@ type ProjectItemCommandTests() =
             WorkspaceRpcScenario.closeProject session
 
     [<Fact>]
-    member _.``should refuse directory operands for file project commands``() =
+    member _.``rejects directory operands for file project commands``() =
         let session =
             WorkspaceRpcScenario.openProject
                 "directory-refusal-scenario"
@@ -154,7 +154,7 @@ type ProjectItemCommandTests() =
             WorkspaceRpcScenario.closeProject session
 
     [<Fact>]
-    member _.``should write a local curated property``() =
+    member _.``writes a local curated project property``() =
         let session =
             WorkspaceRpcScenario.openProject
                 "local-property-scenario"
@@ -178,7 +178,7 @@ type ProjectItemCommandTests() =
             WorkspaceRpcScenario.closeProject session
 
     [<Fact>]
-    member _.``should rename move and remove file project items without directory mutation``() =
+    member _.``renames, moves, and removes file project items without mutating directories``() =
         let session =
             WorkspaceRpcScenario.openProjectWithSetup
                 "rename-move-scenario"
@@ -231,7 +231,7 @@ type ProjectItemCommandTests() =
             WorkspaceRpcScenario.closeProject session
 
     [<Fact>]
-    member _.``should preserve external encoded imported property files``() =
+    member _.``preserves encoding and content in external imported property files``() =
         let external = WorkspaceRpcScenario.temporaryDirectory "encoded-property-scenario"
         let props = Path.Combine(external, "Shared.props")
         let encoding = Encoding.GetEncoding 28591
@@ -353,7 +353,7 @@ type ProjectItemCommandTests() =
             Directory.Delete(external, true)
 
     [<Fact>]
-    member _.``should delete project files through the native trash boundary``() =
+    member _.``deletes project files via native trash and records removal``() =
         let directory = WorkspaceRpcScenario.temporaryDirectory "delete-trash-scenario"
         let trashHome = Path.Combine(directory, "data")
         let solution = Path.Combine(directory, "Demo.slnx")

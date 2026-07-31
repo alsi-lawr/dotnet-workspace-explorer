@@ -13,7 +13,7 @@ type SolutionProjectEditingTests() =
     [<Theory>]
     [<InlineData(".sln")>]
     [<InlineData(".slnx")>]
-    member _.``should hide and refuse project writes until a managed project is hydrated``
+    member _.``an unhydrated managed project is hidden from discovery and rejects write planning``
         (extension: string)
         =
         let directory = SolutionEditScenario.temporaryDirectory ()
@@ -41,7 +41,7 @@ type SolutionProjectEditingTests() =
     [<Theory>]
     [<InlineData(".sln")>]
     [<InlineData(".slnx")>]
-    member _.``should keep external projects and logical removes within solution metadata for both formats``
+    member _.``supported .sln and .slnx formats retain external projects and logical removals in solution metadata``
         (extension: string)
         =
         let directory = SolutionEditScenario.temporaryDirectory ()

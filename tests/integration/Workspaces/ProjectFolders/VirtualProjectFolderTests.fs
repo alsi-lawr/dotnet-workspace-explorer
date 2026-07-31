@@ -10,7 +10,7 @@ open Xunit
 [<Collection("Project-folder scenarios")>]
 type VirtualProjectFolderTests() =
     [<Fact>]
-    member _.``should link an external folder at a nested virtual path without creating directories``
+    member _.``links an external folder at a nested virtual path without creating local directories``
         ()
         =
         let external = WorkspaceRpcScenario.temporaryDirectory "nested-virtual-link-source"

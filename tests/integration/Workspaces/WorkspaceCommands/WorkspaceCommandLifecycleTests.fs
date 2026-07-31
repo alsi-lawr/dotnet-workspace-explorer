@@ -12,7 +12,9 @@ open Xunit
 [<Collection("Workspace-command scenarios")>]
 type WorkspaceCommandLifecycleTests() =
     [<Fact>]
-    member _.``should restore package files when the child fails after mutation``() =
+    member _.``a child failure after package mutation restores package files and the workspace revision``
+        ()
+        =
         let session =
             WorkspaceCommandScenario.startWithEnvironment
                 "workspace-command-package-failure"
@@ -53,7 +55,7 @@ type WorkspaceCommandLifecycleTests() =
             WorkspaceCommandScenario.stop session
 
     [<Fact>]
-    member _.``should run template reads and either typed or passed through dry runs without edits``
+    member _.``template reads and typed or passthrough dry runs leave workspace files unchanged``
         ()
         =
         let capture = Path.Combine(Path.GetTempPath(), $"capture-{Guid.NewGuid():N}.jsonl")
@@ -134,7 +136,7 @@ type WorkspaceCommandLifecycleTests() =
                 File.Delete capture
 
     [<Fact>]
-    member _.``should fragment streamed workspace command output within the negotiated frame limit``
+    member _.``streamed workspace command output is fragmented within the negotiated frame limit``
         ()
         =
         let outputLength = 4096
@@ -166,9 +168,7 @@ type WorkspaceCommandLifecycleTests() =
             WorkspaceCommandScenario.stop session
 
     [<Fact>]
-    member _.``should cancel one workspace command operation once then reap and forget its child``
-        ()
-        =
+    member _.``cancelling a workspace command reaps the child and forgets the operation``() =
         let marker =
             Path.Combine(Path.GetTempPath(), $"workspace-command-{Guid.NewGuid():N}.pid")
 

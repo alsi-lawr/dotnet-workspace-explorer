@@ -14,7 +14,7 @@ open Xunit
 [<Collection("Workspace edits")>]
 type WorkspaceEditCancellationTests() =
     [<Fact>]
-    member _.``should leave a pre-cancelled folder copy unapplied``() =
+    member _.``a pre-cancelled folder copy rolls back without creating its destination``() =
         let root = WorkspaceEditScenario.directory "pre-cancelled-folder-copy"
         let source = Path.Combine(root, "Source")
         let destination = Path.Combine(root, "Destination")
@@ -51,7 +51,9 @@ type WorkspaceEditCancellationTests() =
             Directory.Delete(root, true)
 
     [<Fact>]
-    member _.``should report cancellation observed after a destructive action as partial``() =
+    member _.``cancellation after destructive trash reports partial recovery and restores the prior write``
+        ()
+        =
         let root = WorkspaceEditScenario.directory "cancel"
 
         try

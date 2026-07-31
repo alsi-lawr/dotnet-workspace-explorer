@@ -13,7 +13,9 @@ open Xunit
 [<Collection("Workspace scenarios")>]
 type WorkspacePagingAndResetTests() =
     [<Fact>]
-    member _.``should page hydrated children watch an edit and rebase commands after reset``() =
+    member _.``paging hydrated children before editing the project rebases workspace commands after reset``
+        ()
+        =
         let directory = WorkspaceRpcScenario.temporaryDirectory "pipe-children-watch"
 
         try

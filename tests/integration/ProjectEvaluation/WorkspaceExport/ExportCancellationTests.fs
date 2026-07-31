@@ -10,7 +10,9 @@ open Xunit
 [<Collection("Project evaluation scenarios")>]
 type ExportCancellationTests() =
     [<Fact>]
-    member _.``should complete cancelled export once and reap executable resources on shutdown``() =
+    member _.``cancelling a workspace export emits one completion and reaps executable resources on shutdown``
+        ()
+        =
         let directory = Test.temporaryDirectory "cancellation"
 
         try

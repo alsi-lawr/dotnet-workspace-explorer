@@ -11,7 +11,7 @@ open Xunit
 [<Collection("Launch-profile scenarios")>]
 type LaunchProfileWorkspaceCommandTests() =
     [<Fact>]
-    member _.``should publish a workspace RPC launch-profile mutation after preview and verification``
+    member _.``setting, listing, and removing a launch profile publishes RPC operation notifications and updates the slnLaunch file``
         ()
         =
         let session =

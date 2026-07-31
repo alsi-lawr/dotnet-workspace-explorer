@@ -11,7 +11,9 @@ open Xunit
 [<Collection("Delegated dotnet processes")>]
 type DotnetProcessLifecycleTests() =
     [<Fact>]
-    member _.``should sanitize output and preserve exit mapping in the json failure envelope``() =
+    member _.``failed delegated dotnet output is sanitized and preserves the external exit code in the JSON envelope``
+        ()
+        =
         let directory = DirectCommandProcess.temporaryDirectory "direct command-failure"
 
         try
@@ -37,7 +39,7 @@ type DotnetProcessLifecycleTests() =
             DirectCommandProcess.delete directory
 
     [<Fact>]
-    member _.``should sanitize and stream redirected human output before child completion``() =
+    member _.``redirected delegated dotnet output streams in order before child completion``() =
         let directory = DirectCommandProcess.temporaryDirectory "direct command-stream"
 
         try
@@ -65,7 +67,9 @@ type DotnetProcessLifecycleTests() =
             DirectCommandProcess.delete directory
 
     [<Fact>]
-    member _.``should reap the command-owned child tree after interrupt cancellation``() =
+    member _.``interrupt cancellation reaps the delegated dotnet child process tree and reports cancellation``
+        ()
+        =
         if not (OperatingSystem.IsWindows()) then
             let directory = DirectCommandProcess.temporaryDirectory "direct command-cancel"
 

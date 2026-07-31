@@ -13,7 +13,7 @@ type SolutionProjectionTests() =
     [<Theory>]
     [<InlineData(".sln")>]
     [<InlineData(".slnx")>]
-    member _.``should project hierarchy dependencies and external paths for sln formats``
+    member _.``canonical .sln and .slnx projections include hierarchy, dependencies, and external paths``
         (extension: string)
         =
         let path = SolutionScenario.fixturePath $"Canonical{extension}"

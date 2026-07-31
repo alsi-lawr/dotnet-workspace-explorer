@@ -10,7 +10,9 @@ open Xunit
 [<Collection("Delegated dotnet processes")>]
 type DotnetArgumentForwardingTests() =
     [<Fact>]
-    member _.``should forward empty values and operands through child-owned package arguments``() =
+    member _.``package arguments including empty values and operands reach the delegated dotnet child unchanged``
+        ()
+        =
         let directory =
             DirectCommandProcess.temporaryDirectory "direct command-package-arguments"
 
@@ -37,7 +39,9 @@ type DotnetArgumentForwardingTests() =
             DirectCommandProcess.delete directory
 
     [<Fact>]
-    member _.``should delegate lifecycle arguments to one ordinary dotnet child``() =
+    member _.``restore, build, test, and run lifecycle arguments reach one delegated dotnet child unchanged``
+        ()
+        =
         let directory =
             DirectCommandProcess.temporaryDirectory "direct command-lifecycle-arguments"
 
@@ -57,7 +61,9 @@ type DotnetArgumentForwardingTests() =
             DirectCommandProcess.delete directory
 
     [<Fact>]
-    member _.``should verify package reference template file and output mutation results``() =
+    member _.``package, reference, template, and output commands succeed with expected mutation postconditions``
+        ()
+        =
         let directory =
             DirectCommandProcess.temporaryDirectory "direct command-postconditions"
 

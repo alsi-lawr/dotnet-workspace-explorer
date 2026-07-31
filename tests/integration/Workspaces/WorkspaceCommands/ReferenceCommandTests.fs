@@ -11,9 +11,7 @@ open Xunit
 [<Collection("Workspace-command scenarios")>]
 type ReferenceCommandTests() =
     [<Fact>]
-    member _.``should stream reference restore by default and pass exact delegated dotnet arguments``
-        ()
-        =
+    member _.``reference restore streams by default and delegates the exact dotnet arguments``() =
         let run noRestore =
             let capture = Path.Combine(Path.GetTempPath(), $"capture-{Guid.NewGuid():N}.jsonl")
 

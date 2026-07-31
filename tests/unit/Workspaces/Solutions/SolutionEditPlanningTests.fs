@@ -13,7 +13,7 @@ type SolutionEditPlanningTests() =
     [<Theory>]
     [<InlineData(".sln")>]
     [<InlineData(".slnx")>]
-    member _.``should plan every solution mutation command for both supported formats``
+    member _.``supported .sln and .slnx formats plan and apply every solution mutation command``
         (extension: string)
         =
         let directory = SolutionEditScenario.temporaryDirectory ()
@@ -156,7 +156,7 @@ type SolutionEditPlanningTests() =
     [<Theory>]
     [<InlineData(".sln")>]
     [<InlineData(".slnx")>]
-    member _.``should reject duplicate missing and case-only solution mutations deterministically for both formats``
+    member _.``supported .sln and .slnx formats deterministically reject duplicate, missing, and invalid mutations``
         (extension: string)
         =
         let directory = SolutionEditScenario.temporaryDirectory ()

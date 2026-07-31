@@ -16,7 +16,9 @@ open Xunit
 [<Collection("Workspace scenarios")>]
 type SemanticWorkspaceTreeTests() =
     [<Fact>]
-    member _.``should project the semantic solution and evaluated project hierarchy``() =
+    member _.``a semantic solution projects its evaluated project hierarchy with stable workspace nodes``
+        ()
+        =
         let directory = WorkspaceRpcScenario.temporaryDirectory "semantic-tree"
 
         try

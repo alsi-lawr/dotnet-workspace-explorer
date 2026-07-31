@@ -12,7 +12,9 @@ open Xunit
 [<Collection("Project evaluation scenarios")>]
 type EvaluationWorkerIsolationTests() =
     [<Fact>]
-    member _.``should isolate export evaluation and invalidate before reusing a worker lane``() =
+    member _.``export-session evaluation observes project changes after invalidation before worker reuse``
+        ()
+        =
         let directory = Test.temporaryDirectory "export-session"
 
         try

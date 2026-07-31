@@ -10,7 +10,7 @@ open Xunit
 [<Collection("Solution contracts")>]
 type SolutionFilterProjectionTests() =
     [<Fact>]
-    member _.``should resolve slnf against its backing solution with excluded read-only placeholders``
+    member _.``an .slnf projection resolves its backing solution with excluded projects as read-only placeholders``
         ()
         =
         let workspace =

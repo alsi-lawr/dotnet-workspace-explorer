@@ -13,7 +13,7 @@ open Xunit
 [<Collection("Workspace scenarios")>]
 type WorkspaceSessionTests() =
     [<Fact>]
-    member _.``should accept only the reserved export worker startup grammar``() =
+    member _.``workspace RPC startup accepts only the reserved export-worker argument grammar``() =
         let directory = WorkspaceRpcScenario.temporaryDirectory "export-worker-cli"
 
         try
@@ -82,7 +82,7 @@ type WorkspaceSessionTests() =
     [<Theory>]
     [<InlineData(".sln")>]
     [<InlineData(".slnx")>]
-    member _.``should serve a framed workspace session for both writable solution formats``
+    member _.``writable .sln and .slnx solutions each establish a framed workspace RPC session``
         (extension: string)
         =
         let directory = WorkspaceRpcScenario.temporaryDirectory "pipe-executable"

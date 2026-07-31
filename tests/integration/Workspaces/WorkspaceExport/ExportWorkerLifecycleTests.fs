@@ -19,7 +19,7 @@ open Xunit
 [<Collection("Workspace scenarios")>]
 type ExportWorkerLifecycleTests() =
     [<Fact>]
-    member _.``should bound export admission release canonically and recover after cancellation``
+    member _.``cancelling a bounded export releases admission and allows queued project evaluation to continue``
         ()
         =
         let runScenario capacity projectCount =
@@ -352,7 +352,7 @@ type ExportWorkerLifecycleTests() =
         runCancellationScenario ()
 
     [<Fact>]
-    member _.``should cancel a streaming export without a final chunk and release its operation``
+    member _.``cancelling a streaming export before its final chunk releases the export operation``
         ()
         =
         let directory = WorkspaceRpcScenario.temporaryDirectory "pipe-bounded-export-cancel"

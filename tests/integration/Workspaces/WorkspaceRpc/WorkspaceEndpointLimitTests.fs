@@ -12,7 +12,7 @@ open Xunit
 [<Collection("Workspace scenarios")>]
 type WorkspaceEndpointLimitTests() =
     [<Fact>]
-    member _.``should reset the built executable when a child hydration delta exceeds its frame limit``
+    member _.``a child-hydration delta exceeding the frame limit resets the built workspace executable``
         ()
         =
         let directory =
@@ -255,7 +255,7 @@ type WorkspaceEndpointLimitTests() =
                 Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``should apply negotiated frame limits to all outbound frames``() =
+    member _.``negotiated frame limits constrain every outbound workspace RPC frame``() =
         let directory = WorkspaceRpcScenario.temporaryDirectory "pipe-global-limit"
 
         try

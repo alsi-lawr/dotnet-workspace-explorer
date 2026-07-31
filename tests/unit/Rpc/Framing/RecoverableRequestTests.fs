@@ -10,7 +10,7 @@ open Xunit
 [<Collection("RPC scenarios")>]
 type RecoverableRequestTests() =
     [<Fact>]
-    member _.``should preserve recoverable IDs and session continuation for malformed values``() =
+    member _.``malformed values preserve recoverable IDs and continue through shutdown``() =
         let invalidValues =
             [ "invalid UTF-8", [| 0xa1uy; 0xffuy |]
               "extension", [| 0xd4uy; 0uy; 0uy |]

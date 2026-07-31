@@ -13,7 +13,9 @@ open Xunit
 [<Collection("Workspace scenarios")>]
 type ProjectRenameTests() =
     [<Fact>]
-    member _.``should isolate startup fatal and direct cli output in the built executable``() =
+    member _.``the workspace RPC executable isolates startup failures and reports protocol, EOF, and direct CLI outcomes``
+        ()
+        =
         let missing = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.slnx")
         use startup = WorkspaceRpcScenario.startWorkspaceRpc "solution" missing
         startup.StandardInput.Close()

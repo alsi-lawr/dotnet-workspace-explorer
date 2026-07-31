@@ -9,7 +9,7 @@ open Xunit
 [<Collection("Project-folder scenarios")>]
 type ProjectFolderCommandAvailabilityTests() =
     [<Fact>]
-    member _.``should advertise folder commands only for writable project targets``() =
+    member _.``writable projects list folder commands while unknown project systems omit them``() =
         let writable =
             WorkspaceRpcScenario.openProject
                 "folder-command-discovery-full"

@@ -11,7 +11,7 @@ open Xunit
 [<Collection("Project-folder scenarios")>]
 type ProjectFolderSafetyTests() =
     [<Fact>]
-    member _.``should refuse project folder copy collisions and generated destinations``() =
+    member _.``rejects folder copy collisions and generated destinations``() =
         let external = WorkspaceRpcScenario.temporaryDirectory "folder-copy-refusal-source"
         File.WriteAllText(Path.Combine(external, "Source.txt"), "source")
 
@@ -47,7 +47,7 @@ type ProjectFolderSafetyTests() =
             Directory.Delete(external, true)
 
     [<Fact>]
-    member _.``should refuse terminal and intermediate symbolic folder operands``() =
+    member _.``rejects terminal and intermediate symbolic-link folder operands``() =
         if not (OperatingSystem.IsWindows()) then
             let external = WorkspaceRpcScenario.temporaryDirectory "folder-symbolic-target"
             File.WriteAllText(Path.Combine(external, "Source.txt"), "source")

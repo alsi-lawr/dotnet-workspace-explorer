@@ -11,7 +11,9 @@ open Xunit
 [<Collection("Workspace-command scenarios")>]
 type ProjectCreationCommandTests() =
     [<Fact>]
-    member _.``should treat the semantic root as the workspace command target``() =
+    member _.``the workspace root target lists project creation and adds a generated project at the root``
+        ()
+        =
         let session =
             WorkspaceCommandScenario.start "workspace-command-semantic-root" (fun _ _ -> ())
 
@@ -75,7 +77,9 @@ type ProjectCreationCommandTests() =
             WorkspaceCommandScenario.stop session
 
     [<Fact>]
-    member _.``should add one project to a logical folder at the requested physical path``() =
+    member _.``a logical folder target adds one generated project at the requested physical path``
+        ()
+        =
         let session =
             WorkspaceCommandScenario.start "workspace-command-template" (fun _ model ->
                 model.AddFolder "/tools/" |> ignore)
@@ -113,7 +117,7 @@ type ProjectCreationCommandTests() =
             WorkspaceCommandScenario.stop session
 
     [<Fact>]
-    member _.``should compensate failed template creation without changing solution or output``() =
+    member _.``a failed template creation compensates solution and output mutations``() =
         let session =
             WorkspaceCommandScenario.startWithEnvironment
                 "workspace-command-template-failure"

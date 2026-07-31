@@ -9,7 +9,7 @@ open Xunit
 [<Collection("Core contracts")>]
 type WorkspaceIdentityTests() =
     [<Fact>]
-    member _.``should normalize only contract-equivalent workspace and node identity paths``() =
+    member _.``workspace and node identities normalize only contract-equivalent paths``() =
         let upper = WorkspacePath.Create "/tmp/dotnet-workspace-explorer/Demo.slnx"
         let lower = WorkspacePath.Create "/tmp/dotnet-workspace-explorer/demo.slnx"
 

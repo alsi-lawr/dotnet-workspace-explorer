@@ -13,7 +13,7 @@ open Xunit
 [<Collection("RPC scenarios")>]
 type OutboundFrameLimitTests() =
     [<Fact>]
-    member _.``should bound responses and background notifications with outbound limits``() =
+    member _.``responses and notifications stay within negotiated limits with error outcomes``() =
         let limit = 1024
         let oversized = Test.map [ "payload", RpcValue.String(String('x', 5000)) ]
 
@@ -122,7 +122,7 @@ type OutboundFrameLimitTests() =
         |> should equal true
 
     [<Fact>]
-    member _.``should synchronize and limit prepared notification writes without re-encoding``() =
+    member _.``prepared notifications serialize writes and reject oversized payloads``() =
         let limit = 512
         let profile = Test.profile "prepared" [ "start", Read ]
         use cancellation = new CancellationTokenSource()
@@ -230,7 +230,7 @@ type OutboundFrameLimitTests() =
         |> should equal false
 
     [<Fact>]
-    member _.``should cancel a prepared notification write without partial-frame success``() =
+    member _.``cancellation during a prepared notification write emits no partial frame``() =
         let profile = Test.profile "prepared-cancel" [ "start", Read ]
         use cancellation = new CancellationTokenSource()
 

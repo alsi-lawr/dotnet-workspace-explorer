@@ -10,7 +10,9 @@ open Xunit
 [<Collection("Launch-profile scenarios")>]
 type LaunchProfileStorageTests() =
     [<Fact>]
-    member _.``should store ordered launch data for sln and slnx without launching projects``() =
+    member _.``setting an ordered launch profile for sln and slnx stores project actions, lists the profile, and removing it empties the file``
+        ()
+        =
         for extension in [ ".sln"; ".slnx" ] do
             let directory = DirectCommandProcess.temporaryDirectory $"launch-profile{extension}"
 
@@ -52,7 +54,9 @@ type LaunchProfileStorageTests() =
                 DirectCommandProcess.delete directory
 
     [<Fact>]
-    member _.``should preserve unknown launch profile fields when updating selected projects``() =
+    member _.``updating selected projects preserves unknown launch profile and project fields in the launch profile``
+        ()
+        =
         let directory =
             DirectCommandProcess.temporaryDirectory "launch-profile-unknown-fields"
 
@@ -87,7 +91,9 @@ type LaunchProfileStorageTests() =
             DirectCommandProcess.delete directory
 
     [<Fact>]
-    member _.``should refuse malformed and duplicate launch profiles without rewriting them``() =
+    member _.``malformed or duplicate launch profiles are rejected without rewriting the launch profile file``
+        ()
+        =
         let inputs =
             [ "[", "["
               "[{\"Name\":\"Same\",\"Projects\":[]},{\"Name\":\"Same\",\"Projects\":[]}]",

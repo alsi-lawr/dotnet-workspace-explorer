@@ -11,7 +11,9 @@ open Xunit
 [<Collection("Workspace-command scenarios")>]
 type PackageCommandTests() =
     [<Fact>]
-    member _.``should centralize a conditional package version and enable central management``() =
+    member _.``conditional package version centralization enables central management and removes the project version``
+        ()
+        =
         let condition = "'$(TargetFramework)' == 'net10.0'"
 
         let session =
@@ -105,7 +107,7 @@ type PackageCommandTests() =
             WorkspaceCommandScenario.stop session
 
     [<Fact>]
-    member _.``should reject a package mutation owned below the selected workspace root``() =
+    member _.``a package mutation below the selected workspace root is rejected``() =
         let session =
             WorkspaceCommandScenario.start
                 "workspace-command-nested-package-owner"

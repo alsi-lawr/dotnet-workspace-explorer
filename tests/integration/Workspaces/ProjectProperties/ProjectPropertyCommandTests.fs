@@ -9,7 +9,7 @@ open Xunit
 [<Collection("Workspace scenarios")>]
 type ProjectPropertyCommandTests() =
     [<Fact>]
-    member _.``should reject unsupported conditional property mutation``() =
+    member _.``rejects mutation of a conditionally defined project property``() =
         let session =
             WorkspaceRpcScenario.openProject
                 "conditional-property-scenario"
@@ -29,7 +29,7 @@ type ProjectPropertyCommandTests() =
             WorkspaceRpcScenario.closeProject session
 
     [<Fact>]
-    member _.``should refuse project mutations for unknown project systems``() =
+    member _.``rejects project property mutation for an unknown project system``() =
         let session =
             WorkspaceRpcScenario.openProject
                 "unknown-project-system-scenario"

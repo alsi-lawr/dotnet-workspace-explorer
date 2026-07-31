@@ -14,7 +14,9 @@ open Xunit
 [<Collection("Workspace scenarios")>]
 type FilteredWorkspaceCommandTests() =
     [<Fact>]
-    member _.``should bind incoming conditional references into a confirmed project rename``() =
+    member _.``a confirmed project rename rewrites incoming conditional references and rejects duplicate execution``
+        ()
+        =
         let directory = WorkspaceRpcScenario.temporaryDirectory "pipe-command"
 
         try
@@ -302,7 +304,7 @@ type FilteredWorkspaceCommandTests() =
                 Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``should expose only read commands and refuse mutation requests for a solution filter``
+    member _.``a solution filter exposes read-only workspace commands and rejects mutation requests``
         ()
         =
         let directory = WorkspaceRpcScenario.temporaryDirectory "pipe-command-slnf"

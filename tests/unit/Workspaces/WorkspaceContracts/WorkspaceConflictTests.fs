@@ -9,7 +9,9 @@ open Xunit
 [<Collection("Core contracts")>]
 type WorkspaceConflictTests() =
     [<Fact>]
-    member _.``should preserve both revisions and the stable failure code for conflicts``() =
+    member _.``a revision precondition conflict preserves both revisions, the stable error code, and its diagnostic``
+        ()
+        =
         let expected = WorkspaceRevision.Create 5L
         let actual = WorkspaceRevision.Create 6L
 

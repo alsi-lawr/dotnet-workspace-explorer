@@ -10,7 +10,7 @@ open Xunit
 [<Collection("Workspace edits")>]
 type NativeArtifactTrashTests() =
     [<Fact>]
-    member _.``should select the native trash backend for the current host``() =
+    member _.``the current host selects the matching native artifact-trash backend``() =
         let selected = NativeArtifactTrash.CreateForCurrentUser()
 
         if OperatingSystem.IsWindows() then

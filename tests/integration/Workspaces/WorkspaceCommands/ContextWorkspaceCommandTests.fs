@@ -110,7 +110,9 @@ type ContextWorkspaceCommandTests() =
         (child.ExitCode = 0) |> should equal true
 
     [<Fact>]
-    member _.``should preview and execute every contextual delete cascade``() =
+    member _.``contextual delete previews and executions report cascades while preserving surviving project files``
+        ()
+        =
         let directory = WorkspaceRpcScenario.temporaryDirectory "context-delete-cascades"
 
         let solution = Path.Combine(directory, "Delete.slnx")
@@ -338,7 +340,9 @@ type ContextWorkspaceCommandTests() =
                 Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``should publish nested custom template output and compensate child failure``() =
+    member _.``nested custom template outputs publish and child failures compensate workspace state across modes``
+        ()
+        =
         let runCase mode =
             let partialRecoveryExpected = mode = "partial"
             let postactionExpected = mode = "postaction"
@@ -687,7 +691,9 @@ type ContextWorkspaceCommandTests() =
             runCase "partial"
 
     [<Fact>]
-    member _.``should reject a catalog change after preview before starting the template child``() =
+    member _.``a template catalog change after preview rejects execution before the child starts``
+        ()
+        =
         let directory =
             WorkspaceRpcScenario.temporaryDirectory "context-catalog-change-before-child"
 
@@ -838,7 +844,9 @@ type ContextWorkspaceCommandTests() =
                 Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``should filter item templates for FSharp and Visual Basic project contexts``() =
+    member _.``project language context filters item templates to the matching language and neutral options``
+        ()
+        =
         let runCase (extension: string) language =
             let directory =
                 WorkspaceRpcScenario.temporaryDirectory
@@ -983,7 +991,9 @@ type ContextWorkspaceCommandTests() =
         runCase ".vbproj" "VB"
 
     [<Fact>]
-    member _.``should create and delete from a projected file context through generic commands``() =
+    member _.``a projected file context creates and deletes files through generic workspace commands``
+        ()
+        =
         let directory =
             WorkspaceRpcScenario.temporaryDirectory "context-workspace-command-scenario"
 

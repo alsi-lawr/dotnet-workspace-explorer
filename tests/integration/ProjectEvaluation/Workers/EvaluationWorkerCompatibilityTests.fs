@@ -10,7 +10,9 @@ open Xunit
 [<Collection("Project evaluation scenarios")>]
 type EvaluationWorkerCompatibilityTests() =
     [<Fact>]
-    member _.``should reject incompatible private worker versions and shut down cleanly``() =
+    member _.``incompatible private worker initialization is rejected and the worker shuts down cleanly``
+        ()
+        =
         let directory = Test.temporaryDirectory "protocol"
 
         try

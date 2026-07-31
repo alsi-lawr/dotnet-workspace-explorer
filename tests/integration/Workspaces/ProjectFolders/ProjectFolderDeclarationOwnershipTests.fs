@@ -11,7 +11,7 @@ open Xunit
 [<Collection("Project-folder scenarios")>]
 type ProjectFolderDeclarationOwnershipTests() =
     [<Fact>]
-    member _.``should refuse an affected direct macro folder declaration``() =
+    member _.``rejects folder rename when a direct macro declaration is affected``() =
         let contents =
             "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup><Content Include=\"$(MSBuildThisFileDirectory)Old/Source.cs\" /></ItemGroup></Project>"
 
@@ -41,7 +41,7 @@ type ProjectFolderDeclarationOwnershipTests() =
             WorkspaceRpcScenario.closeProject session
 
     [<Fact>]
-    member _.``should refuse an affected imported macro folder declaration``() =
+    member _.``rejects folder rename when an imported macro declaration is affected``() =
         let session =
             WorkspaceRpcScenario.openProjectWithSetup
                 "imported-macro-folder"
@@ -72,7 +72,7 @@ type ProjectFolderDeclarationOwnershipTests() =
             WorkspaceRpcScenario.closeProject session
 
     [<Fact>]
-    member _.``should refuse an imported macro path token owned by a project folder``() =
+    member _.``rejects folder rename when an imported macro path token owns the folder``() =
         let imported =
             "<Project><ItemGroup><Content Include=\"Old/$(File)\" /></ItemGroup></Project>"
 
@@ -105,7 +105,7 @@ type ProjectFolderDeclarationOwnershipTests() =
             WorkspaceRpcScenario.closeProject session
 
     [<Fact>]
-    member _.``should refuse a root-relative literal declaration in a nested import``() =
+    member _.``rejects rename for nested-import root-relative folder declaration``() =
         let imported =
             "<Project><ItemGroup><Content Include=\"Old/Source.txt\" /></ItemGroup></Project>"
 
@@ -140,7 +140,7 @@ type ProjectFolderDeclarationOwnershipTests() =
             WorkspaceRpcScenario.closeProject session
 
     [<Fact>]
-    member _.``should ignore an unrelated macro folder declaration when renaming``() =
+    member _.``renames a folder while preserving an unrelated macro folder declaration``() =
         let contents =
             "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup>"
             + "<Content Include=\"$(MSBuildThisFileDirectory)Other/Old/Unrelated.cs\" />"
@@ -193,7 +193,7 @@ type ProjectFolderDeclarationOwnershipTests() =
             WorkspaceRpcScenario.closeProject session
 
     [<Fact>]
-    member _.``should refuse an affected multi-value folder declaration``() =
+    member _.``rejects folder rename when a multi-value folder declaration is affected``() =
         let contents =
             "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup><Content Include=\"Old/A.cs;Old/B.cs\" /></ItemGroup></Project>"
 

@@ -12,7 +12,7 @@ open Xunit
 [<Collection("RPC scenarios")>]
 type WorkspaceRpcShutdownTests() =
     [<Fact>]
-    member _.``should exit 130 without protocol output after read cancellation``() =
+    member _.``read cancellation exits 130 with empty protocol output``() =
         use cancellation = new CancellationTokenSource()
         use source = new CancellingReadStream(cancellation)
 
@@ -28,7 +28,7 @@ type WorkspaceRpcShutdownTests() =
         (stderr) |> should equal (String.Empty)
 
     [<Fact>]
-    member _.``should cancel background work before the final shutdown response``() =
+    member _.``shutdown cancels background work before emitting the final response``() =
         let profile = Test.profile "background" [ "start", Read; "shutdown", Control ]
 
         let dispatch _ methodName _ _ =

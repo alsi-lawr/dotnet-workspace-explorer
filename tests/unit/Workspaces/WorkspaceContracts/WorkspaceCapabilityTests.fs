@@ -9,7 +9,7 @@ open Xunit
 [<Collection("Core contracts")>]
 type WorkspaceCapabilityTests() =
     [<Fact>]
-    member _.``should not advertise mutation capabilities for read-only or unknown systems``() =
+    member _.``read-only and unknown project systems do not advertise mutation capabilities``() =
         let filtered = WorkspaceContractScenario.workspace WorkspaceFormat.Slnf
 
         let filteredProject =

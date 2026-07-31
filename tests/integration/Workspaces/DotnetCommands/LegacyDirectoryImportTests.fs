@@ -13,7 +13,7 @@ type LegacyDirectoryImportTests() =
     [<Theory>]
     [<InlineData(".sln", "directory")>]
     [<InlineData(".slnx", "dir")>]
-    member _.``should persist nested folders for legacy directory aliases without invoking dotnet``
+    member _.``adding a nested folder through legacy directory aliases persists it without invoking dotnet and rejects missing folders``
         (extension: string, alias: string)
         =
         let directory = DirectCommandProcess.temporaryDirectory "direct command-legacy"

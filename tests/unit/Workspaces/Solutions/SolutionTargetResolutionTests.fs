@@ -12,7 +12,9 @@ open Xunit
 [<Collection("Solution contracts")>]
 type SolutionTargetResolutionTests() =
     [<Fact>]
-    member _.``should prefer a unique root solution over nested workspace copies``() =
+    member _.``workspace target resolution prefers a unique root solution over nested workspace copies``
+        ()
+        =
         let directory = SolutionScenario.temporaryDirectory ()
 
         try
@@ -30,7 +32,7 @@ type SolutionTargetResolutionTests() =
             SolutionScenario.delete directory
 
     [<Fact>]
-    member _.``should retain distinct classifications for ambiguous targets and invalid filters``
+    member _.``workspace target resolution classifies ambiguous targets and invalid filters separately``
         ()
         =
         let directory = SolutionScenario.temporaryDirectory ()
@@ -60,9 +62,7 @@ type SolutionTargetResolutionTests() =
             SolutionScenario.delete directory
 
     [<Fact>]
-    member _.``should govern project and filter identity with detected filesystem case semantics``
-        ()
-        =
+    member _.``project and filter identities follow detected filesystem case sensitivity``() =
         let directory = SolutionScenario.temporaryDirectory ()
 
         try

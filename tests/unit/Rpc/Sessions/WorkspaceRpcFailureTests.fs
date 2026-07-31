@@ -13,7 +13,7 @@ open Xunit
 [<Collection("RPC scenarios")>]
 type WorkspaceRpcFailureTests() =
     [<Fact>]
-    member _.``should treat output failure as fatal``() =
+    member _.``output write failure exits fatally with a diagnostic``() =
         use input = new MemoryStream(Test.request 1u "initialize" Test.empty)
         use output = new FailingWriteStream()
         use errors = new StringWriter()
@@ -31,7 +31,7 @@ type WorkspaceRpcFailureTests() =
         (errors.ToString()) |> should haveSubstring ("failed while reading or writing")
 
     [<Fact>]
-    member _.``should treat background faults as fatal while reading and during shutdown``() =
+    member _.``background faults during reading or shutdown exit 65 after two responses``() =
         let cases = [ "while reading", false; "during shutdown", true ]
 
         for name, failOnCancellation in cases do

@@ -14,7 +14,9 @@ open Xunit
 [<Collection("Workspace edits")>]
 type ArtifactEditingTests() =
     [<Fact>]
-    member _.``should replace a file and complete a collision-safe rename``() =
+    member _.``file replacement followed by a collision-safe rename persists content and cleans staging artifacts``
+        ()
+        =
         let root = WorkspaceEditScenario.directory "replace-rename"
 
         try
@@ -67,7 +69,7 @@ type ArtifactEditingTests() =
             Directory.Delete(root, true)
 
     [<Fact>]
-    member _.``should mutate terminal link artifacts without traversing linked directories``() =
+    member _.``terminal symbolic-link replacement and deletion avoid traversing linked targets``() =
         if not (OperatingSystem.IsWindows()) then
             let root = WorkspaceEditScenario.directory "links"
             let external = WorkspaceEditScenario.directory "link-target"
@@ -162,7 +164,7 @@ type ArtifactEditingTests() =
                 Directory.Delete(external, true)
 
     [<Fact>]
-    member _.``should preserve tree contents while moving to an authorised destination``() =
+    member _.``moving a directory to an authorised destination preserves its tree contents``() =
         let root = WorkspaceEditScenario.directory "move"
 
         let destinationRoot =

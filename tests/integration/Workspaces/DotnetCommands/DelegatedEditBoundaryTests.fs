@@ -9,7 +9,7 @@ open Xunit
 [<Collection("Delegated dotnet processes")>]
 type DelegatedEditBoundaryTests() =
     [<Fact>]
-    member _.``should verify package versions and references in the requested framework condition``
+    member _.``package and project reference edits succeed only when matching the requested target framework condition``
         ()
         =
         let directory =
@@ -90,7 +90,9 @@ type DelegatedEditBoundaryTests() =
             DirectCommandProcess.delete directory
 
     [<Fact>]
-    member _.``should reject unsafe mutation targets before launching dotnet``() =
+    member _.``unsafe mutation targets are rejected before launching dotnet and report diagnostic codes``
+        ()
+        =
         let directory = DirectCommandProcess.temporaryDirectory "direct command-preflight"
 
         try
@@ -120,7 +122,9 @@ type DelegatedEditBoundaryTests() =
             DirectCommandProcess.delete directory
 
     [<Fact>]
-    member _.``should verify solution membership with glob sentinel and filesystem case rules``() =
+    member _.``solution add accepts glob, sentinel, and exact paths while enforcing filesystem case rules``
+        ()
+        =
         let directory = DirectCommandProcess.temporaryDirectory "direct command-paths"
 
         try

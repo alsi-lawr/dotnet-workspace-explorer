@@ -12,7 +12,7 @@ open Xunit
 [<Collection("Workspace scenarios")>]
 type WorkspaceExportStreamingTests() =
     [<Fact>]
-    member _.``should stream repeatable bounded exports with stable identity cardinality and order``
+    member _.``two bounded exports of the same solution emit identical ordered node identities and chunk boundaries``
         ()
         =
         let directory = WorkspaceRpcScenario.temporaryDirectory "pipe-bounded-export-order"
@@ -107,7 +107,9 @@ type WorkspaceExportStreamingTests() =
                 Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``should fail a later export evaluation after non-final chunks exactly once``() =
+    member _.``a missing project during export yields one failed completion after non-final chunks``
+        ()
+        =
         let directory =
             WorkspaceRpcScenario.temporaryDirectory "pipe-bounded-export-failure"
 

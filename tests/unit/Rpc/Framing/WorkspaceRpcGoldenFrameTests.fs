@@ -9,7 +9,7 @@ open Xunit
 [<Collection("RPC scenarios")>]
 type WorkspaceRpcGoldenFrameTests() =
     [<Fact>]
-    member _.``should retain golden wire shapes for shared standard and public protocol frames``() =
+    member _.``standard and public protocol frames round trip with stable golden wire bytes``() =
         let error =
             { Code = "e"
               Message = "m"

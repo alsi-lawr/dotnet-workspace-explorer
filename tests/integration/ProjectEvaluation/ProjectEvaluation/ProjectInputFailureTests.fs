@@ -11,7 +11,7 @@ open Xunit
 [<Collection("Project evaluation scenarios")>]
 type ProjectInputFailureTests() =
     [<Fact>]
-    member _.``should keep stable failure mappings for missing malformed and incompatible inputs``
+    member _.``missing, malformed, and incompatible project inputs produce stable failure mappings``
         ()
         =
         let directory = Test.temporaryDirectory "failures"
@@ -43,7 +43,9 @@ type ProjectInputFailureTests() =
             Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``should repair a failed inner dimension in the same worker``() =
+    member _.``repairing a broken inner target-framework import allows the same worker to reevaluate that dimension``
+        ()
+        =
         let directory = Test.temporaryDirectory "dimension-recovery"
 
         try

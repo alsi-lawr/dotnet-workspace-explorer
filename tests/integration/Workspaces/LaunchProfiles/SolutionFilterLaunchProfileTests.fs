@@ -9,7 +9,9 @@ open Xunit
 [<Collection("Launch-profile scenarios")>]
 type SolutionFilterLaunchProfileTests() =
     [<Fact>]
-    member _.``should list the backing launch profile for slnf and refuse its edits``() =
+    member _.``listing an slnf launch profile succeeds while launch profile edits are rejected without changing the backing file``
+        ()
+        =
         let directory = DirectCommandProcess.temporaryDirectory "launch-profile-filter"
 
         try

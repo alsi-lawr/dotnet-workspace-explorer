@@ -11,7 +11,9 @@ open Xunit
 [<Collection("Project evaluation scenarios")>]
 type ProjectCapabilityTests() =
     [<Fact>]
-    member _.``should retain evaluated item ordinals for non lexical FSharp order``() =
+    member _.``evaluating explicit F# compile order preserves source ordinals despite lexical paths``
+        ()
+        =
         let directory = Test.temporaryDirectory "fsharp-item-order"
 
         try
@@ -65,7 +67,9 @@ type ProjectCapabilityTests() =
             Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``should project dimensions and invalidate imports and globs in the real worker``() =
+    member _.``evaluating a multi-target project reports dimensions and invalidates imports and globs after file changes``
+        ()
+        =
         let directory = Test.temporaryDirectory "projection"
 
         try
@@ -145,7 +149,9 @@ type ProjectCapabilityTests() =
             Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``should make managed projects writable and unknown projects read only``() =
+    member _.``evaluating managed and unknown projects assigns writable and read-only capability profiles``
+        ()
+        =
         let directory = Test.temporaryDirectory "capabilities"
 
         try

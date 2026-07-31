@@ -12,7 +12,7 @@ open Xunit
 [<Collection("Project-folder scenarios")>]
 type ProjectFolderDeletionTests() =
     [<Fact>]
-    member _.``should delete project folders through the native trash boundary``() =
+    member _.``deleting a project folder uses native trash and records its removal``() =
         let directory =
             WorkspaceRpcScenario.temporaryDirectory "folder-delete-trash-scenario"
 

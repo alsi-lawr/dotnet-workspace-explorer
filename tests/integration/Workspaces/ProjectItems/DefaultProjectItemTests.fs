@@ -11,7 +11,7 @@ open Xunit
 [<Collection("Workspace scenarios")>]
 type DefaultProjectItemTests() =
     [<Fact>]
-    member _.``should honor Worker default Content items without redundant declarations``() =
+    member _.``adds a Worker appsettings file as None without redundant Content declarations``() =
         let session =
             WorkspaceRpcScenario.openProjectWithSetup
                 "worker-content-default-scenario"
@@ -62,7 +62,7 @@ type DefaultProjectItemTests() =
             WorkspaceRpcScenario.closeProject session
 
     [<Fact>]
-    member _.``should honor Web wwwroot Content defaults and changing build action``() =
+    member _.``changes Web wwwroot build action while preserving default Content``() =
         let session =
             WorkspaceRpcScenario.openProjectWithSetup
                 "web-content-default-scenario"
@@ -114,7 +114,7 @@ type DefaultProjectItemTests() =
             WorkspaceRpcScenario.closeProject session
 
     [<Fact>]
-    member _.``should keep directory item additions explicit only when needed``() =
+    member _.``adds directory and excluded file items with declarations only when needed``() =
         let session =
             WorkspaceRpcScenario.openProjectWithSetup
                 "item-glob-scenario"
@@ -162,7 +162,7 @@ type DefaultProjectItemTests() =
             WorkspaceRpcScenario.closeProject session
 
     [<Fact>]
-    member _.``should normalize default directory items when adding a different build action``() =
+    member _.``normalizes default directory items when adding a different build action``() =
         let session =
             WorkspaceRpcScenario.openProjectWithSetup
                 "directory-build-action-scenario"

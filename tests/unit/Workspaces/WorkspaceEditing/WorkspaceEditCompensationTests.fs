@@ -14,7 +14,7 @@ open Xunit
 [<Collection("Workspace edits")>]
 type WorkspaceEditCompensationTests() =
     [<Fact>]
-    member _.``should compensate created and copied folders when a later write fails``() =
+    member _.``a later write failure compensates created and copied folders``() =
         let root = WorkspaceEditScenario.directory "folder-action-compensation"
         let project = Path.Combine(root, "Demo.csproj")
         File.WriteAllText(project, "<Project />")
@@ -80,7 +80,7 @@ type WorkspaceEditCompensationTests() =
             Directory.Delete(root, true)
 
     [<Fact>]
-    member _.``should compensate a staged physical project move when a later write fails``() =
+    member _.``a later write failure compensates a staged physical project move``() =
         let root = WorkspaceEditScenario.directory "physical-move-compensation"
 
         try
@@ -128,7 +128,7 @@ type WorkspaceEditCompensationTests() =
             Directory.Delete(root, true)
 
     [<Fact>]
-    member _.``should roll back prior writes when trash refuses deletion``() =
+    member _.``trash deletion refusal rolls back prior writes completely``() =
         let root, target, victim, outcome =
             WorkspaceEditScenario.runCompensation (fun _ ->
                 WorkspaceEditScenario.RefusingTrash "expected refusal")
@@ -144,7 +144,9 @@ type WorkspaceEditCompensationTests() =
             Directory.Delete(root, true)
 
     [<Fact>]
-    member _.``should preserve the current destination when compensation evidence is missing``() =
+    member _.``missing compensation evidence preserves the current destination and reports partial recovery``
+        ()
+        =
         let root, target, _, outcome =
             WorkspaceEditScenario.runCompensation WorkspaceEditScenario.SabotagingTrash
 

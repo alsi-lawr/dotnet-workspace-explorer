@@ -11,7 +11,7 @@ open Xunit
 [<Collection("Project-folder scenarios")>]
 type ProjectFolderLifecycleTests() =
     [<Fact>]
-    member _.``should create an empty project folder with one Folder declaration``() =
+    member _.``creates an empty project folder and persists one Folder declaration``() =
         let session =
             WorkspaceRpcScenario.openProject
                 "folder-new-scenario"
@@ -37,7 +37,7 @@ type ProjectFolderLifecycleTests() =
             WorkspaceRpcScenario.closeProject session
 
     [<Fact>]
-    member _.``should copy a complete external folder tree after collision-free preview``() =
+    member _.``copies a complete external folder tree after collision-free preview``() =
         let external = WorkspaceRpcScenario.temporaryDirectory "folder-copy-source"
         let nested = Path.Combine(external, "Nested")
         Directory.CreateDirectory nested |> ignore
@@ -70,7 +70,7 @@ type ProjectFolderLifecycleTests() =
             Directory.Delete(external, true)
 
     [<Fact>]
-    member _.``should link an external project folder with the wildcard convention``() =
+    member _.``links an external project folder using the wildcard convention``() =
         let external = WorkspaceRpcScenario.temporaryDirectory "folder-link-source"
         File.WriteAllText(Path.Combine(external, "Source.txt"), "source")
 
@@ -107,7 +107,7 @@ type ProjectFolderLifecycleTests() =
             Directory.Delete(external, true)
 
     [<Fact>]
-    member _.``should rename a project folder and preserve descendant declaration metadata``() =
+    member _.``renames a project folder while preserving descendant declaration metadata``() =
         let session =
             WorkspaceRpcScenario.openProjectWithSetup
                 "folder-rename-scenario"
@@ -145,7 +145,7 @@ type ProjectFolderLifecycleTests() =
             WorkspaceRpcScenario.closeProject session
 
     [<Fact>]
-    member _.``should remove a project folder from membership without deleting its tree``() =
+    member _.``removes a project folder from membership while preserving its directory tree``() =
         let session =
             WorkspaceRpcScenario.openProjectWithSetup
                 "folder-remove-scenario"
@@ -183,7 +183,7 @@ type ProjectFolderLifecycleTests() =
             WorkspaceRpcScenario.closeProject session
 
     [<Fact>]
-    member _.``should move a project folder and preserve conditional metadata``() =
+    member _.``moves a project folder while preserving conditional metadata``() =
         let session =
             WorkspaceRpcScenario.openProjectWithSetup
                 "folder-move-scenario"

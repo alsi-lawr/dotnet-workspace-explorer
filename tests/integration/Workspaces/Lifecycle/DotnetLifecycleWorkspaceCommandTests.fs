@@ -11,7 +11,9 @@ open Xunit
 [<Collection("Workspace-command scenarios")>]
 type DotnetLifecycleWorkspaceCommandTests() =
     [<Fact>]
-    member _.``should pass each workspace RPC lifecycle mapping to one ordinary dotnet child``() =
+    member _.``workspace RPC restore, build, test, and run requests execute through one ordinary dotnet child with forwarded arguments``
+        ()
+        =
         let capture =
             Path.Combine(
                 DirectCommandProcess.root,

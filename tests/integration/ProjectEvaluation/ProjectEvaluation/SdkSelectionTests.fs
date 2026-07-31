@@ -10,7 +10,9 @@ open Xunit
 [<Collection("Project evaluation scenarios")>]
 type SdkSelectionTests() =
     [<Fact>]
-    member _.``should recover global json selection invalidation through public refresh``() =
+    member _.``public workspace refresh recovers project evaluation after global.json SDK selection invalidation``
+        ()
+        =
         let directory = Test.temporaryDirectory "global-json"
 
         try

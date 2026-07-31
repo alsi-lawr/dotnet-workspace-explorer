@@ -12,7 +12,7 @@ open Xunit
 [<Collection("RPC scenarios")>]
 type WorkspaceRpcStreamTests() =
     [<Fact>]
-    member _.``should keep fragmented and coalesced streams frame bounded``() =
+    member _.``fragmented and coalesced streams stay frame-bounded with expected frame counts``() =
         let limits =
             { MessagePackRpcCodec.secureLimits with
                 MaximumValueBytes = 4096 }
@@ -72,7 +72,7 @@ type WorkspaceRpcStreamTests() =
             ((Test.frames stdout).Length) |> should equal (expectedFrames)
 
     [<Fact>]
-    member _.``should distinguish clean and truncated EOF outcomes``() =
+    member _.``clean EOF returns success while truncated frame returns diagnostic exit 65``() =
         let configuration = Test.defaultConfiguration WorkspaceRpcProfile.current
 
         let cases =

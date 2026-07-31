@@ -10,7 +10,9 @@ open Xunit
 [<Collection("Project evaluation scenarios")>]
 type CentralPackageOwnershipTests() =
     [<Fact>]
-    member _.``should retain CPM owner paths and exact item-group conditions``() =
+    member _.``central package evaluation retains owner paths and exact item-group conditions for package membership``
+        ()
+        =
         let directory = Test.temporaryDirectory "package-ownership"
 
         try

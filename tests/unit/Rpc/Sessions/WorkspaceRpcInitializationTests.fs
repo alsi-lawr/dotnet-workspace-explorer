@@ -11,7 +11,7 @@ open Xunit
 [<Collection("RPC scenarios")>]
 type WorkspaceRpcInitializationTests() =
     [<Fact>]
-    member _.``should gate requests with initialization profiles and notification callability``() =
+    member _.``profiles gate request methods and reject notification calls while initialized``() =
         let worker =
             Test.profile "worker" [ "project-evaluation/evaluate", Read; "shutdown", Control ]
 
@@ -59,7 +59,7 @@ type WorkspaceRpcInitializationTests() =
             (Test.responseErrors stdout) |> should equal (expectedErrors)
 
     [<Fact>]
-    member _.``should keep public initialization and paging schemas stable``() =
+    member _.``public initialization preserves capability, paging, and validation schemas``() =
         let initialize major client capabilities limits =
             let fields =
                 ResizeArray<string * RpcValue>

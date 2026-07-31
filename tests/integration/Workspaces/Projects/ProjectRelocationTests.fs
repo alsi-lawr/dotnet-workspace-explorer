@@ -11,7 +11,9 @@ open Xunit
 [<Collection("Workspace-command scenarios")>]
 type ProjectRelocationTests() =
     [<Fact>]
-    member _.``should move a project tree through one completed public operation``() =
+    member _.``relocating a project tree with a direct conditional reference completes and rewrites paths``
+        ()
+        =
         let session =
             WorkspaceCommandScenario.start "physical-project-move" (fun directory model ->
                 let source = Path.Combine(directory, "src", "One")
@@ -82,7 +84,9 @@ type ProjectRelocationTests() =
             WorkspaceCommandScenario.stop session
 
     [<Fact>]
-    member _.``should refuse a relocation when any direct project reference uses a macro``() =
+    member _.``a macro-based direct project reference blocks relocation and preserves the source tree``
+        ()
+        =
         let session =
             WorkspaceCommandScenario.start "physical-project-move-macro" (fun directory model ->
                 let source = Path.Combine(directory, "src", "One")
@@ -132,7 +136,7 @@ type ProjectRelocationTests() =
             WorkspaceCommandScenario.stop session
 
     [<Fact>]
-    member _.``should refuse a relocation when an import declares an inactive project reference``
+    member _.``an import-declared inactive project reference blocks relocation and preserves the source tree``
         ()
         =
         let session =

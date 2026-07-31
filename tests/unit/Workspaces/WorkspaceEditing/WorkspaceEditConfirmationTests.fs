@@ -14,7 +14,7 @@ open Xunit
 [<Collection("Workspace edits")>]
 type WorkspaceEditConfirmationTests() =
     [<Fact>]
-    member _.``should consume confirmations once and bind them to the exact executable plan``() =
+    member _.``a confirmation binds to its exact executable plan and cannot be reused``() =
         let root = WorkspaceEditScenario.directory "binding"
 
         try
@@ -57,7 +57,7 @@ type WorkspaceEditConfirmationTests() =
             Directory.Delete(root, true)
 
     [<Fact>]
-    member _.``should reject a stale workspace revision before changing an artifact``() =
+    member _.``a stale workspace revision rejects execution before changing an artifact``() =
         let root = WorkspaceEditScenario.directory "revision"
 
         try
@@ -96,7 +96,7 @@ type WorkspaceEditConfirmationTests() =
             Directory.Delete(root, true)
 
     [<Fact>]
-    member _.``should reject a changed artifact fingerprint before writing``() =
+    member _.``a changed artifact fingerprint rejects execution before writing``() =
         let root = WorkspaceEditScenario.directory "fingerprint"
 
         try
@@ -130,7 +130,7 @@ type WorkspaceEditConfirmationTests() =
             Directory.Delete(root, true)
 
     [<Fact>]
-    member _.``should reject an expired confirmation before writing``() =
+    member _.``an expired confirmation rejects execution before writing``() =
         let root = WorkspaceEditScenario.directory "expiry"
 
         try
@@ -162,7 +162,7 @@ type WorkspaceEditConfirmationTests() =
             Directory.Delete(root, true)
 
     [<Fact>]
-    member _.``should require explicit overwrite deletion and external-path intents``() =
+    member _.``destructive and external edits require explicit matching intents``() =
         let root = WorkspaceEditScenario.directory "intents"
         let external = WorkspaceEditScenario.directory "external"
 

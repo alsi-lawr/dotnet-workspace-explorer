@@ -19,7 +19,9 @@ open Xunit
 [<Collection("Workspace scenarios")>]
 type WorkspaceInvalidationTests() =
     [<Fact>]
-    member _.``should reuse static solution projection only for project or import invalidation``() =
+    member _.``project or import invalidation reuses the static solution projection while other invalidations rebuild it``
+        ()
+        =
         let directory =
             WorkspaceRpcScenario.temporaryDirectory "workspace-state-invalidation"
 
@@ -275,7 +277,7 @@ type WorkspaceInvalidationTests() =
                 Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``should restage all materialized projects after a transient shared import failure``
+    member _.``a transient shared-import failure restages every materialized project before recovery``
         ()
         =
         let directory =
@@ -509,7 +511,9 @@ type WorkspaceInvalidationTests() =
                 Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``should bound retryable project staging failures and cancellation``() =
+    member _.``retryable project-staging failures remain bounded and cancellation releases staging work``
+        ()
+        =
         let runScenario
             (name: string)
             (fromTransaction: bool)

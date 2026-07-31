@@ -125,7 +125,7 @@ type WorkspaceFileResolutionTests() =
     [<Theory>]
     [<InlineData(".sln")>]
     [<InlineData(".slnx")>]
-    member _.``should resolve an existing solution item to its core-owned absolute path``
+    member _.``resolving an existing solution item returns its core-owned absolute path and current revision``
         (extension: string)
         =
         WorkspaceFileResolutionScenario.run extension (fun context ->
@@ -147,7 +147,7 @@ type WorkspaceFileResolutionTests() =
     [<Theory>]
     [<InlineData(".sln")>]
     [<InlineData(".slnx")>]
-    member _.``should reject a non-file workspace node when resolving a file path``
+    member _.``resolving a non-file workspace node returns an invalid-params error``
         (extension: string)
         =
         WorkspaceFileResolutionScenario.run extension (fun context ->
@@ -159,7 +159,7 @@ type WorkspaceFileResolutionTests() =
     [<Theory>]
     [<InlineData(".sln")>]
     [<InlineData(".slnx")>]
-    member _.``should reject a stale workspace revision when resolving a file path``
+    member _.``resolving a file with a stale workspace revision returns a workspace-conflict error``
         (extension: string)
         =
         WorkspaceFileResolutionScenario.run extension (fun context ->

@@ -11,7 +11,7 @@ open Xunit
 [<Collection("Workspace scenarios")>]
 type SharedFixtureReproducibilityTests() =
     [<Fact>]
-    member _.``should regenerate shared fixtures and the scale corpus exactly with non-packable assets``
+    member _.``regenerating shared fixtures preserves non-packable asset declarations and the deterministic scale corpus``
         ()
         =
         let root = FixtureScenario.repositoryRoot AppContext.BaseDirectory
