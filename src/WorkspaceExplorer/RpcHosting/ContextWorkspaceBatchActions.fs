@@ -39,6 +39,7 @@ module internal ContextWorkspaceBatchActions =
             |> Seq.collect (function
                 | WorkspaceEditAction.CreateDirectory path
                 | WorkspaceEditAction.ReplaceFile(path, _)
+                | WorkspaceEditAction.ReplaceGeneratedDocument(path, _)
                 | WorkspaceEditAction.Delete(path, _, _)
                 | WorkspaceEditAction.Trash path -> [ path ]
                 | WorkspaceEditAction.Rename(source, destination)
@@ -70,8 +71,6 @@ module internal ContextWorkspaceBatchActions =
               ExpectedRevision = WorkspaceRevision.Create expectedRevision
               Intents =
                 seq {
-                    yield WorkspaceEditIntent.Overwrite
-
                     if external.Length > 0 then
                         yield WorkspaceEditIntent.AccessExternalPath
                 }

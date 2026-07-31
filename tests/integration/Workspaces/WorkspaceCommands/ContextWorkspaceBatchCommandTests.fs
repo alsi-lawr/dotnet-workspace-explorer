@@ -71,7 +71,7 @@ module private ContextWorkspaceBatchScenario =
                 WorkspaceRpcScenario.send
                     child
                     false
-                    (WorkspaceRpcScenario.request 1u "initialize" WorkspaceRpcScenario.initialize)
+                    (WorkspaceRpcScenario.request 1u "initialize" largeInitialize)
 
                 WorkspaceRpcScenario.readFrame child
                 |> WorkspaceRpcScenario.response 1u
@@ -128,6 +128,86 @@ module private ContextWorkspaceBatchScenario =
                 | Notification("workspace/delta", _) -> ()
                 | frame -> failwithf "Expected hydration delta, got %A" frame
 
+                action child revision projectId sourceId source project
+                WorkspaceRpcScenario.shutdown child 99u
+            finally
+                WorkspaceRpcScenario.disposeProcess child
+        finally
+            Directory.Delete(directory, true)
+
+    let withProjectedDirectory action =
+        let directory = WorkspaceRpcScenario.temporaryDirectory "context-directory-rename"
+
+        try
+            let solution = Path.Combine(directory, "Demo.slnx")
+            let project = Path.Combine(directory, "Demo.csproj")
+            let source = Path.Combine(directory, "Feature")
+            let model = SolutionModel()
+            model.AddProject(Path.GetFileName project, "Demo", null) |> ignore
+            Directory.CreateDirectory source |> ignore
+            File.WriteAllText(Path.Combine(source, "Child.cs"), "class Child {}")
+
+            File.WriteAllText(
+                project,
+                "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup>"
+                + "<TargetFramework>net10.0</TargetFramework>"
+                + "<EnableDefaultCompileItems>false</EnableDefaultCompileItems>"
+                + "</PropertyGroup><ItemGroup><Compile Include=\"Feature/Child.cs\" />"
+                + "</ItemGroup></Project>"
+            )
+
+            WorkspaceRpcScenario.save solution model
+
+            use child =
+                WorkspaceRpcScenario.startWorkspaceRpc "context-directory-rename" solution
+
+            try
+                WorkspaceRpcScenario.send
+                    child
+                    false
+                    (WorkspaceRpcScenario.request 1u "initialize" largeInitialize)
+
+                WorkspaceRpcScenario.readFrame child
+                |> WorkspaceRpcScenario.response 1u
+                |> fst
+                |> should equal None
+
+                WorkspaceRpcScenario.send
+                    child
+                    false
+                    (WorkspaceRpcScenario.request 2u "workspace/root" RpcValue.emptyMap)
+
+                let _, root =
+                    WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 2u
+
+                let projectId =
+                    WorkspaceRpcScenario.rootChildren child 3u root |> nodeIdNamed "Demo"
+
+                WorkspaceRpcScenario.send
+                    child
+                    false
+                    (WorkspaceRpcScenario.request
+                        4u
+                        "workspace/children"
+                        (WorkspaceRpcScenario.map
+                            [ "parentNodeId", RpcValue.String projectId
+                              "pageSize", RpcValue.Integer 100L ]))
+
+                let (childrenError, projectChildren), _, _ =
+                    WorkspaceRpcScenario.responseAfterWorkspaceNotifications child 4u 0L
+
+                childrenError |> should equal None
+
+                let revision =
+                    WorkspaceRpcScenario.field "revision" projectChildren
+                    |> RpcValue.requireInteger "revision"
+
+                let sourceId = nodeIdNamed "Feature" projectChildren
+
+                match WorkspaceRpcScenario.readFrame child with
+                | Notification("workspace/delta", _) -> ()
+                | frame -> failwithf "Expected hydration delta, got %A" frame
+
                 action child revision sourceId source project
                 WorkspaceRpcScenario.shutdown child 99u
             finally
@@ -140,7 +220,7 @@ type ContextWorkspaceBatchCommandTests() =
     [<Fact>]
     member _.``a file rename uses the exact generic preview and execute envelope``() =
         ContextWorkspaceBatchScenario.withProjectedFile
-            (fun child revision sourceId source project ->
+            (fun child revision projectId sourceId source project ->
                 let arguments = WorkspaceRpcScenario.map [ "name", RpcValue.String "Renamed.cs" ]
 
                 let preview =
@@ -200,7 +280,112 @@ type ContextWorkspaceBatchCommandTests() =
                 File.Exists source |> should equal false
                 let destination = Path.Combine(Path.GetDirectoryName source, "Renamed.cs")
                 File.Exists destination |> should equal true
-                File.ReadAllText(project).Contains("Renamed.cs") |> should equal true)
+                File.ReadAllText(project).Contains("Renamed.cs") |> should equal true
+
+                match WorkspaceRpcScenario.readFrame child with
+                | Notification("workspace/delta", parameters) ->
+                    let changes =
+                        WorkspaceRpcScenario.field "changes" parameters
+                        |> RpcValue.requireArray "changes"
+                        |> Seq.toArray
+
+                    changes
+                    |> Seq.exists (fun change ->
+                        let fields = RpcValue.requireMap "change" change
+
+                        match fields["kind"] with
+                        | RpcValue.String "replace" -> fields["oldId"] = RpcValue.String sourceId
+                        | RpcValue.String "remove" -> fields["id"] = RpcValue.String sourceId
+                        | _ -> false)
+                    |> should equal true
+
+                    changes
+                    |> Seq.choose (fun change ->
+                        let fields = RpcValue.requireMap "change" change
+
+                        match fields["kind"] with
+                        | RpcValue.String "replace"
+                        | RpcValue.String "add" -> Some fields["node"]
+                        | _ -> None)
+                    |> Seq.find (fun node ->
+                        WorkspaceRpcScenario.field "name" node = RpcValue.String "Renamed.cs")
+                    |> WorkspaceRpcScenario.field "id"
+                    |> RpcValue.requireString "id"
+                    |> should not' (equal sourceId)
+                | frame -> failwithf "Expected rename identity delta, got %A" frame
+
+                WorkspaceRpcScenario.send
+                    child
+                    false
+                    (WorkspaceRpcScenario.request 12u "workspace/root" RpcValue.emptyMap)
+
+                let rootError, refreshedRoot =
+                    WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 12u
+
+                rootError |> should equal None
+
+                WorkspaceRpcScenario.rootChildren child 13u refreshedRoot
+                |> ContextWorkspaceBatchScenario.nodeIdNamed "Demo"
+                |> should equal projectId)
+
+    [<Fact>]
+    member _.``a physical directory rename moves its tree and composes project membership without overwrite``
+        ()
+        =
+        ContextWorkspaceBatchScenario.withProjectedDirectory
+            (fun child revision sourceId source project ->
+                let preview =
+                    ContextWorkspaceBatchScenario.commandRequest
+                        "workspace.rename"
+                        sourceId
+                        (WorkspaceRpcScenario.map [ "name", RpcValue.String "RenamedFeature" ])
+                        revision
+
+                WorkspaceRpcScenario.send
+                    child
+                    false
+                    (WorkspaceRpcScenario.request 10u "workspace/commands/preview" preview)
+
+                let previewError, previewResult =
+                    WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 10u
+
+                previewError |> should equal None
+
+                let token =
+                    previewResult
+                    |> WorkspaceRpcScenario.field "confirmationToken"
+                    |> RpcValue.requireString "confirmationToken"
+
+                let execute =
+                    preview
+                    |> RpcValue.requireMap "preview"
+                    |> Seq.map (fun pair -> pair.Key, pair.Value)
+                    |> Seq.append [ "confirmationToken", RpcValue.String token ]
+                    |> WorkspaceRpcScenario.map
+
+                WorkspaceRpcScenario.send
+                    child
+                    false
+                    (WorkspaceRpcScenario.request 11u "workspace/commands/execute" execute)
+
+                let executeError, executeResult =
+                    WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 11u
+
+                executeError |> should equal None
+
+                WorkspaceRpcScenario.field "applied" executeResult
+                |> should equal (RpcValue.Boolean true)
+
+                Directory.Exists source |> should equal false
+
+                File.ReadAllText(
+                    Path.Combine(Path.GetDirectoryName source, "RenamedFeature", "Child.cs")
+                )
+                |> should equal "class Child {}"
+
+                let contents = File.ReadAllText project
+                contents.Contains("RenamedFeature/Child.cs") |> should equal true
+                contents.Contains("Include=\"Feature/Child.cs\"") |> should equal false)
 
     [<Fact>]
     member _.``a physical copy composes every selected file into one project edit``() =
@@ -220,11 +405,13 @@ type ContextWorkspaceBatchCommandTests() =
                 + "<EnableDefaultCompileItems>false</EnableDefaultCompileItems>"
                 + "</PropertyGroup><ItemGroup><Compile Include=\"First.cs\" />"
                 + "<Compile Include=\"Second.cs\" />"
+                + "<Compile Include=\"Keep.cs\" />"
                 + "<Compile Include=\"Destination/Keep.cs\" /></ItemGroup></Project>"
             )
 
             File.WriteAllText(Path.Combine(directory, "First.cs"), "class First {}")
             File.WriteAllText(Path.Combine(directory, "Second.cs"), "class Second {}")
+            File.WriteAllText(Path.Combine(directory, "Keep.cs"), "class SourceKeep {}")
             Directory.CreateDirectory destinationDirectory |> ignore
             File.WriteAllText(Path.Combine(destinationDirectory, "Keep.cs"), "class Keep {}")
             WorkspaceRpcScenario.save solution model
@@ -279,12 +466,54 @@ type ContextWorkspaceBatchCommandTests() =
 
                 let secondId = ContextWorkspaceBatchScenario.nodeIdNamed "Second.cs" projectChildren
 
+                let keepId = ContextWorkspaceBatchScenario.nodeIdNamed "Keep.cs" projectChildren
+
                 let destinationId =
                     ContextWorkspaceBatchScenario.nodeIdNamed "Destination" projectChildren
 
                 match WorkspaceRpcScenario.readFrame child with
                 | Notification("workspace/delta", _) -> ()
                 | frame -> failwithf "Expected hydration delta, got %A" frame
+
+                let invalidMixed =
+                    ContextWorkspaceBatchScenario.commandRequest
+                        "workspace.copy"
+                        destinationId
+                        (WorkspaceRpcScenario.map
+                            [ "sourceNodeIds",
+                              RpcValue.array [ RpcValue.String firstId; RpcValue.String projectId ] ])
+                        revision
+
+                WorkspaceRpcScenario.send
+                    child
+                    false
+                    (WorkspaceRpcScenario.request 8u "workspace/commands/preview" invalidMixed)
+
+                let mixedError, _ =
+                    WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 8u
+
+                mixedError |> Option.map _.Code |> should equal (Some "invalid_params")
+
+                let collidingCopy =
+                    ContextWorkspaceBatchScenario.commandRequest
+                        "workspace.copy"
+                        destinationId
+                        (WorkspaceRpcScenario.map
+                            [ "sourceNodeIds", RpcValue.array [ RpcValue.String keepId ] ])
+                        revision
+
+                WorkspaceRpcScenario.send
+                    child
+                    false
+                    (WorkspaceRpcScenario.request 9u "workspace/commands/preview" collidingCopy)
+
+                let collisionError, _ =
+                    WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 9u
+
+                collisionError |> Option.map _.Code |> should equal (Some "invalid_params")
+
+                File.ReadAllText(Path.Combine(destinationDirectory, "Keep.cs"))
+                |> should equal "class Keep {}"
 
                 let arguments =
                     WorkspaceRpcScenario.map

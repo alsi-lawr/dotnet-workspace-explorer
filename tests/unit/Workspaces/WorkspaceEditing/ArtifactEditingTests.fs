@@ -14,6 +14,118 @@ open Xunit
 [<Collection("Workspace edits")>]
 type ArtifactEditingTests() =
     [<Fact>]
+    member _.``generated documents replace existing authority without granting overwrite to physical edits``
+        ()
+        =
+        let root = WorkspaceEditScenario.directory "generated-document-authority"
+
+        try
+            let document = Path.Combine(root, "Demo.csproj")
+            let source = Path.Combine(root, "Source.cs")
+            let occupied = Path.Combine(root, "Occupied.cs")
+            File.WriteAllText(document, "old project")
+            File.WriteAllText(source, "source")
+            File.WriteAllText(occupied, "occupied")
+
+            let coordinator =
+                WorkspaceEditScenario.coordinator
+                    root
+                    TimeProvider.System
+                    (fun () -> WorkspaceRevision.Create 0L)
+                    (WorkspaceEditScenario.RefusingTrash "unused")
+
+            let documentRequest = WorkspaceEditScenario.request [] [ document ] [] 0L
+
+            let documentEdit =
+                [ WorkspaceEditAction.ReplaceGeneratedDocument(
+                      document,
+                      Encoding.UTF8.GetBytes "new project"
+                  ) ]
+
+            let preview = WorkspaceEditScenario.preview coordinator documentRequest documentEdit
+
+            coordinator.Execute(
+                documentRequest,
+                documentEdit,
+                preview.Confirmation,
+                CancellationToken.None
+            )
+            |> should equal (Success Applied)
+
+            File.ReadAllText document |> should equal "new project"
+
+            coordinator.Prepare(
+                WorkspaceEditScenario.request [] [ occupied ] [] 0L,
+                [ WorkspaceEditAction.ReplaceFile(occupied, Encoding.UTF8.GetBytes "overwritten") ]
+            )
+            |> WorkspaceEditScenario.assertInvalid
+
+            coordinator.Prepare(
+                WorkspaceEditScenario.request [] [ source; occupied ] [] 0L,
+                [ WorkspaceEditAction.Rename(source, occupied) ]
+            )
+            |> WorkspaceEditScenario.assertInvalid
+
+            File.ReadAllText occupied |> should equal "occupied"
+            File.ReadAllText source |> should equal "source"
+        finally
+            Directory.Delete(root, true)
+
+    [<Fact>]
+    member _.``destination identity follows the mounted filesystem case semantics for collisions``
+        ()
+        =
+        let root = WorkspaceEditScenario.directory "filesystem-case-destinations"
+
+        try
+            let existing = Path.Combine(root, "Existing.cs")
+            let caseVariant = Path.Combine(root, "existing.cs")
+            File.WriteAllText(existing, "existing")
+
+            let identitiesMatch =
+                ArtifactFiles.identity existing = ArtifactFiles.identity caseVariant
+
+            let variantExists = ArtifactFiles.exists caseVariant
+            identitiesMatch |> should equal variantExists
+
+            let first = Path.Combine(root, "First.cs")
+            let second = Path.Combine(root, "Second.cs")
+            File.WriteAllText(first, "first")
+            File.WriteAllText(second, "second")
+
+            let coordinator =
+                WorkspaceEditScenario.coordinator
+                    root
+                    TimeProvider.System
+                    (fun () -> WorkspaceRevision.Create 0L)
+                    (WorkspaceEditScenario.RefusingTrash "unused")
+
+            let destinations =
+                [ Path.Combine(root, "Output.cs"); Path.Combine(root, "output.cs") ]
+
+            let request =
+                WorkspaceEditScenario.request [] ([ first; second ] @ destinations) [] 0L
+
+            let outcome =
+                coordinator.Prepare(
+                    request,
+                    [ WorkspaceEditAction.Copy(first, destinations[0])
+                      WorkspaceEditAction.Copy(second, destinations[1]) ]
+                )
+
+            if ArtifactFiles.identity destinations[0] = ArtifactFiles.identity destinations[1] then
+                outcome |> WorkspaceEditScenario.assertInvalid
+            else
+                match outcome with
+                | Success _ -> ()
+                | failure ->
+                    failwithf
+                        "A case-sensitive filesystem rejected distinct destinations: %A"
+                        failure
+        finally
+            Directory.Delete(root, true)
+
+    [<Fact>]
     member _.``file replacement followed by a collision-safe rename persists content and cleans staging artifacts``
         ()
         =

@@ -76,7 +76,9 @@ module internal WorkspaceGitProcess =
                     | Ok output, Ok error -> return Ok(child.ExitCode, output, error)
             with
             | :? OperationCanceledException -> return raise (OperationCanceledException())
-            | :? System.ComponentModel.Win32Exception ->
+            | :? System.ComponentModel.Win32Exception
+            | :? ArgumentException
+            | :? UnauthorizedAccessException ->
                 return Error(RpcErrors.create "git_launch_failed" "Git could not be started." None)
             | :? IOException ->
                 return

@@ -96,6 +96,10 @@ module internal WorkspaceCommandRequests =
                 [ { Operation = "modify"
                     Target = path
                     Recursive = false } ]
+            | WorkspaceEditAction.ReplaceGeneratedDocument(path, _) ->
+                [ { Operation = "modify"
+                    Target = path
+                    Recursive = false } ]
             | WorkspaceEditAction.Rename(source, destination)
             | WorkspaceEditAction.Move(source, destination)
             | WorkspaceEditAction.Copy(source, destination) ->

@@ -101,6 +101,7 @@ type WorkspaceEditTransaction
         function
         | WorkspaceEditAction.CreateDirectory path
         | WorkspaceEditAction.ReplaceFile(path, _)
+        | WorkspaceEditAction.ReplaceGeneratedDocument(path, _)
         | WorkspaceEditAction.Delete(path, _, _)
         | WorkspaceEditAction.Trash path -> [ path ]
         | WorkspaceEditAction.Rename(source, destination)
@@ -240,6 +241,13 @@ type WorkspaceEditTransaction
                                 WorkspaceEditFingerprint.writeValue
                                     writer
                                     (SHA256.HashData contents |> Convert.ToHexString)
+                            | WorkspaceEditAction.ReplaceGeneratedDocument(_path, contents) ->
+                                WorkspaceEditFingerprint.writeValue writer "replace-document"
+                                WorkspaceEditFingerprint.writeValue writer (nextPath ())
+
+                                WorkspaceEditFingerprint.writeValue
+                                    writer
+                                    (SHA256.HashData contents |> Convert.ToHexString)
                             | WorkspaceEditAction.Rename(_source, _destination) ->
                                 WorkspaceEditFingerprint.writeValue writer "rename"
                                 WorkspaceEditFingerprint.writeValue writer (nextPath ())
@@ -301,6 +309,8 @@ type WorkspaceEditTransaction
                | WorkspaceEditAction.ReplaceFile(destination, _) ->
                    not (ArtifactFiles.exists destination || repeatedDestination destination)
                    || intents.Contains WorkspaceEditIntent.Overwrite
+               | WorkspaceEditAction.ReplaceGeneratedDocument(destination, _) ->
+                   ArtifactFiles.exists destination && not (repeatedDestination destination)
                | WorkspaceEditAction.Rename(source, destination) ->
                    let repeated = repeatedDestination destination
 
@@ -552,6 +562,18 @@ type WorkspaceEditTransaction
                                         expected
                                         destination
                                         "The replaced artifact did not verify."
+                                | WorkspaceEditAction.ReplaceGeneratedDocument(destination,
+                                                                               contents) ->
+                                    let stage = ArtifactFiles.temporaryBeside destination "stage"
+                                    cleanup.Add stage
+                                    File.WriteAllBytes(stage, contents)
+                                    let expected = fingerprint stage
+                                    reversals.Insert(0, commitStaged stage destination)
+
+                                    verifyFingerprint
+                                        expected
+                                        destination
+                                        "The replaced generated document did not verify."
                                 | WorkspaceEditAction.Rename(source, destination) ->
                                     let expected = fingerprint source
 

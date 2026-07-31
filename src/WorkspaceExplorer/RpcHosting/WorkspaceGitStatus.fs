@@ -90,13 +90,14 @@ type internal WorkspaceGitStatus(workspacePath: string) =
                                     | Ok(_, output, _) ->
                                         return
                                             WorkspaceGitStatusParsing.parsePorcelain root output
-                                            |> Result.map (fun changes ->
-                                                { Available = true
-                                                  Decorations =
-                                                    WorkspaceGitStatusMapping.mapDecorations
-                                                        workspacePath
-                                                        nodes
-                                                        changes })
+                                            |> Result.bind (fun changes ->
+                                                WorkspaceGitStatusMapping.mapDecorations
+                                                    workspacePath
+                                                    nodes
+                                                    changes
+                                                |> Result.map (fun decorations ->
+                                                    { Available = true
+                                                      Decorations = decorations }))
                         }
 
                     match snapshot with

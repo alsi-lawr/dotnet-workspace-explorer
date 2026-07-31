@@ -416,7 +416,11 @@ module internal ContextWorkspacePhysicalBatch =
                             |> Array.map (fun operation -> Path.GetFullPath operation.Destination)
 
                         let collision =
-                            destinations |> Array.distinct |> Array.length <> destinations.Length
+                            destinations
+                            |> Array.map ArtifactFiles.identity
+                            |> Array.distinct
+                            |> Array.length
+                            <> destinations.Length
                             || operations
                                |> Array.exists (fun operation ->
                                    let caseOnly =
@@ -527,7 +531,7 @@ module internal ContextWorkspacePhysicalBatch =
                                     projects
                                     |> Array.distinctBy _.Node.Id
                                     |> Array.map (fun project ->
-                                        WorkspaceEditAction.ReplaceFile(
+                                        WorkspaceEditAction.ReplaceGeneratedDocument(
                                             project.Path.AbsolutePath.Value,
                                             documentBytes documents[project.Node.Id]
                                         ))

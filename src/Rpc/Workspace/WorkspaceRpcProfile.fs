@@ -26,6 +26,13 @@ module WorkspaceRpc =
     let private optionalString name fields =
         RpcValue.optionalField name fields |> Option.map (RpcValue.requireString name)
 
+    let private commandTarget commandId fields =
+        match commandId with
+        | "workspace.rename"
+        | "workspace.move"
+        | "workspace.copy" -> Some(requiredString "targetNodeId" fields)
+        | _ -> optionalString "targetNodeId" fields
+
     let private revision name value =
         let parsed = RpcValue.requireInteger name value
 
@@ -207,11 +214,9 @@ module WorkspaceRpc =
                 | "workspace/commands/describe" ->
                     let fields = RpcValue.requireMap "params" parameters
                     RpcValue.ensureOnly "params" [ "commandId"; "targetNodeId" ] fields
+                    let commandId = requiredString "commandId" fields
 
-                    WorkspaceRpcRequest.CommandDescribe(
-                        requiredString "commandId" fields,
-                        optionalString "targetNodeId" fields
-                    )
+                    WorkspaceRpcRequest.CommandDescribe(commandId, commandTarget commandId fields)
                 | "workspace/commands/preview" ->
                     let fields = RpcValue.requireMap "params" parameters
 
@@ -228,9 +233,11 @@ module WorkspaceRpc =
                         |> RpcValue.requireField "expectedRevision"
                         |> revision "expectedRevision"
 
+                    let commandId = requiredString "commandId" fields
+
                     WorkspaceRpcRequest.CommandPreview(
-                        requiredString "commandId" fields,
-                        optionalString "targetNodeId" fields,
+                        commandId,
+                        commandTarget commandId fields,
                         arguments,
                         expectedRevision
                     )
@@ -254,9 +261,11 @@ module WorkspaceRpc =
                         |> RpcValue.requireField "expectedRevision"
                         |> revision "expectedRevision"
 
+                    let commandId = requiredString "commandId" fields
+
                     WorkspaceRpcRequest.CommandExecute(
-                        requiredString "commandId" fields,
-                        optionalString "targetNodeId" fields,
+                        commandId,
+                        commandTarget commandId fields,
                         arguments,
                         expectedRevision,
                         confirmationToken fields

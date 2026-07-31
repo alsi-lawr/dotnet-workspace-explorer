@@ -8,6 +8,8 @@ open System
 open System.Threading
 open Dotnet.WorkspaceExplorer
 open Dotnet.WorkspaceExplorer.Rpc
+open Dotnet.WorkspaceExplorer.WorkspaceIndex
+open Dotnet.WorkspaceExplorer.Workspaces
 open FsUnit.Xunit
 open Microsoft.VisualStudio.SolutionPersistence.Model
 open Xunit
@@ -74,6 +76,94 @@ module private WorkspaceGitStatusScenario =
 [<Collection("Workspace scenarios")>]
 type WorkspaceGitStatusTests() =
     [<Fact>]
+    member _.``Git process launch and nonzero execution remain bounded structured failure inputs``
+        ()
+        =
+        let missing =
+            WorkspaceGitProcess.runAsync
+                $"missing-git-{Guid.NewGuid():N}"
+                (Path.GetTempPath())
+                []
+                1024
+                CancellationToken.None
+            |> _.GetAwaiter().GetResult()
+
+        match missing with
+        | Error error -> error.Code |> should equal "git_launch_failed"
+        | success -> failwithf "A missing Git executable unexpectedly launched: %A" success
+
+        let failed =
+            WorkspaceGitProcess.runAsync
+                "git"
+                (Path.GetTempPath())
+                [ "--definitely-not-a-git-option" ]
+                (64 * 1024)
+                CancellationToken.None
+            |> _.GetAwaiter().GetResult()
+
+        match failed with
+        | Ok(exitCode, _, error) ->
+            (exitCode <> 0) |> should equal true
+            String.IsNullOrWhiteSpace error |> should equal false
+        | Error error ->
+            failwithf "Git execution did not reach its bounded exit result: %s" error.Code
+
+    [<Fact>]
+    member _.``Git mapping aggregates added precedence through every semantic ancestor and reports invalid paths``
+        ()
+        =
+        let root = WorkspaceRpcScenario.temporaryDirectory "git-mapping"
+
+        try
+            let projectDirectory = Path.Combine(root, "Project")
+            let folderDirectory = Path.Combine(projectDirectory, "Feature")
+            let changedFile = Path.Combine(folderDirectory, "Changed.cs")
+            let addedFile = Path.Combine(folderDirectory, "Added.cs")
+            Directory.CreateDirectory folderDirectory |> ignore
+            File.WriteAllText(changedFile, "changed")
+            File.WriteAllText(addedFile, "added")
+
+            let node id parent physical container =
+                { NodeId = WorkspaceNodeId.Parse id
+                  ParentNodeId = parent |> Option.map WorkspaceNodeId.Parse
+                  PhysicalPath = physical |> Option.map WorkspaceArtifactPath.Create
+                  ContainerPath = container |> Option.map WorkspaceArtifactPath.Create }
+
+            let nodes =
+                [| node "workspace" None None (Some root)
+                   node "project" (Some "workspace") None (Some projectDirectory)
+                   node "folder" (Some "project") None (Some folderDirectory)
+                   node "file" (Some "folder") (Some changedFile) None |]
+
+            match
+                WorkspaceGitStatusMapping.mapDecorations
+                    root
+                    nodes
+                    [| GitDecorationState.Changed, changedFile
+                       GitDecorationState.Added, addedFile |]
+            with
+            | Error error -> failwithf "Valid Git paths did not map: %s" error.Code
+            | Ok decorations ->
+                decorations
+                |> should
+                    equal
+                    [| "file", GitDecorationState.Changed
+                       "folder", GitDecorationState.Added
+                       "project", GitDecorationState.Added
+                       "workspace", GitDecorationState.Added |]
+
+            match
+                WorkspaceGitStatusMapping.mapDecorations
+                    root
+                    nodes
+                    [| GitDecorationState.Changed, String [| '\u0000' |] |]
+            with
+            | Error error -> error.Code |> should equal "git_mapping_failed"
+            | Ok decorations -> failwithf "An invalid Git path unexpectedly mapped: %A" decorations
+        finally
+            Directory.Delete(root, true)
+
+    [<Fact>]
     member _.``NUL-delimited Git porcelain preserves spaces and both rename paths``() =
         let root = Path.GetFullPath(Path.GetTempPath())
 
@@ -88,10 +178,15 @@ type WorkspaceGitStatusTests() =
             changes.Length |> should equal 3
 
             changes[0]
-            |> should equal (Added, Path.GetFullPath("File With Spaces.cs", root))
+            |> should
+                equal
+                (GitDecorationState.Added, Path.GetFullPath("File With Spaces.cs", root))
 
-            changes[1] |> should equal (Changed, Path.GetFullPath("Renamed File.cs", root))
-            changes[2] |> should equal (Changed, Path.GetFullPath("Original File.cs", root))
+            changes[1]
+            |> should equal (GitDecorationState.Changed, Path.GetFullPath("Renamed File.cs", root))
+
+            changes[2]
+            |> should equal (GitDecorationState.Changed, Path.GetFullPath("Original File.cs", root))
 
     [<Fact>]
     member _.``Git output reading rejects content beyond its bound after draining the reader``() =
@@ -242,6 +337,10 @@ type WorkspaceGitStatusTests() =
 
                 rootError |> should equal None
 
+                let initialWorkspaceRevision =
+                    WorkspaceRpcScenario.field "revision" root
+                    |> RpcValue.requireInteger "revision"
+
                 let projectId =
                     WorkspaceRpcScenario.rootChildren child 3u root
                     |> WorkspaceRpcScenario.field "nodes"
@@ -310,6 +409,20 @@ type WorkspaceGitStatusTests() =
 
                 WorkspaceRpcScenario.field "state" changedProject
                 |> should equal (RpcValue.String "changed")
+
+                WorkspaceRpcScenario.send
+                    child
+                    false
+                    (WorkspaceRpcScenario.request 7u "workspace/root" RpcValue.emptyMap)
+
+                let afterGitError, afterGit =
+                    WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 7u
+
+                afterGitError |> should equal None
+
+                WorkspaceRpcScenario.field "revision" afterGit
+                |> RpcValue.requireInteger "revision"
+                |> should equal initialWorkspaceRevision
 
                 WorkspaceRpcScenario.shutdown child 99u
             finally

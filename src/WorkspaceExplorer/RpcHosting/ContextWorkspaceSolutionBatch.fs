@@ -245,7 +245,7 @@ module internal ContextWorkspaceSolutionBatch =
                     let actions =
                         Seq.append
                             extraActions
-                            [ WorkspaceEditAction.ReplaceFile(backingPath, contents) ]
+                            [ WorkspaceEditAction.ReplaceGeneratedDocument(backingPath, contents) ]
                         |> Seq.toArray
 
                     return Ok(actions, effects.ToArray())

@@ -80,7 +80,9 @@ type WorkspaceEditCompensationTests() =
             Directory.Delete(root, true)
 
     [<Fact>]
-    member _.``a later write failure compensates a staged physical project move``() =
+    member _.``a contextual batch compensates its staged physical move when a later write fails``
+        ()
+        =
         let root = WorkspaceEditScenario.directory "physical-move-compensation"
 
         try
@@ -99,12 +101,8 @@ type WorkspaceEditCompensationTests() =
                     (WorkspaceEditScenario.RefusingTrash "unused")
 
             let request =
-                { WorkspaceEditScenario.request
-                      []
-                      [ source; destination; failedWrite ]
-                      [ WorkspaceEditIntent.Overwrite ]
-                      0L with
-                    CommandId = CommandId.Create "project.relocate" }
+                { WorkspaceEditScenario.request [] [ source; destination; failedWrite ] [] 0L with
+                    CommandId = CommandId.Create "workspace.move" }
 
             let actions =
                 [ WorkspaceEditAction.Move(source, destination)

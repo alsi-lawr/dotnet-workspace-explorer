@@ -14,6 +14,70 @@ open Xunit
 [<Collection("Workspace edits")>]
 type WorkspaceEditConfirmationTests() =
     [<Fact>]
+    member _.``contextual batch confirmations reject changed expired and reused authority before preserving one successful document composition``
+        ()
+        =
+        let root = WorkspaceEditScenario.directory "contextual-batch-confirmation"
+
+        try
+            let source = Path.Combine(root, "Source.cs")
+            let destination = Path.Combine(root, "Destination.cs")
+            let document = Path.Combine(root, "Demo.csproj")
+            File.WriteAllText(source, "source")
+            File.WriteAllText(document, "original project")
+            let clock = WorkspaceEditScenario.Clock DateTimeOffset.UtcNow
+
+            let coordinator =
+                WorkspaceEditScenario.coordinator
+                    root
+                    clock
+                    (fun () -> WorkspaceRevision.Create 0L)
+                    (WorkspaceEditScenario.RefusingTrash "unused")
+
+            let request =
+                { WorkspaceEditScenario.request [] [ source; destination; document ] [] 0L with
+                    CommandId = CommandId.Create "workspace.move" }
+
+            let actions =
+                [ WorkspaceEditAction.Move(source, destination)
+                  WorkspaceEditAction.ReplaceGeneratedDocument(
+                      document,
+                      Encoding.UTF8.GetBytes "moved project"
+                  ) ]
+
+            let changed = WorkspaceEditScenario.preview coordinator request actions
+            File.WriteAllText(document, "external project")
+
+            match
+                coordinator.Execute(request, actions, changed.Confirmation, CancellationToken.None)
+            with
+            | Failure(Conflict _) -> ()
+            | outcome -> failwithf "Expected the changed document to conflict: %A" outcome
+
+            File.Exists source |> should equal true
+            File.Exists destination |> should equal false
+
+            let expired = WorkspaceEditScenario.preview coordinator request actions
+            clock.Advance(TimeSpan.FromMinutes 6.0)
+
+            coordinator.Execute(request, actions, expired.Confirmation, CancellationToken.None)
+            |> WorkspaceEditScenario.assertInvalid
+
+            let accepted = WorkspaceEditScenario.preview coordinator request actions
+
+            coordinator.Execute(request, actions, accepted.Confirmation, CancellationToken.None)
+            |> should equal (Success Applied)
+
+            coordinator.Execute(request, actions, accepted.Confirmation, CancellationToken.None)
+            |> WorkspaceEditScenario.assertInvalid
+
+            File.Exists source |> should equal false
+            File.ReadAllText destination |> should equal "source"
+            File.ReadAllText document |> should equal "moved project"
+        finally
+            Directory.Delete(root, true)
+
+    [<Fact>]
     member _.``a confirmation binds to its exact executable plan and cannot be reused``() =
         let root = WorkspaceEditScenario.directory "binding"
 

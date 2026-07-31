@@ -11,6 +11,48 @@ open Xunit
 [<Collection("RPC scenarios")>]
 type WorkspaceRpcInitializationTests() =
     [<Fact>]
+    member _.``contextual rename move and copy require their exact target while unrelated commands retain optional workspace targeting``
+        ()
+        =
+        let arguments = Test.empty
+
+        let requests =
+            [ "workspace/commands/describe",
+              fun commandId -> Test.map [ "commandId", RpcValue.String commandId ]
+              "workspace/commands/preview",
+              fun commandId ->
+                  Test.map
+                      [ "commandId", RpcValue.String commandId
+                        "arguments", arguments
+                        "expectedRevision", RpcValue.Integer 0L ]
+              "workspace/commands/execute",
+              fun commandId ->
+                  Test.map
+                      [ "commandId", RpcValue.String commandId
+                        "arguments", arguments
+                        "expectedRevision", RpcValue.Integer 0L
+                        "confirmationToken", RpcValue.String(String.replicate 64 "a") ] ]
+
+        for methodName, parameters in requests do
+            for commandId in [ "workspace.rename"; "workspace.move"; "workspace.copy" ] do
+                match WorkspaceRpc.parseRequest methodName (parameters commandId) with
+                | Error error -> error.Code |> should equal "invalid_params"
+                | accepted ->
+                    failwithf
+                        "%s accepted %s without targetNodeId: %A"
+                        methodName
+                        commandId
+                        accepted
+
+            match WorkspaceRpc.parseRequest methodName (parameters "solution.validate") with
+            | Ok _ -> ()
+            | rejected ->
+                failwithf
+                    "%s stopped accepting an unrelated optional target: %A"
+                    methodName
+                    rejected
+
+    [<Fact>]
     member _.``profiles gate request methods and reject notification calls while initialized``() =
         let worker =
             Test.profile "worker" [ "project-evaluation/evaluate", Read; "shutdown", Control ]

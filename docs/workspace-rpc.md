@@ -58,7 +58,9 @@ and `workspace/commands/preview` creates a revision-bound plan. A mutating or de
 `workspace/commands/execute` requires that confirmation token and expected revision. Clients must
 handle conflicts rather than retrying against an unknown workspace state.
 For workspace commands, omitting `targetNodeId`, supplying the initialized workspace descriptor ID,
-or supplying the single root node ID selects the same workspace target.
+or supplying the single root node ID selects the same workspace target, except that
+`workspace.rename`, `workspace.move`, and `workspace.copy` require `targetNodeId` for describe,
+preview, and execute.
 `workspace/operations/cancel` requests cancellation for an operation ID; it does not promise that
 already-completed work can be undone. `shutdown` accepts an orderly session shutdown.
 
