@@ -7,6 +7,8 @@ open System.Diagnostics
 open System.IO
 open Microsoft.VisualStudio.SolutionPersistence.Model
 open Dotnet.WorkspaceExplorer.Rpc
+open Dotnet.WorkspaceExplorer.Solutions
+open Dotnet.WorkspaceExplorer.Workspaces
 open Xunit
 
 [<Collection("Workspace scenarios")>]
@@ -332,10 +334,12 @@ type ContextWorkspaceCommandTests() =
                 Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``should publish nested custom item output and compensate child failure``() =
+    member _.``should publish nested custom template output and compensate child failure``() =
         let runCase mode =
             let partialRecoveryExpected = mode = "partial"
             let postactionExpected = mode = "postaction"
+            let nestedProjectExpected = mode = "nested-project"
+            let projectTemplateExpected = postactionExpected || nestedProjectExpected
             let failureExpected = mode = "failure" || partialRecoveryExpected
             let cancellationExpected = mode = "cancel"
 
@@ -403,6 +407,9 @@ type ContextWorkspaceCommandTests() =
                       "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_TEMPLATE_BLOCK_CLEANUP", "true"
                   if postactionExpected then
                       "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_TEMPLATE_POSTACTION", "true"
+                  if nestedProjectExpected then
+                      "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_TEMPLATE_OUTPUTS",
+                      Path.Combine("src", "Nested.csproj")
                   if cancellationExpected then
                       "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_DOTNET_STARTED_PATH", started
                       "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_DOTNET_CONTINUE_PATH", continuePath ]
@@ -469,7 +476,7 @@ type ContextWorkspaceCommandTests() =
                 | Notification("workspace/delta", _) -> ()
                 | frame -> failwithf "Expected hydration delta, got %A" frame
 
-                let targetId = if postactionExpected then rootId else projectId
+                let targetId = if projectTemplateExpected then rootId else projectId
 
                 WorkspaceRpcScenario.send
                     child
@@ -493,7 +500,7 @@ type ContextWorkspaceCommandTests() =
                         let kind = WorkspaceRpcScenario.field "kind" option
                         let name = WorkspaceRpcScenario.field "displayName" option
 
-                        if postactionExpected then
+                        if projectTemplateExpected then
                             kind = RpcValue.String "projectTemplate"
                             && name = RpcValue.String "Custom project"
                         else
@@ -505,7 +512,9 @@ type ContextWorkspaceCommandTests() =
                     WorkspaceRpcScenario.map
                         [ "selectionId", selectionId
                           "name",
-                          RpcValue.String(if postactionExpected then "Generated" else "IContract") ]
+                          RpcValue.String(
+                              if projectTemplateExpected then "Generated" else "IContract"
+                          ) ]
 
                 let request =
                     WorkspaceRpcScenario.map
@@ -616,6 +625,15 @@ type ContextWorkspaceCommandTests() =
 
                     let reopened = WorkspaceCommandScenario.openSolution solution
                     Assert.Equal(1, reopened.SolutionProjects.Count)
+                elif nestedProjectExpected then
+                    Assert.Equal("succeeded", outcome)
+
+                    Assert.True(
+                        File.Exists(Path.Combine(directory, "Generated", "src", "Nested.csproj"))
+                    )
+
+                    let reopened = WorkspaceCommandScenario.openSolution solution
+                    Assert.Equal(2, reopened.SolutionProjects.Count)
                 elif cancellationExpected then
                     Assert.Equal("cancelled", outcome)
                     Assert.False(File.Exists destination)
@@ -662,9 +680,306 @@ type ContextWorkspaceCommandTests() =
         runCase "failure"
         runCase "cancel"
         runCase "postaction"
+        runCase "nested-project"
 
         if not (OperatingSystem.IsWindows()) then
             runCase "partial"
+
+    [<Fact>]
+    member _.``should reject a catalog change after preview before starting the template child``() =
+        let directory =
+            WorkspaceRpcScenario.temporaryDirectory "context-catalog-change-before-child"
+
+        let solution = Path.Combine(directory, "Catalog.slnx")
+        let project = Path.Combine(directory, "Catalog.csproj")
+        let cliHome = Path.Combine(directory, "home")
+        let sdkRoot = Path.Combine(directory, "sdk")
+        let sdkPath = Path.Combine(sdkRoot, "test")
+        let started = Path.Combine(directory, "template-child.started")
+
+        let cache =
+            Path.Combine(cliHome, ".templateengine", "dotnetcli", "test", "templatecache.json")
+
+        let model = SolutionModel()
+        model.AddProject("Catalog.csproj", "Catalog", null) |> ignore
+        WorkspaceRpcScenario.save solution model
+        WorkspaceRpcScenario.writeProject project
+        Directory.CreateDirectory sdkPath |> ignore
+        Directory.CreateDirectory(Path.GetDirectoryName cache) |> ignore
+
+        File.WriteAllText(
+            cache,
+            """
+            {
+              "TemplateInfo": [
+                {
+                  "Identity": "custom.item",
+                  "Name": "Custom contract",
+                  "ShortNameList": ["contract"],
+                  "Precedence": 200,
+                  "Description": "Custom item",
+                  "TagsCollection": { "language": "C#", "type": "item" }
+                }
+              ]
+            }
+            """
+        )
+
+        let fakeHost = DirectCommandProcess.copyScriptedDotnet directory
+
+        use child =
+            WorkspaceRpcScenario.startPipeWithEnvironment
+                "solution"
+                solution
+                [ "DOTNET_HOST_PATH", fakeHost
+                  "DOTNET_CLI_HOME", cliHome
+                  "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_DOTNET_MODE", "workspace-command"
+                  "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_DOTNET_SDK_ROOT", sdkRoot
+                  "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_DOTNET_STARTED_PATH", started ]
+
+        let response id methodName parameters =
+            WorkspaceRpcScenario.send
+                child
+                false
+                (WorkspaceRpcScenario.request id methodName parameters)
+
+            let error, result =
+                WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response id
+
+            error, result
+
+        try
+            let initializeError, _ = response 1u "initialize" initialize
+            Assert.True initializeError.IsNone
+
+            let _, root = response 2u "workspace/root" RpcValue.emptyMap
+            let rootId = nodeId "workspace" root
+
+            let _, rootChildren =
+                response
+                    3u
+                    "workspace/children"
+                    (WorkspaceRpcScenario.map
+                        [ "parentNodeId", RpcValue.String rootId
+                          "pageSize", RpcValue.Integer 100L ])
+
+            let projectId = nodeId "project" rootChildren
+
+            let _, projectChildren =
+                response
+                    4u
+                    "workspace/children"
+                    (WorkspaceRpcScenario.map
+                        [ "parentNodeId", RpcValue.String projectId
+                          "pageSize", RpcValue.Integer 100L ])
+
+            let revision =
+                WorkspaceRpcScenario.field "revision" projectChildren
+                |> RpcValue.requireInteger "revision"
+
+            match WorkspaceRpcScenario.readFrame child with
+            | Notification("workspace/delta", _) -> ()
+            | frame -> failwithf "Expected hydration delta, got %A" frame
+
+            let optionsError, options =
+                response
+                    5u
+                    "workspace/create/options"
+                    (WorkspaceRpcScenario.map
+                        [ "targetNodeId", RpcValue.String projectId
+                          "expectedRevision", RpcValue.Integer revision ])
+
+            Assert.True optionsError.IsNone
+
+            let selectionId =
+                WorkspaceRpcScenario.field "options" options
+                |> RpcValue.requireArray "options"
+                |> Seq.find (fun option ->
+                    WorkspaceRpcScenario.field "kind" option = RpcValue.String "itemTemplate")
+                |> WorkspaceRpcScenario.field "selectionId"
+
+            let arguments =
+                WorkspaceRpcScenario.map
+                    [ "selectionId", selectionId; "name", RpcValue.String "IContract" ]
+
+            let request =
+                WorkspaceRpcScenario.map
+                    [ "commandId", RpcValue.String "workspace.create"
+                      "targetNodeId", RpcValue.String projectId
+                      "arguments", arguments
+                      "expectedRevision", RpcValue.Integer revision ]
+
+            let previewError, preview = response 6u "workspace/commands/preview" request
+
+            Assert.True previewError.IsNone
+            File.AppendAllText(cache, Environment.NewLine)
+
+            let executeRequest =
+                match request with
+                | RpcValue.Map fields ->
+                    fields.Add(
+                        "confirmationToken",
+                        WorkspaceRpcScenario.field "confirmationToken" preview
+                    )
+                    |> RpcValue.Map
+                | _ -> failwith "The create request must be a map."
+
+            let executeError, _ = response 7u "workspace/commands/execute" executeRequest
+
+            Assert.Equal("template_catalog_changed", executeError.Value.Code)
+            Assert.False(File.Exists started)
+            Assert.False(Directory.Exists(Path.Combine(directory, "Nested")))
+            WorkspaceRpcScenario.shutdown child 8u
+        finally
+            WorkspaceRpcScenario.disposeProcess child
+
+            if Directory.Exists directory then
+                Directory.Delete(directory, true)
+
+    [<Fact>]
+    member _.``should filter item templates for FSharp and Visual Basic project contexts``() =
+        let runCase (extension: string) language =
+            let directory =
+                WorkspaceRpcScenario.temporaryDirectory
+                    $"context-template-language-{extension.TrimStart('.')}"
+
+            let solution = Path.Combine(directory, "Language.slnx")
+            let projectName = $"Language{extension}"
+            let project = Path.Combine(directory, projectName)
+            let cliHome = Path.Combine(directory, "home")
+            let sdkRoot = Path.Combine(directory, "sdk")
+            let sdkPath = Path.Combine(sdkRoot, "test")
+
+            let cache =
+                Path.Combine(cliHome, ".templateengine", "dotnetcli", "test", "templatecache.json")
+
+            let model = SolutionModel()
+            model.AddProject(projectName, "Language", null) |> ignore
+            WorkspaceRpcScenario.save solution model
+            WorkspaceRpcScenario.writeProject project
+            Directory.CreateDirectory sdkPath |> ignore
+            Directory.CreateDirectory(Path.GetDirectoryName cache) |> ignore
+
+            File.WriteAllText(
+                cache,
+                """
+                {
+                  "TemplateInfo": [
+                    {
+                      "Identity": "item.csharp",
+                      "Name": "C# item",
+                      "ShortNameList": ["item"],
+                      "Precedence": 100,
+                      "TagsCollection": { "language": "C#", "type": "item" }
+                    },
+                    {
+                      "Identity": "item.fsharp",
+                      "Name": "F# item",
+                      "ShortNameList": ["item"],
+                      "Precedence": 100,
+                      "TagsCollection": { "language": "F#", "type": "item" }
+                    },
+                    {
+                      "Identity": "item.vb",
+                      "Name": "VB item",
+                      "ShortNameList": ["item"],
+                      "Precedence": 100,
+                      "TagsCollection": { "language": "VB", "type": "item" }
+                    },
+                    {
+                      "Identity": "item.neutral",
+                      "Name": "Neutral item",
+                      "ShortNameList": ["neutral"],
+                      "Precedence": 100,
+                      "TagsCollection": { "type": "item" }
+                    }
+                  ]
+                }
+                """
+            )
+
+            let fakeHost = DirectCommandProcess.copyScriptedDotnet directory
+
+            use child =
+                WorkspaceRpcScenario.startPipeWithEnvironment
+                    "solution"
+                    solution
+                    [ "DOTNET_HOST_PATH", fakeHost
+                      "DOTNET_CLI_HOME", cliHome
+                      "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_DOTNET_MODE", "workspace-command"
+                      "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_DOTNET_SDK_ROOT", sdkRoot ]
+
+            let response id methodName parameters =
+                WorkspaceRpcScenario.send
+                    child
+                    false
+                    (WorkspaceRpcScenario.request id methodName parameters)
+
+                let error, result =
+                    WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response id
+
+                match error with
+                | Some value -> failwithf "%s failed: %s: %s" methodName value.Code value.Message
+                | None -> result
+
+            try
+                response 1u "initialize" initialize |> ignore
+                let root = response 2u "workspace/root" RpcValue.emptyMap
+                let rootId = nodeId "workspace" root
+
+                let rootChildren =
+                    response
+                        3u
+                        "workspace/children"
+                        (WorkspaceRpcScenario.map
+                            [ "parentNodeId", RpcValue.String rootId
+                              "pageSize", RpcValue.Integer 100L ])
+
+                let projectId = nodeId "project" rootChildren
+
+                let projectChildren =
+                    response
+                        4u
+                        "workspace/children"
+                        (WorkspaceRpcScenario.map
+                            [ "parentNodeId", RpcValue.String projectId
+                              "pageSize", RpcValue.Integer 100L ])
+
+                let revision =
+                    WorkspaceRpcScenario.field "revision" projectChildren
+                    |> RpcValue.requireInteger "revision"
+
+                match WorkspaceRpcScenario.readFrame child with
+                | Notification("workspace/delta", _) -> ()
+                | frame -> failwithf "Expected project hydration delta, got %A" frame
+
+                let itemLanguages =
+                    response
+                        5u
+                        "workspace/create/options"
+                        (WorkspaceRpcScenario.map
+                            [ "targetNodeId", RpcValue.String projectId
+                              "expectedRevision", RpcValue.Integer revision ])
+                    |> WorkspaceRpcScenario.field "options"
+                    |> RpcValue.requireArray "options"
+                    |> Seq.filter (fun option ->
+                        WorkspaceRpcScenario.field "kind" option = RpcValue.String "itemTemplate")
+                    |> Seq.map (fun option ->
+                        RpcValue.tryField "language" option
+                        |> Option.map (RpcValue.requireString "language"))
+                    |> Seq.sort
+                    |> Seq.toArray
+
+                Assert.True((itemLanguages = [| None; Some language |]))
+                WorkspaceRpcScenario.shutdown child 6u
+            finally
+                WorkspaceRpcScenario.disposeProcess child
+
+                if Directory.Exists directory then
+                    Directory.Delete(directory, true)
+
+        runCase ".fsproj" "F#"
+        runCase ".vbproj" "VB"
 
     [<Fact>]
     member _.``should create and delete from a projected file context through generic commands``() =
@@ -674,10 +989,14 @@ type ContextWorkspaceCommandTests() =
         let solution = Path.Combine(directory, "Demo.slnx")
         let project = Path.Combine(directory, "Demo.csproj")
         let existing = Path.Combine(directory, "Existing.cs")
+        let nestedDirectory = Path.Combine(directory, "Nested")
+        let nestedExisting = Path.Combine(nestedDirectory, "Nested.cs")
         let created = Path.Combine(directory, "Created.cs")
         let dataHome = Path.Combine(directory, "data")
         let model = SolutionModel()
         model.AddProject("Demo.csproj", "Demo", null) |> ignore
+        model.AddBuildType "Debug"
+        model.AddPlatform "Any CPU"
         WorkspaceRpcScenario.save solution model
         Directory.CreateDirectory dataHome |> ignore
 
@@ -689,7 +1008,19 @@ type ContextWorkspaceCommandTests() =
         )
 
         File.WriteAllText(existing, "internal sealed class Existing { }")
+        Directory.CreateDirectory nestedDirectory |> ignore
+        File.WriteAllText(nestedExisting, "internal sealed class Nested { }")
         restore project
+
+        let workspace =
+            match SolutionWorkspaceReader.OpenAsync(solution).Result with
+            | Success value -> value
+            | Failure failure -> failwithf "Could not open context fixture: %A" failure
+
+        let unsupportedTargetIds =
+            [ workspace.Contents.BuildTypes |> Seq.exactlyOne |> _.Id.Value
+              workspace.Contents.Platforms |> Seq.exactlyOne |> _.Id.Value
+              "unknown-context-target" ]
 
         use child =
             WorkspaceRpcScenario.startPipeWithDataHome "solution" solution (Some dataHome)
@@ -756,6 +1087,7 @@ type ContextWorkspaceCommandTests() =
                 |> RpcValue.requireInteger "revision"
 
             let fileId = nodeId "projectFile" projectChildren
+            let folderId = nodeId "projectFolder" projectChildren
             let dependencyContainerId = nodeId "dependencyContainer" projectChildren
 
             match WorkspaceRpcScenario.readFrame child with
@@ -839,6 +1171,46 @@ type ContextWorkspaceCommandTests() =
                     |> RpcValue.requireArray "options",
                     fun option -> WorkspaceRpcScenario.field "kind" option = RpcValue.String "empty"
                 )
+
+                let rejected requestOffset methodName parameters =
+                    WorkspaceRpcScenario.send
+                        child
+                        false
+                        (WorkspaceRpcScenario.request
+                            (requestId + requestOffset)
+                            methodName
+                            parameters)
+
+                    let error, _ =
+                        WorkspaceRpcScenario.readFrame child
+                        |> WorkspaceRpcScenario.response (requestId + requestOffset)
+
+                    Assert.Equal("not_found", error.Value.Code)
+
+                rejected
+                    20u
+                    "workspace/commands/describe"
+                    (WorkspaceRpcScenario.map
+                        [ "commandId", RpcValue.String "workspace.delete"
+                          "targetNodeId", RpcValue.String targetId ])
+
+                let deleteRequest =
+                    WorkspaceRpcScenario.map
+                        [ "commandId", RpcValue.String "workspace.delete"
+                          "targetNodeId", RpcValue.String targetId
+                          "arguments", RpcValue.emptyMap
+                          "expectedRevision", RpcValue.Integer revision ]
+
+                rejected 30u "workspace/commands/preview" deleteRequest
+
+                let deleteExecute =
+                    match deleteRequest with
+                    | RpcValue.Map fields ->
+                        fields.Add("confirmationToken", RpcValue.String(String('0', 64)))
+                        |> RpcValue.Map
+                    | _ -> failwith "The delete request must be a map."
+
+                rejected 40u "workspace/commands/execute" deleteExecute
 
             WorkspaceRpcScenario.send
                 child
@@ -1130,6 +1502,63 @@ type ContextWorkspaceCommandTests() =
                       "arguments", projectArguments
                       "expectedRevision", RpcValue.Integer itemRevision ]
 
+            for index, unsupportedTargetId in unsupportedTargetIds |> List.indexed do
+                let requestId = 140u + uint32 (index * 10)
+
+                let rejected methodName requestOffset parameters =
+                    WorkspaceRpcScenario.send
+                        child
+                        false
+                        (WorkspaceRpcScenario.request
+                            (requestId + requestOffset)
+                            methodName
+                            parameters)
+
+                    let error, _ =
+                        WorkspaceRpcScenario.readFrame child
+                        |> WorkspaceRpcScenario.response (requestId + requestOffset)
+
+                    Assert.True(error.IsSome, $"{methodName} accepted an unsupported target.")
+
+                let target =
+                    WorkspaceRpcScenario.map [ "targetNodeId", RpcValue.String unsupportedTargetId ]
+
+                rejected "workspace/commands/list" 0u target
+
+                rejected
+                    "workspace/commands/describe"
+                    1u
+                    (WorkspaceRpcScenario.map
+                        [ "commandId", RpcValue.String "workspace.create"
+                          "targetNodeId", RpcValue.String unsupportedTargetId ])
+
+                rejected
+                    "workspace/create/options"
+                    2u
+                    (WorkspaceRpcScenario.map
+                        [ "targetNodeId", RpcValue.String unsupportedTargetId
+                          "expectedRevision", RpcValue.Integer itemRevision ])
+
+                let unsupportedRequest =
+                    WorkspaceRpcScenario.map
+                        [ "commandId", RpcValue.String "workspace.create"
+                          "targetNodeId", RpcValue.String unsupportedTargetId
+                          "arguments", projectArguments
+                          "expectedRevision", RpcValue.Integer itemRevision ]
+
+                rejected "workspace/commands/preview" 3u unsupportedRequest
+
+                let unsupportedExecute =
+                    match unsupportedRequest with
+                    | RpcValue.Map fields ->
+                        fields.Add("confirmationToken", RpcValue.String(String('0', 64)))
+                        |> RpcValue.Map
+                    | _ -> failwith "The unsupported request must be a map."
+
+                rejected "workspace/commands/execute" 4u unsupportedExecute
+
+            Assert.False(Directory.Exists(Path.Combine(directory, "Generated")))
+
             WorkspaceRpcScenario.send
                 child
                 false
@@ -1183,13 +1612,153 @@ type ContextWorkspaceCommandTests() =
             let reopened = WorkspaceCommandScenario.openSolution solution
             Assert.Equal(2, reopened.SolutionProjects.Count)
 
+            let mutable routedRevision = projectRevision
+
+            let routeCreate requestId targetId name destination =
+                WorkspaceRpcScenario.send
+                    child
+                    false
+                    (WorkspaceRpcScenario.request
+                        requestId
+                        "workspace/commands/list"
+                        (WorkspaceRpcScenario.map [ "targetNodeId", RpcValue.String targetId ]))
+
+                let listError, listResult =
+                    WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response requestId
+
+                Assert.True listError.IsNone
+
+                Assert.Contains(
+                    WorkspaceRpcScenario.field "commands" listResult
+                    |> RpcValue.requireArray "commands",
+                    fun command ->
+                        WorkspaceRpcScenario.field "id" command = RpcValue.String "workspace.create"
+                )
+
+                WorkspaceRpcScenario.send
+                    child
+                    false
+                    (WorkspaceRpcScenario.request
+                        (requestId + 1u)
+                        "workspace/commands/describe"
+                        (WorkspaceRpcScenario.map
+                            [ "commandId", RpcValue.String "workspace.create"
+                              "targetNodeId", RpcValue.String targetId ]))
+
+                let describeError, _ =
+                    WorkspaceRpcScenario.readFrame child
+                    |> WorkspaceRpcScenario.response (requestId + 1u)
+
+                Assert.True describeError.IsNone
+
+                WorkspaceRpcScenario.send
+                    child
+                    false
+                    (WorkspaceRpcScenario.request
+                        (requestId + 2u)
+                        "workspace/create/options"
+                        (WorkspaceRpcScenario.map
+                            [ "targetNodeId", RpcValue.String targetId
+                              "expectedRevision", RpcValue.Integer routedRevision ]))
+
+                let optionsError, options =
+                    WorkspaceRpcScenario.readFrame child
+                    |> WorkspaceRpcScenario.response (requestId + 2u)
+
+                Assert.True optionsError.IsNone
+
+                let emptySelection =
+                    WorkspaceRpcScenario.field "options" options
+                    |> RpcValue.requireArray "options"
+                    |> Seq.find (fun option ->
+                        WorkspaceRpcScenario.field "kind" option = RpcValue.String "empty")
+                    |> WorkspaceRpcScenario.field "selectionId"
+
+                let arguments =
+                    WorkspaceRpcScenario.map
+                        [ "selectionId", emptySelection; "name", RpcValue.String name ]
+
+                let previewRequest =
+                    WorkspaceRpcScenario.map
+                        [ "commandId", RpcValue.String "workspace.create"
+                          "targetNodeId", RpcValue.String targetId
+                          "arguments", arguments
+                          "expectedRevision", RpcValue.Integer routedRevision ]
+
+                WorkspaceRpcScenario.send
+                    child
+                    false
+                    (WorkspaceRpcScenario.request
+                        (requestId + 3u)
+                        "workspace/commands/preview"
+                        previewRequest)
+
+                let previewError, preview =
+                    WorkspaceRpcScenario.readFrame child
+                    |> WorkspaceRpcScenario.response (requestId + 3u)
+
+                Assert.True previewError.IsNone
+
+                let executeRequest =
+                    match previewRequest with
+                    | RpcValue.Map fields ->
+                        fields.Add(
+                            "confirmationToken",
+                            WorkspaceRpcScenario.field "confirmationToken" preview
+                        )
+                        |> RpcValue.Map
+                    | _ -> failwith "The create request must be a map."
+
+                WorkspaceRpcScenario.send
+                    child
+                    false
+                    (WorkspaceRpcScenario.request
+                        (requestId + 4u)
+                        "workspace/commands/execute"
+                        executeRequest)
+
+                let executeError, executeResult =
+                    WorkspaceRpcScenario.readFrame child
+                    |> WorkspaceRpcScenario.response (requestId + 4u)
+
+                Assert.True executeError.IsNone
+
+                routedRevision <-
+                    WorkspaceRpcScenario.field "revision" executeResult
+                    |> RpcValue.requireInteger "revision"
+
+                match WorkspaceRpcScenario.readFrame child with
+                | Notification("workspace/delta", _)
+                | Notification("workspace/reset", _) -> ()
+                | frame -> failwithf "Expected routed creation notification, got %A" frame
+
+                Assert.True(File.Exists destination)
+
+            routeCreate
+                100u
+                dependencyContainerId
+                "FromDependencyContainer.cs"
+                (Path.Combine(directory, "FromDependencyContainer.cs"))
+
+            routeCreate
+                110u
+                dependencyId
+                "FromDependency.cs"
+                (Path.Combine(directory, "FromDependency.cs"))
+
+            routeCreate
+                120u
+                folderId
+                "FromFolder.cs"
+                (Path.Combine(nestedDirectory, "FromFolder.cs"))
+
             WorkspaceRpcScenario.previewAndExecute
                 child
                 20u
                 "workspace.delete"
                 fileId
                 RpcValue.emptyMap
-                projectRevision
+                routedRevision
                 true
 
             Assert.False(File.Exists existing)

@@ -135,6 +135,16 @@ module internal WorkspaceCommandRequests =
             ContextWorkspaceCommands.discover workspace.Descriptor.IsReadOnly (Some context.Node)
         )
 
+    let private contextualCommandIsApplicable
+        (context: WorkspaceSemanticContext)
+        (descriptor: CommandDescriptor)
+        =
+        match ContextWorkspaceCommands.tryDescribe descriptor.Id with
+        | None -> true
+        | Some _ ->
+            ContextWorkspaceCommands.discover false (Some context.Node)
+            |> Seq.exists (fun candidate -> candidate.Id = descriptor.Id)
+
     let private resolveTarget
         (context: WorkspaceCommandContext)
         (workspace: SolutionWorkspace)
@@ -258,6 +268,16 @@ module internal WorkspaceCommandRequests =
                     | Error rpcError, _ -> return Error rpcError
                     | _, None ->
                         return Error(RpcErrors.create "not_found" "The command was not found." None)
+                    | Ok(_, targetContext), Some descriptor when
+                        not (contextualCommandIsApplicable targetContext descriptor)
+                        ->
+                        return
+                            Error(
+                                RpcErrors.create
+                                    "not_found"
+                                    "The command is not applicable to the target."
+                                    None
+                            )
                     | Ok(_, targetContext), Some descriptor ->
                         match commandArguments workspace descriptor arguments with
                         | Error rpcError -> return Error rpcError
@@ -366,6 +386,16 @@ module internal WorkspaceCommandRequests =
                                 Error(
                                     RpcErrors.unsupported
                                         "The selected .slnf workspace is read-only."
+                                )
+                        | Ok(_, targetContext), Some descriptor, _ when
+                            not (contextualCommandIsApplicable targetContext descriptor)
+                            ->
+                            return
+                                Error(
+                                    RpcErrors.create
+                                        "not_found"
+                                        "The command is not applicable to the target."
+                                        None
                                 )
                         | Ok(_, targetContext), Some descriptor, Some confirmationToken when
                             ContextWorkspaceCommands.tryDescribe descriptor.Id |> Option.isSome

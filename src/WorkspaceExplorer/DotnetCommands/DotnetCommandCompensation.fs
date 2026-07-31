@@ -49,7 +49,7 @@ module internal DotnetCommandCompensation =
 
         let projects =
             if Directory.Exists root && not (ArtifactFiles.isLink root) then
-                Directory.EnumerateFiles(root, "*", SearchOption.TopDirectoryOnly)
+                Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
                 |> Seq.choose (fun path ->
                     let extension =
                         Path.GetExtension path
