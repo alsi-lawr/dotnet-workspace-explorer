@@ -6,6 +6,7 @@ open System.Security.Cryptography
 open System.Text
 open System.Text.Json
 open System.Threading
+open Dotnet.WorkspaceExplorer.CommandLine
 open Dotnet.WorkspaceExplorer.ProjectEvaluation
 open Dotnet.WorkspaceExplorer.Rpc
 open Dotnet.WorkspaceExplorer.Solutions
@@ -49,6 +50,13 @@ type internal WorkspaceTemplateBinding =
 
 [<RequireQualifiedAccess>]
 module internal WorkspaceTemplateCatalog =
+    type private TemplateCacheRead =
+        | Found of byte array
+        | Missing
+        | Unavailable
+
+    let private cacheInitialization = new SemaphoreSlim(1, 1)
+
     let private invalid code message = RpcErrors.create code message None
 
     let private tryProperty (name: string) (element: JsonElement) =
@@ -132,6 +140,47 @@ module internal WorkspaceTemplateCatalog =
         |> Option.filter (String.IsNullOrWhiteSpace >> not)
         |> Option.defaultWith (fun () ->
             Environment.GetFolderPath Environment.SpecialFolder.UserProfile)
+
+    let private readCacheAsync path (cancellationToken: CancellationToken) =
+        task {
+            try
+                let! bytes = File.ReadAllBytesAsync(path, cancellationToken)
+                return Found bytes
+            with
+            | :? FileNotFoundException
+            | :? DirectoryNotFoundException -> return Missing
+            | :? IOException
+            | :? UnauthorizedAccessException -> return Unavailable
+        }
+
+    let private initializeCacheAsync path (cancellationToken: CancellationToken) =
+        task {
+            do! cacheInitialization.WaitAsync cancellationToken
+
+            try
+                match! readCacheAsync path cancellationToken with
+                | Found bytes -> return Ok bytes
+                | Unavailable -> return Error()
+                | Missing ->
+                    let! initialized =
+                        DirectCommandRunner.ExecuteAsync(
+                            [| "new"; "list" |],
+                            Human(TextWriter.Null, TextWriter.Null, false, false),
+                            cancellationToken
+                        )
+
+                    cancellationToken.ThrowIfCancellationRequested()
+
+                    if not initialized.Success then
+                        return Error()
+                    else
+                        match! readCacheAsync path cancellationToken with
+                        | Found bytes -> return Ok bytes
+                        | Missing
+                        | Unavailable -> return Error()
+            finally
+                cacheInitialization.Release() |> ignore
+        }
 
     let private parse fingerprint (document: JsonDocument) =
         match tryProperty "TemplateInfo" document.RootElement with
@@ -292,38 +341,39 @@ module internal WorkspaceTemplateCatalog =
                         )
 
                     try
-                        let! bytes = File.ReadAllBytesAsync(path, cancellationToken)
-                        let fingerprint = SHA256.HashData bytes |> Convert.ToHexString
+                        let! bytes =
+                            task {
+                                match! readCacheAsync path cancellationToken with
+                                | Found bytes -> return Ok bytes
+                                | Missing -> return! initializeCacheAsync path cancellationToken
+                                | Unavailable -> return Error()
+                            }
 
-                        return
-                            parseBytes fingerprint bytes
-                            |> Result.map (fun entries ->
-                                { Fingerprint = fingerprint
-                                  EmptySelectionId =
-                                    selectionId
-                                        fingerprint
-                                        "workspace.empty"
-                                        "empty"
-                                        None
-                                        WorkspaceCreateKind.Empty
-                                  Entries = entries })
-                    with
-                    | :? OperationCanceledException ->
+                        match bytes with
+                        | Error() ->
+                            return
+                                Error(
+                                    invalid
+                                        "template_catalog_unavailable"
+                                        "The active SDK template catalog could not be read."
+                                )
+                        | Ok bytes ->
+                            let fingerprint = SHA256.HashData bytes |> Convert.ToHexString
+
+                            return
+                                parseBytes fingerprint bytes
+                                |> Result.map (fun entries ->
+                                    { Fingerprint = fingerprint
+                                      EmptySelectionId =
+                                        selectionId
+                                            fingerprint
+                                            "workspace.empty"
+                                            "empty"
+                                            None
+                                            WorkspaceCreateKind.Empty
+                                      Entries = entries })
+                    with :? OperationCanceledException ->
                         return Error(invalid "cancelled" "Template discovery was cancelled.")
-                    | :? IOException ->
-                        return
-                            Error(
-                                invalid
-                                    "template_catalog_unavailable"
-                                    "The active SDK template catalog could not be read."
-                            )
-                    | :? UnauthorizedAccessException ->
-                        return
-                            Error(
-                                invalid
-                                    "template_catalog_unavailable"
-                                    "The active SDK template catalog could not be read."
-                            )
         }
 
     let find selectionId catalog =

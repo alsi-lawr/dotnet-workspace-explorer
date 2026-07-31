@@ -1003,7 +1003,13 @@ type ContextWorkspaceCommandTests() =
         let nestedDirectory = Path.Combine(directory, "Nested")
         let nestedExisting = Path.Combine(nestedDirectory, "Nested.cs")
         let created = Path.Combine(directory, "Created.cs")
-        let dataHome = Path.Combine(directory, "data")
+
+        let dataHome =
+            WorkspaceRpcScenario.temporaryDirectory "context-workspace-command-data-home"
+
+        let cliHome =
+            WorkspaceRpcScenario.temporaryDirectory "context-workspace-command-cli-home"
+
         let model = SolutionModel()
         model.AddProject("Demo.csproj", "Demo", null) |> ignore
         model.AddBuildType "Debug"
@@ -1034,7 +1040,10 @@ type ContextWorkspaceCommandTests() =
               "unknown-context-target" ]
 
         use child =
-            WorkspaceRpcScenario.startPipeWithDataHome "solution" solution (Some dataHome)
+            WorkspaceRpcScenario.startPipeWithEnvironment
+                "solution"
+                solution
+                [ "DOTNET_CLI_HOME", cliHome; "XDG_DATA_HOME", dataHome ]
 
         try
             WorkspaceRpcScenario.send
@@ -1093,7 +1102,7 @@ type ContextWorkspaceCommandTests() =
 
             (childrenError.IsNone) |> should equal true
 
-            let revision =
+            let mutable revision =
                 WorkspaceRpcScenario.field "revision" projectChildren
                 |> RpcValue.requireInteger "revision"
 
@@ -1171,9 +1180,13 @@ type ContextWorkspaceCommandTests() =
                             [ "targetNodeId", RpcValue.String targetId
                               "expectedRevision", RpcValue.Integer revision ]))
 
-                let dependencyOptionsError, dependencyOptions =
-                    WorkspaceRpcScenario.readFrame child
-                    |> WorkspaceRpcScenario.response (requestId + 10u)
+                let (dependencyOptionsError, dependencyOptions), observedRevision, _ =
+                    WorkspaceRpcScenario.responseAfterWorkspaceNotifications
+                        child
+                        (requestId + 10u)
+                        revision
+
+                revision <- observedRevision
 
                 (dependencyOptionsError.IsNone) |> should equal true
 
@@ -1192,9 +1205,13 @@ type ContextWorkspaceCommandTests() =
                             methodName
                             parameters)
 
-                    let error, _ =
-                        WorkspaceRpcScenario.readFrame child
-                        |> WorkspaceRpcScenario.response (requestId + requestOffset)
+                    let (error, _), observedRevision, _ =
+                        WorkspaceRpcScenario.responseAfterWorkspaceNotifications
+                            child
+                            (requestId + requestOffset)
+                            revision
+
+                    revision <- observedRevision
 
                     (error.Value.Code) |> should equal ("not_found")
 
@@ -1771,3 +1788,9 @@ type ContextWorkspaceCommandTests() =
 
             if Directory.Exists directory then
                 Directory.Delete(directory, true)
+
+            if Directory.Exists cliHome then
+                Directory.Delete(cliHome, true)
+
+            if Directory.Exists dataHome then
+                Directory.Delete(dataHome, true)
