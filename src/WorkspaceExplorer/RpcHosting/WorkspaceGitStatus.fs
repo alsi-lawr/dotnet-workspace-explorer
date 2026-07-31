@@ -69,6 +69,7 @@ type internal WorkspaceGitStatus(workspacePath: string) =
                                               "--porcelain=v1"
                                               "-z"
                                               "--untracked-files=all"
+                                              "--ignore-submodules=all"
                                               "--"
                                               "." ]
                                             outputLimit

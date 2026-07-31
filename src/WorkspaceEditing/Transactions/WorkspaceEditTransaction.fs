@@ -316,16 +316,14 @@ type WorkspaceEditTransaction
 
                    ArtifactFiles.exists source
                    && (not (ArtifactFiles.exists destination)
-                       || ArtifactFiles.isCaseOnlyRename source destination
-                       || intents.Contains WorkspaceEditIntent.Overwrite)
-                   && (not repeated || intents.Contains WorkspaceEditIntent.Overwrite)
+                       || ArtifactFiles.isCaseOnlyRename source destination)
+                   && not repeated
                | WorkspaceEditAction.Move(source, destination) ->
                    let repeated = repeatedDestination destination
 
                    ArtifactFiles.exists source
-                   && (not (ArtifactFiles.exists destination)
-                       || intents.Contains WorkspaceEditIntent.Overwrite)
-                   && (not repeated || intents.Contains WorkspaceEditIntent.Overwrite)
+                   && not (ArtifactFiles.exists destination)
+                   && not repeated
                | WorkspaceEditAction.Copy(source, destination) ->
                    let repeated = repeatedDestination destination
 
@@ -454,7 +452,7 @@ type WorkspaceEditTransaction
                             if fingerprint path <> expected then
                                 invalidOp message
 
-                        let commitStaged stage destination =
+                        let commitReplacing stage destination =
                             if ArtifactFiles.exists destination then
                                 let backup = ArtifactFiles.temporaryBeside destination "rollback"
                                 cleanup.Add backup
@@ -507,6 +505,14 @@ type WorkspaceEditTransaction
 
                                 $"remove {destination}", fun () -> ArtifactFiles.remove destination
 
+                        let commitNew stage destination =
+                            if ArtifactFiles.exists destination then
+                                invalidOp "The physical destination appeared during execution."
+
+                            ArtifactFiles.move stage destination
+
+                            $"remove {destination}", fun () -> ArtifactFiles.remove destination
+
                         try
                             let projectDirectory =
                                 request.Targets
@@ -556,7 +562,7 @@ type WorkspaceEditTransaction
                                     cleanup.Add stage
                                     File.WriteAllBytes(stage, contents)
                                     let expected = fingerprint stage
-                                    reversals.Insert(0, commitStaged stage destination)
+                                    reversals.Insert(0, commitReplacing stage destination)
 
                                     verifyFingerprint
                                         expected
@@ -568,7 +574,7 @@ type WorkspaceEditTransaction
                                     cleanup.Add stage
                                     File.WriteAllBytes(stage, contents)
                                     let expected = fingerprint stage
-                                    reversals.Insert(0, commitStaged stage destination)
+                                    reversals.Insert(0, commitReplacing stage destination)
 
                                     verifyFingerprint
                                         expected
@@ -584,21 +590,16 @@ type WorkspaceEditTransaction
                                     cleanup.Add temporary
                                     ArtifactFiles.move source temporary
 
-                                    let _, restoreDestination =
-                                        try
-                                            commitStaged temporary destination
-                                        with _ ->
-                                            ArtifactFiles.move temporary source
-                                            reraise ()
+                                    try
+                                        commitNew temporary destination |> ignore
+                                    with _ ->
+                                        ArtifactFiles.move temporary source
+                                        reraise ()
 
                                     reversals.Insert(
                                         0,
                                         ($"restore rename from {destination} to {source}",
-                                         fun () ->
-                                             ArtifactFiles.move destination source
-
-                                             if not caseOnly then
-                                                 restoreDestination ())
+                                         fun () -> ArtifactFiles.move destination source)
                                     )
 
                                     verifyFingerprint
@@ -613,16 +614,17 @@ type WorkspaceEditTransaction
                                     && Directory.Exists source
                                     ->
                                     let expected = fingerprint source
-                                    cleanup.Add destination
+                                    let stage = ArtifactFiles.temporaryBeside destination "stage"
+                                    cleanup.Add stage
 
-                                    ArtifactFiles.copyNoFollow source destination
+                                    ArtifactFiles.copyNoFollow source stage
 
                                     verifyFingerprint
                                         expected
-                                        destination
+                                        stage
                                         "The staged project directory did not verify."
 
-                                    cleanup.Remove destination |> ignore
+                                    commitNew stage destination |> ignore
 
                                     reversals.Insert(
                                         0,
@@ -658,22 +660,19 @@ type WorkspaceEditTransaction
                                         then
                                             invalidOp "The staged move did not verify."
 
-                                    let _, restoreDestination =
-                                        try
-                                            commitStaged stage destination
-                                        with _ ->
-                                            if renamed && ArtifactFiles.exists stage then
-                                                ArtifactFiles.move stage source
+                                    try
+                                        commitNew stage destination |> ignore
+                                    with _ ->
+                                        if renamed && ArtifactFiles.exists stage then
+                                            ArtifactFiles.move stage source
 
-                                            reraise ()
+                                        reraise ()
 
                                     if renamed then
                                         reversals.Insert(
                                             0,
                                             ($"restore move from {destination} to {source}",
-                                             fun () ->
-                                                 ArtifactFiles.move destination source
-                                                 restoreDestination ())
+                                             fun () -> ArtifactFiles.move destination source)
                                         )
                                     else
                                         try
@@ -692,8 +691,7 @@ type WorkspaceEditTransaction
                                              + $"to {source}",
                                              fun () ->
                                                  ArtifactFiles.remove source
-                                                 ArtifactFiles.copyNoFollow destination source
-                                                 restoreDestination ())
+                                                 ArtifactFiles.copyNoFollow destination source)
                                         )
                                 | WorkspaceEditAction.Copy(source, destination) ->
                                     let stage = ArtifactFiles.temporaryBeside destination "stage"
@@ -706,19 +704,16 @@ type WorkspaceEditTransaction
                                         stage
                                         "The staged copy did not verify."
 
-                                    let _, restoreDestination =
-                                        try
-                                            commitStaged stage destination
-                                        with _ ->
-                                            ArtifactFiles.remove stage
-                                            reraise ()
+                                    try
+                                        commitNew stage destination |> ignore
+                                    with _ ->
+                                        ArtifactFiles.remove stage
+                                        reraise ()
 
                                     reversals.Insert(
                                         0,
                                         ($"remove copy {destination}",
-                                         fun () ->
-                                             ArtifactFiles.remove destination
-                                             restoreDestination ())
+                                         fun () -> ArtifactFiles.remove destination)
                                     )
 
                                     verifyFingerprint

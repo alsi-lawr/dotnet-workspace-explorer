@@ -299,6 +299,59 @@ type WorkspaceGitStatusTests() =
                 WorkspaceRpcScenario.disposeProcess child)
 
     [<Fact>]
+    member _.``Git status ignores a dirty nested repository recorded as a submodule``() =
+        WorkspaceGitStatusScenario.withRepository (fun directory solution _ ->
+            let nested = Path.Combine(directory, "Nested")
+            Directory.CreateDirectory nested |> ignore
+            WorkspaceGitStatusScenario.runGit nested [ "init"; "--quiet" ]
+
+            WorkspaceGitStatusScenario.runGit
+                nested
+                [ "config"; "user.email"; "test@example.invalid" ]
+
+            WorkspaceGitStatusScenario.runGit nested [ "config"; "user.name"; "Test" ]
+            let nestedFile = Path.Combine(nested, "Nested.cs")
+            File.WriteAllText(nestedFile, "class Nested {}")
+            WorkspaceGitStatusScenario.runGit nested [ "add"; "." ]
+
+            WorkspaceGitStatusScenario.runGit
+                nested
+                [ "commit"; "--quiet"; "-m"; "nested baseline" ]
+
+            WorkspaceGitStatusScenario.runGit directory [ "add"; "Nested" ]
+            WorkspaceGitStatusScenario.runGit directory [ "commit"; "--quiet"; "-m"; "add nested" ]
+            File.AppendAllText(nestedFile, "\n// dirty\n")
+            use child = WorkspaceRpcScenario.startWorkspaceRpc "git-status-submodule" solution
+
+            try
+                WorkspaceRpcScenario.send
+                    child
+                    false
+                    (WorkspaceRpcScenario.request
+                        1u
+                        "initialize"
+                        (WorkspaceGitStatusScenario.initialize [ "workspace.git.status" ]))
+
+                WorkspaceRpcScenario.readFrame child
+                |> WorkspaceRpcScenario.response 1u
+                |> fst
+                |> should equal None
+
+                let error, result = WorkspaceGitStatusScenario.request child 2u 0L
+                error |> should equal None
+
+                WorkspaceRpcScenario.field "available" result
+                |> should equal (RpcValue.Boolean true)
+
+                WorkspaceRpcScenario.field "decorations" result
+                |> RpcValue.requireArray "decorations"
+                |> should be Empty
+
+                WorkspaceRpcScenario.shutdown child 99u
+            finally
+                WorkspaceRpcScenario.disposeProcess child)
+
+    [<Fact>]
     member _.``Git status is deterministic revisioned and gives added state precedence``() =
         WorkspaceGitStatusScenario.withRepository (fun directory solution project ->
             File.AppendAllText(project, "\n<!-- changed -->\n")

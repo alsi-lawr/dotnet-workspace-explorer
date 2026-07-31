@@ -78,8 +78,10 @@ type ArtifactEditingTests() =
         let root = WorkspaceEditScenario.directory "filesystem-case-destinations"
 
         try
-            let existing = Path.Combine(root, "Existing.cs")
-            let caseVariant = Path.Combine(root, "existing.cs")
+            let numericParent = Path.Combine(root, "12345")
+            Directory.CreateDirectory numericParent |> ignore
+            let existing = Path.Combine(numericParent, "Existing.cs")
+            let caseVariant = Path.Combine(numericParent, "existing.cs")
             File.WriteAllText(existing, "existing")
 
             let identitiesMatch =
@@ -88,8 +90,8 @@ type ArtifactEditingTests() =
             let variantExists = ArtifactFiles.exists caseVariant
             identitiesMatch |> should equal variantExists
 
-            let first = Path.Combine(root, "First.cs")
-            let second = Path.Combine(root, "Second.cs")
+            let first = Path.Combine(numericParent, "First.cs")
+            let second = Path.Combine(numericParent, "Second.cs")
             File.WriteAllText(first, "first")
             File.WriteAllText(second, "second")
 
@@ -101,7 +103,8 @@ type ArtifactEditingTests() =
                     (WorkspaceEditScenario.RefusingTrash "unused")
 
             let destinations =
-                [ Path.Combine(root, "Output.cs"); Path.Combine(root, "output.cs") ]
+                [ Path.Combine(numericParent, "Output.cs")
+                  Path.Combine(numericParent, "output.cs") ]
 
             let request =
                 WorkspaceEditScenario.request [] ([ first; second ] @ destinations) [] 0L
@@ -124,6 +127,58 @@ type ArtifactEditingTests() =
                         failure
         finally
             Directory.Delete(root, true)
+
+    [<Fact>]
+    member _.``physical copy rename and move reject a destination introduced before staged commit``
+        ()
+        =
+        let run name action =
+            let root = WorkspaceEditScenario.directory $"physical-{name}-commit-collision"
+
+            try
+                let source = Path.Combine(root, "Source.cs")
+                let destination = Path.Combine(root, "Destination.cs")
+                File.WriteAllText(source, "source")
+
+                let coordinator =
+                    WorkspaceEditScenario.coordinator
+                        root
+                        TimeProvider.System
+                        (fun () -> WorkspaceRevision.Create 0L)
+                        (WorkspaceEditScenario.RefusingTrash "unused")
+
+                let request =
+                    WorkspaceEditScenario.folderRequest
+                        "project.folder.new"
+                        [ source; destination; root ]
+                        [ WorkspaceEditScenario.argument "path" destination ]
+
+                let actions = [ action source destination ]
+                let preview = WorkspaceEditScenario.preview coordinator request actions
+
+                match
+                    coordinator.Execute(
+                        request,
+                        actions,
+                        preview.Confirmation,
+                        CancellationToken.None
+                    )
+                with
+                | Success(RolledBack(Internal _)) -> ()
+                | outcome ->
+                    failwithf
+                        "Expected %s to reject the destination created during execution: %A"
+                        name
+                        outcome
+
+                File.ReadAllText source |> should equal "source"
+                ArtifactFiles.exists destination |> should equal false
+            finally
+                Directory.Delete(root, true)
+
+        run "copy" (fun source destination -> WorkspaceEditAction.Copy(source, destination))
+        run "rename" (fun source destination -> WorkspaceEditAction.Rename(source, destination))
+        run "move" (fun source destination -> WorkspaceEditAction.Move(source, destination))
 
     [<Fact>]
     member _.``file replacement followed by a collision-safe rename persists content and cleans staging artifacts``

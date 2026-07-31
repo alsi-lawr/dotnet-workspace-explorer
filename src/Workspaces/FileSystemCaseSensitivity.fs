@@ -26,7 +26,7 @@ type FileSystemCaseSensitivity =
 
 [<AbstractClass; Sealed>]
 type FileSystemCaseSensitivityDetector private () =
-    /// Detects case comparison behaviour using the resolved, existing target itself.
+    /// Detects case comparison behaviour from existing entries without creating probe artifacts.
     static member DetectFromExistingPath(existingPath: string) =
         existingPath |> WorkspaceValue.nonEmpty (nameof existingPath) |> ignore
 
@@ -35,10 +35,7 @@ type FileSystemCaseSensitivityDetector private () =
         if not (File.Exists fullPath || Directory.Exists fullPath) then
             invalidArg (nameof existingPath) "Case semantics require an existing filesystem path."
 
-        let name =
-            Path.GetFileName fullPath |> Option.ofObj |> Option.defaultValue String.Empty
-
-        let alternateName =
+        let alternateName (name: string) =
             match name |> Seq.tryFindIndex Char.IsLetter with
             | Some index ->
                 let characters = name.ToCharArray()
@@ -53,11 +50,12 @@ type FileSystemCaseSensitivityDetector private () =
                 Some(new String(characters))
             | None -> None
 
-        match alternateName with
-        | Some alternate when alternate <> name ->
-            match Path.GetDirectoryName fullPath |> Option.ofObj with
-            | None -> FileSystemCaseSensitivity.Sensitive
-            | Some parent ->
+        let detect (candidate: string) =
+            let name =
+                Path.GetFileName candidate |> Option.ofObj |> Option.defaultValue String.Empty
+
+            match alternateName name, Path.GetDirectoryName candidate |> Option.ofObj with
+            | Some alternate, Some parent when alternate <> name ->
                 let alternatePath = Path.Combine(parent, alternate)
 
                 if File.Exists alternatePath || Directory.Exists alternatePath then
@@ -73,9 +71,40 @@ type FileSystemCaseSensitivityDetector private () =
                         |> Seq.length
 
                     if matchingEntries > 1 then
-                        FileSystemCaseSensitivity.Sensitive
+                        Some FileSystemCaseSensitivity.Sensitive
                     else
-                        FileSystemCaseSensitivity.Insensitive
+                        Some FileSystemCaseSensitivity.Insensitive
                 else
-                    FileSystemCaseSensitivity.Sensitive
-        | _ -> FileSystemCaseSensitivity.Sensitive
+                    Some FileSystemCaseSensitivity.Sensitive
+            | _ -> None
+
+        let containingDirectory =
+            if Directory.Exists fullPath then
+                fullPath
+            else
+                Path.GetDirectoryName fullPath |> Option.ofObj |> Option.defaultValue fullPath
+
+        let children =
+            try
+                Directory.EnumerateFileSystemEntries containingDirectory |> Seq.toArray
+            with
+            | :? IOException
+            | :? UnauthorizedAccessException -> Array.empty
+
+        let rec ancestors (candidate: string) =
+            seq {
+                yield candidate
+
+                match Path.GetDirectoryName candidate |> Option.ofObj with
+                | Some parent when parent <> candidate -> yield! ancestors parent
+                | _ -> ()
+            }
+
+        seq {
+            yield fullPath
+            yield! children
+            yield! ancestors containingDirectory
+        }
+        |> Seq.distinct
+        |> Seq.tryPick detect
+        |> Option.defaultValue FileSystemCaseSensitivity.Sensitive
