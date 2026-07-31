@@ -52,6 +52,7 @@ module WorkspaceRpcResponses =
         | WorkspaceNodeKind.ProjectFile -> "projectFile"
         | WorkspaceNodeKind.DependencyContainer -> "dependencyContainer"
         | WorkspaceNodeKind.Dependency -> "dependency"
+        | WorkspaceNodeKind.DependencyProperty -> "dependencyProperty"
         | _ -> "unknown"
 
     let private loadState =

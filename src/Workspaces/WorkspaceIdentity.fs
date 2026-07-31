@@ -26,6 +26,7 @@ type WorkspaceNodeKind =
     | ProjectFile = 9
     | DependencyContainer = 10
     | Dependency = 11
+    | DependencyProperty = 12
 
 type WorkspacePath private (value: string) =
     member _.Value = value

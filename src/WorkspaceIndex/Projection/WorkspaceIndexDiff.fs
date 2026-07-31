@@ -302,6 +302,7 @@ module internal WorkspaceIndexDiff =
                 || node.Kind = WorkspaceNodeKind.ProjectFile
                 || node.Kind = WorkspaceNodeKind.DependencyContainer
                 || node.Kind = WorkspaceNodeKind.Dependency
+                || node.Kind = WorkspaceNodeKind.DependencyProperty
             | Removed(nodeId, _, _) ->
                 match oldKinds.TryGetValue nodeId with
                 | true, kind ->
@@ -309,6 +310,7 @@ module internal WorkspaceIndexDiff =
                     || kind = WorkspaceNodeKind.ProjectFile
                     || kind = WorkspaceNodeKind.DependencyContainer
                     || kind = WorkspaceNodeKind.Dependency
+                    || kind = WorkspaceNodeKind.DependencyProperty
                 | _ -> false
             | Moved(nodeId, _, _, _, _) ->
                 match oldKinds.TryGetValue nodeId with
@@ -317,6 +319,7 @@ module internal WorkspaceIndexDiff =
                     || kind = WorkspaceNodeKind.ProjectFile
                     || kind = WorkspaceNodeKind.DependencyContainer
                     || kind = WorkspaceNodeKind.Dependency
+                    || kind = WorkspaceNodeKind.DependencyProperty
                 | _ -> false
 
         { delta with

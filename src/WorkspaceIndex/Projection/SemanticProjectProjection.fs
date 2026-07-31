@@ -22,7 +22,8 @@ type private SemanticFolder =
 type private DependencyCandidate =
     { Identity: string
       Name: string
-      CategoryOrder: int }
+      CategoryOrder: int
+      Details: DependencyDetail array }
 
 module internal SemanticProjectProjection =
     let private fileItemTypes =
@@ -179,7 +180,10 @@ module internal SemanticProjectProjection =
             |> Seq.tryFind (fun candidate ->
                 comparer.Equals(candidate.Path.AbsolutePath.Value, path))
 
-        let projectDependency (reference: EvaluatedReference) =
+        let projectDependency
+            (dimension: ProjectEvaluationDimension)
+            (reference: EvaluatedReference)
+            =
             let resolved = reference.ResolvedPath |> Option.ofObj
 
             let target =
@@ -195,7 +199,13 @@ module internal SemanticProjectProjection =
                 |> Option.bind (fun path -> projectByPath path.Value)
                 |> Option.map _.Node.Name
                 |> Option.defaultWith (fun () -> dependencyName reference.Include resolved)
-              CategoryOrder = 0 }
+              CategoryOrder = 0
+              Details =
+                DependencyDetails.reference
+                    DependencyReferenceKind.Project
+                    reference.Include
+                    resolved
+                    dimension }
 
         let solutionDependencies =
             workspace.Contents.Dependencies
@@ -206,13 +216,14 @@ module internal SemanticProjectProjection =
             |> Seq.map (fun target ->
                 { Identity = $"project:{canonicalPath insensitive target.Path.AbsolutePath.Value}"
                   Name = target.Node.Name
-                  CategoryOrder = 0 })
+                  CategoryOrder = 0
+                  Details = DependencyDetails.project target.Path.AbsolutePath.Value })
 
         let evaluated =
             snapshot.Dimensions
             |> Seq.collect (fun dimension ->
                 seq {
-                    yield! dimension.ProjectReferences |> Seq.map projectDependency
+                    yield! dimension.ProjectReferences |> Seq.map (projectDependency dimension)
 
                     yield!
                         dimension.Packages
@@ -226,7 +237,8 @@ module internal SemanticProjectProjection =
                                     package.Id
                                 else
                                     $"{package.Id} ({version})"
-                              CategoryOrder = 1 })
+                              CategoryOrder = 1
+                              Details = DependencyDetails.package package dimension })
 
                     yield!
                         dimension.References
@@ -241,7 +253,13 @@ module internal SemanticProjectProjection =
 
                             { Identity = $"assembly:{canonicalPath insensitive target}"
                               Name = dependencyName reference.Include resolved
-                              CategoryOrder = 2 })
+                              CategoryOrder = 2
+                              Details =
+                                DependencyDetails.reference
+                                    DependencyReferenceKind.Assembly
+                                    reference.Include
+                                    resolved
+                                    dimension })
 
                     yield!
                         dimension.Analyzers
@@ -256,7 +274,13 @@ module internal SemanticProjectProjection =
 
                             { Identity = $"analyzer:{canonicalPath insensitive target}"
                               Name = dependencyName analyzer.Include resolved
-                              CategoryOrder = 3 })
+                              CategoryOrder = 3
+                              Details =
+                                DependencyDetails.reference
+                                    DependencyReferenceKind.Analyzer
+                                    analyzer.Include
+                                    resolved
+                                    dimension })
                 })
 
         Seq.append solutionDependencies evaluated
@@ -264,7 +288,10 @@ module internal SemanticProjectProjection =
         |> Seq.map (fun (_, candidates) ->
             candidates
             |> Seq.sortBy (fun candidate ->
-                candidate.CategoryOrder, candidate.Name, candidate.Identity)
+                -candidate.Details.Length,
+                candidate.CategoryOrder,
+                candidate.Name,
+                candidate.Identity)
             |> Seq.head)
         |> Seq.sortBy (fun candidate -> candidate.CategoryOrder, candidate.Name, candidate.Identity)
         |> Seq.toArray
@@ -410,6 +437,29 @@ module internal SemanticProjectProjection =
                     IndexedNodeKey [ "dependency"; project.Node.Id.Value; dependency.Identity ]
                   PlacementNode = node
                   ParentNodeId = container.Id
-                  SiblingOrder = [ $"{index:D8}"; dependency.Identity ] })
+                  SiblingOrder = [ $"{index:D8}"; dependency.Identity ] }
+
+            dependency.Details
+            |> Seq.iteri (fun detailIndex detailValue ->
+                let detailNode =
+                    WorkspaceNode.Create(
+                        descriptor,
+                        WorkspaceNodeKind.DependencyProperty,
+                        WorkspaceNodeIdentity.Create
+                            $"dependency:{project.Node.Identity.Value}:{dependency.Identity}:property:{detailValue.DetailId}",
+                        $"{detailValue.Label}: {detailValue.Value}",
+                        WorkspaceCapabilityProfile.ReadOnly
+                    )
+
+                placements.Add
+                    { PlacementKey =
+                        IndexedNodeKey
+                            [ "dependency-property"
+                              project.Node.Id.Value
+                              dependency.Identity
+                              detailValue.DetailId ]
+                      PlacementNode = detailNode
+                      ParentNodeId = node.Id
+                      SiblingOrder = [ $"{detailIndex:D8}"; detailValue.DetailId ] }))
 
         placements.ToArray()

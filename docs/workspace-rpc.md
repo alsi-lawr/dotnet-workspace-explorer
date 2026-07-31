@@ -29,13 +29,22 @@ The v1.0 allowlist is exactly:
 `workspace/root` returns exactly one `workspace` node named from the opened workspace.
 `workspace/children` pages a parent by node ID, page size, and continuation token. The semantic
 hierarchy uses `solutionFolder`, `solutionItem`, and `project` beneath that root. Hydrated projects
-contain `projectFolder`, `projectFile`, `dependencyContainer`, and `dependency` nodes; evaluated
-properties, configurations, platforms, and arbitrary MSBuild items are not navigation rows.
+contain `projectFolder`, `projectFile`, `dependencyContainer`, `dependency`, and
+`dependencyProperty` nodes. Dependency properties are compact read-only reference details such as
+type, package or assembly version, assembly identity, runtime version, resolved path, and available
+MSBuild reference flags. Missing values are omitted. Evaluated project properties, configurations,
+platforms, and arbitrary MSBuild items are not navigation rows.
 `workspace/export/start` emits the same semantic node ID/kind set as a flat stream without parent or
 index metadata. `workspace/refresh` compares or refreshes a revision. `workspace/delta` and reset
 notifications let clients reconcile change instead of assuming a cached tree remains current.
 
-Each public node carries its workspace ID and revision, plus `id`, `kind`, `name`, `loadState`, and `capabilities`. Capabilities determine which commands a node may expose. The node shape has no general properties field; property mutation is exposed by descriptors such as `project.property.set`. Filtered and `.slnf` workspaces can contain read-only/excluded views. Clients must use revisions and must tolerate paging, export chunks, and reset notifications.
+Each public node carries its workspace ID and revision, plus `id`, `kind`, `name`, `loadState`, and
+`capabilities`. Capabilities determine which commands a node may expose. The node shape has no
+general properties field; dependency property values use read-only node names and may include a
+core-resolved local path. Other ordinary nodes remain path-free. Property mutation is exposed by
+descriptors such as `project.property.set`. Filtered and `.slnf` workspaces can contain
+read-only/excluded views. Clients must use revisions and must tolerate paging, export chunks, and
+reset notifications.
 
 `workspace/commands/list` discovers descriptors, `workspace/commands/describe` obtains one descriptor,
 and `workspace/commands/preview` creates a revision-bound plan. A mutating or destructive
@@ -65,9 +74,9 @@ change solution membership, and solution-item deletion changes membership and us
 
 Project contexts offer an empty file, matching or language-neutral item templates, and installed
 project templates. Workspace roots and solution folders/items offer installed project templates.
-Dependencies inherit their nearest project for New but cannot be deleted. Filtered placeholders
-and non-navigation rows reject. `.slnf` workspaces may read options but cannot preview or execute
-these write commands.
+Dependencies and dependency properties inherit their nearest project for New but cannot be
+deleted. Filtered placeholders and non-navigation rows reject. `.slnf` workspaces may read options
+but cannot preview or execute these write commands.
 
 Every command preview contains exactly `confirmationToken`, `expiresAtUtc`, `summary`, and
 `effects`. Each effect contains only `operation`, `target`, and boolean `recursive`. Operations are

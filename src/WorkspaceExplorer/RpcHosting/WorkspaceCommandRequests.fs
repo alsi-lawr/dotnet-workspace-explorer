@@ -190,7 +190,8 @@ module internal WorkspaceCommandRequests =
                     | WorkspaceNodeKind.ProjectFolder
                     | WorkspaceNodeKind.ProjectFile
                     | WorkspaceNodeKind.DependencyContainer
-                    | WorkspaceNodeKind.Dependency ->
+                    | WorkspaceNodeKind.Dependency
+                    | WorkspaceNodeKind.DependencyProperty ->
                         let! catalog =
                             WorkspaceTemplateCatalog.readAsync workspace requestCancellationToken
 

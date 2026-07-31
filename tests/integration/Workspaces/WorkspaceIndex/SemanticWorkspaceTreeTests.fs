@@ -25,6 +25,12 @@ type SemanticWorkspaceTreeTests() =
             let libraryPath = Path.Combine(directory, "Library.csproj")
             let visualBasicPath = Path.Combine(directory, "VisualBasic.vbproj")
             let solutionItem = Path.Combine(directory, "Directory.Build.props")
+            let testAssemblyPath = typeof<SemanticWorkspaceTreeTests>.Assembly.Location
+            let packageRoot = Path.Combine(directory, "packages")
+
+            Directory.CreateDirectory(Path.Combine(packageRoot, "newtonsoft.json", "13.0.3"))
+            |> ignore
+
             let model = SolutionModel()
             let folder = model.AddFolder "/src/"
             folder.AddFile(Path.GetFileName solutionItem)
@@ -83,14 +89,30 @@ type SemanticWorkspaceTreeTests() =
                       item 6 "None" "artifacts/Generated.txt" []
                       item 7 "EmbeddedResource" "bin/Generated.resources" []
                       item 8 "Compile" "custom-intermediate/Generated.fs" []
-                      item 9 "Custom" "Ignored.custom" [] ]
+                      item 9 "Custom" "Ignored.custom" []
+                      item
+                          10
+                          "Reference"
+                          "TestAssembly"
+                          [ EvaluatedMetadata("Aliases", "global")
+                            EvaluatedMetadata("Private", "true")
+                            EvaluatedMetadata("EmbedInteropTypes", "false")
+                            EvaluatedMetadata("SpecificVersion", "true") ]
+                      item
+                          11
+                          "PackageReference"
+                          "Newtonsoft.Json"
+                          [ EvaluatedMetadata("PrivateAssets", "all")
+                            EvaluatedMetadata("IncludeAssets", "runtime")
+                            EvaluatedMetadata("ExcludeAssets", "build") ] ]
 
             let properties =
                 ImmutableArray.CreateRange
                     [ EvaluatedProperty("BaseIntermediateOutputPath", "obj/")
                       EvaluatedProperty("IntermediateOutputPath", "custom-intermediate/")
                       EvaluatedProperty("BaseOutputPath", "bin/")
-                      EvaluatedProperty("OutputPath", "artifacts/") ]
+                      EvaluatedProperty("OutputPath", "artifacts/")
+                      EvaluatedProperty("NuGetPackageRoot", packageRoot) ]
 
             let outerDimension items =
                 ProjectEvaluationDimension(
@@ -100,7 +122,12 @@ type SemanticWorkspaceTreeTests() =
                     ImmutableArray.Create(
                         EvaluatedReference("Library.csproj", path "Library.csproj")
                     ),
-                    ImmutableArray.Create(EvaluatedReference("System.Xml", null)),
+                    ImmutableArray.CreateRange
+                        [ EvaluatedReference("System.Xml", null)
+                          EvaluatedReference(
+                              "TestAssembly",
+                              WorkspaceArtifactPath.Create testAssemblyPath
+                          ) ],
                     ImmutableArray.CreateRange
                         [ EvaluatedPackage("Newtonsoft.Json", "13.0.3")
                           EvaluatedPackage("Newtonsoft.Json", "14.0.1") ],
@@ -235,8 +262,54 @@ type SemanticWorkspaceTreeTests() =
                 [| "Library"
                    "Newtonsoft.Json (13.0.3)"
                    "Newtonsoft.Json (14.0.1)"
+                   "Dotnet.WorkspaceExplorer.Workspaces.IntegrationTests"
                    "System.Xml"
                    "Analyzer.dll" |]
+
+            let packageDependency =
+                children dependencies.Node.Id
+                |> Array.find (fun value -> value.Node.Name = "Newtonsoft.Json (13.0.3)")
+
+            let expectedPackagePath = Path.Combine(packageRoot, "newtonsoft.json", "13.0.3")
+
+            (children packageDependency.Node.Id |> Array.map _.Node.Name)
+            |> should
+                equal
+                [| "Type: Package"
+                   "ID: Newtonsoft.Json"
+                   "Version: 13.0.3"
+                   $"Path: {expectedPackagePath}"
+                   "Private Assets: all"
+                   "Include Assets: runtime"
+                   "Exclude Assets: build" |]
+
+            let assemblyDependency =
+                children dependencies.Node.Id
+                |> Array.find (fun value ->
+                    value.Node.Name = "Dotnet.WorkspaceExplorer.Workspaces.IntegrationTests")
+
+            let assemblyDetails = children assemblyDependency.Node.Id |> Array.map _.Node.Name
+
+            for expected in
+                [ "Type: Assembly"
+                  "Resolved: True"
+                  $"Path: {testAssemblyPath}"
+                  "Identity: Dotnet.WorkspaceExplorer.Workspaces.IntegrationTests"
+                  "Culture: neutral"
+                  "Strong Name: False"
+                  "Aliases: global"
+                  "Copy Local: True"
+                  "Embed Interop Types: False"
+                  "Specific Version: True" ] do
+                (assemblyDetails) |> should contain (expected)
+
+            (assemblyDetails
+             |> Array.exists (_.StartsWith("Version: ", StringComparison.Ordinal)))
+            |> should equal true
+
+            (assemblyDetails
+             |> Array.exists (_.StartsWith("Runtime Version: ", StringComparison.Ordinal)))
+            |> should equal true
 
             (placements)
             |> Seq.exists (fun placement ->

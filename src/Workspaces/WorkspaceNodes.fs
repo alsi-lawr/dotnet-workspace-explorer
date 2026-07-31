@@ -88,6 +88,7 @@ type WorkspaceNodeCapabilityPolicy private () =
             || kind = WorkspaceNodeKind.Placeholder
             || kind = WorkspaceNodeKind.DependencyContainer
             || kind = WorkspaceNodeKind.Dependency
+            || kind = WorkspaceNodeKind.DependencyProperty
             || capabilityProfile <> WorkspaceCapabilityProfile.Full
         then
             readOnly

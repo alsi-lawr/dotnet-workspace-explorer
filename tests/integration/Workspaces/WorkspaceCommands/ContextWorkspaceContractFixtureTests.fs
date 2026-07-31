@@ -176,7 +176,8 @@ type ContextWorkspaceContractFixtureTests() =
               WorkspaceNodeKind.ProjectFolder
               WorkspaceNodeKind.ProjectFile
               WorkspaceNodeKind.DependencyContainer
-              WorkspaceNodeKind.Dependency ]
+              WorkspaceNodeKind.Dependency
+              WorkspaceNodeKind.DependencyProperty ]
 
         let deleteKinds =
             [ WorkspaceNodeKind.SolutionFolder
