@@ -115,7 +115,7 @@ type WorkspaceSessionTests() =
                 ((WorkspaceRpcScenario.field "capabilities" initializeResult
                   |> RpcValue.requireArray "capabilities")
                     .Length)
-                |> should equal (4)
+                |> should equal (5)
 
                 WorkspaceRpcScenario.send
                     child

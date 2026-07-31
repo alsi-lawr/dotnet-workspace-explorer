@@ -78,6 +78,7 @@ type WorkspaceRpcInitializationTests() =
                 "test"
                 [ "workspace.root"
                   "workspace.create.options"
+                  "workspace.file.resolve"
                   "unknown.claim"
                   "workspace.operations.cancel" ]
                 (Some(
@@ -119,7 +120,10 @@ type WorkspaceRpcInitializationTests() =
         negotiated
         |> should
             equal
-            [ "workspace.create.options"; "workspace.operations.cancel"; "workspace.root" ]
+            [ "workspace.create.options"
+              "workspace.file.resolve"
+              "workspace.operations.cancel"
+              "workspace.root" ]
 
         let resultLimits = resultFields["limits"] |> RpcValue.requireMap "limits"
         (resultLimits["maxFrameBytes"]) |> should equal (RpcValue.Integer 4096L)
@@ -158,6 +162,29 @@ type WorkspaceRpcInitializationTests() =
         match children 4097L with
         | Error error -> (error.Code) |> should equal ("invalid_params")
         | result -> failwithf "oversized page should be rejected: %A" result
+
+        match
+            WorkspaceRpc.parseRequest
+                "workspace/file/resolve"
+                (Test.map
+                    [ "targetNodeId", RpcValue.String "node"
+                      "expectedRevision", RpcValue.Integer 12L ])
+        with
+        | Ok(WorkspaceRpcRequest.ResolveFile("node", 12L)) -> ()
+        | result -> failwithf "file resolve schema changed: %A" result
+
+        [ Test.map [ "targetNodeId", RpcValue.String "node" ]
+          Test.map
+              [ "targetNodeId", RpcValue.String "node"
+                "expectedRevision", RpcValue.Integer -1L ]
+          Test.map
+              [ "targetNodeId", RpcValue.String "node"
+                "expectedRevision", RpcValue.Integer 0L
+                "extra", RpcValue.Boolean true ] ]
+        |> List.iter (fun parameters ->
+            match WorkspaceRpc.parseRequest "workspace/file/resolve" parameters with
+            | Error error -> (error.Code) |> should equal ("invalid_params")
+            | result -> failwithf "invalid file resolve request was accepted: %A" result)
 
         match
             WorkspaceRpc.parseRequest

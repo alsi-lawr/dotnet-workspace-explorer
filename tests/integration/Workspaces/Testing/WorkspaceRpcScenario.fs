@@ -27,6 +27,7 @@ module internal WorkspaceRpcScenario =
               RpcValue.array
                   [ RpcValue.String "workspace.root"
                     RpcValue.String "workspace.export.start"
+                    RpcValue.String "workspace.file.resolve"
                     RpcValue.String "workspace.refresh"
                     RpcValue.String "workspace.operations.cancel"
                     RpcValue.String "unknown.claim" ]

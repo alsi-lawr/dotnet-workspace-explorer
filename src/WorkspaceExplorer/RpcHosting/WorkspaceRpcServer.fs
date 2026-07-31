@@ -176,6 +176,7 @@ module internal WorkspaceRpcServer =
                             match WorkspaceRpc.parseRequest methodName parameters with
                             | Ok WorkspaceRpcRequest.Root
                             | Ok(WorkspaceRpcRequest.Children _)
+                            | Ok(WorkspaceRpcRequest.ResolveFile _)
                             | Ok(WorkspaceRpcRequest.Refresh _)
                             | Ok(WorkspaceRpcRequest.CreateOptions _)
                             | Ok(WorkspaceRpcRequest.CommandList _)

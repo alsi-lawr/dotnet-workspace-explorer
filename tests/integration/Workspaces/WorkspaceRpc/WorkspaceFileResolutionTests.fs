@@ -1,0 +1,169 @@
+namespace Dotnet.WorkspaceExplorer.Workspaces.IntegrationTests
+
+#nowarn "3261"
+
+open System.IO
+open Microsoft.VisualStudio.SolutionPersistence.Model
+open Dotnet.WorkspaceExplorer.Rpc
+open FsUnit.Xunit
+open Xunit
+
+module private WorkspaceFileResolutionScenario =
+    type Context =
+        { Child: System.Diagnostics.Process
+          RootNodeId: string
+          SolutionItemId: string
+          SolutionItemPath: string }
+
+    let private children child requestId parentNodeId =
+        let parameters =
+            WorkspaceRpcScenario.map
+                [ "parentNodeId", RpcValue.String parentNodeId
+                  "pageSize", RpcValue.Integer 50L ]
+
+        WorkspaceRpcScenario.send
+            child
+            false
+            (WorkspaceRpcScenario.request requestId "workspace/children" parameters)
+
+        let error, result =
+            WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response requestId
+
+        error |> should equal None
+        result
+
+    let run extension action =
+        let directory = WorkspaceRpcScenario.temporaryDirectory "file-resolution"
+
+        try
+            let solution = Path.Combine(directory, "Demo" + extension)
+            let solutionItem = Path.Combine(directory, "Directory.Build.props")
+            let model = SolutionModel()
+            model.AddProject("Demo.fsproj", "Demo", null) |> ignore
+            let solutionFolder = model.AddFolder "/Solution Items/"
+            solutionFolder.AddFile(Path.GetFileName solutionItem) |> ignore
+            WorkspaceRpcScenario.writeProject (Path.Combine(directory, "Demo.fsproj"))
+            File.WriteAllText(solutionItem, "<Project />")
+            WorkspaceRpcScenario.save solution model
+            use child = WorkspaceRpcScenario.startWorkspaceRpc "file-resolution" solution
+
+            try
+                WorkspaceRpcScenario.send
+                    child
+                    false
+                    (WorkspaceRpcScenario.request 1u "initialize" WorkspaceRpcScenario.initialize)
+
+                WorkspaceRpcScenario.readFrame child
+                |> WorkspaceRpcScenario.response 1u
+                |> fst
+                |> should equal None
+
+                WorkspaceRpcScenario.send
+                    child
+                    false
+                    (WorkspaceRpcScenario.request 2u "workspace/root" RpcValue.emptyMap)
+
+                let rootError, root =
+                    WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 2u
+
+                rootError |> should equal None
+
+                let rootNodeId =
+                    WorkspaceRpcScenario.field "nodes" root
+                    |> RpcValue.requireArray "nodes"
+                    |> Seq.exactlyOne
+                    |> WorkspaceRpcScenario.field "id"
+                    |> RpcValue.requireString "id"
+
+                let solutionFolderId =
+                    children child 3u rootNodeId
+                    |> WorkspaceRpcScenario.field "nodes"
+                    |> RpcValue.requireArray "nodes"
+                    |> Seq.find (fun node ->
+                        let name = WorkspaceRpcScenario.field "name" node
+                        name = RpcValue.String "Solution Items")
+                    |> WorkspaceRpcScenario.field "id"
+                    |> RpcValue.requireString "id"
+
+                let solutionItemId =
+                    children child 4u solutionFolderId
+                    |> WorkspaceRpcScenario.field "nodes"
+                    |> RpcValue.requireArray "nodes"
+                    |> Seq.exactlyOne
+                    |> WorkspaceRpcScenario.field "id"
+                    |> RpcValue.requireString "id"
+
+                action
+                    { Child = child
+                      RootNodeId = rootNodeId
+                      SolutionItemId = solutionItemId
+                      SolutionItemPath = solutionItem }
+
+                WorkspaceRpcScenario.shutdown child 99u
+            finally
+                WorkspaceRpcScenario.disposeProcess child
+        finally
+            if Directory.Exists directory then
+                Directory.Delete(directory, true)
+
+    let resolve context requestId targetNodeId expectedRevision =
+        let parameters =
+            WorkspaceRpcScenario.map
+                [ "targetNodeId", RpcValue.String targetNodeId
+                  "expectedRevision", RpcValue.Integer expectedRevision ]
+
+        WorkspaceRpcScenario.send
+            context.Child
+            false
+            (WorkspaceRpcScenario.request requestId "workspace/file/resolve" parameters)
+
+        WorkspaceRpcScenario.readFrame context.Child
+        |> WorkspaceRpcScenario.response requestId
+
+[<Collection("Workspace scenarios")>]
+type WorkspaceFileResolutionTests() =
+    [<Theory>]
+    [<InlineData(".sln")>]
+    [<InlineData(".slnx")>]
+    member _.``should resolve an existing solution item to its core-owned absolute path``
+        (extension: string)
+        =
+        WorkspaceFileResolutionScenario.run extension (fun context ->
+            let error, result =
+                WorkspaceFileResolutionScenario.resolve context 10u context.SolutionItemId 0L
+
+            error |> should equal None
+            let fields = RpcValue.requireMap "file.resolve.result" result
+
+            fields.Keys
+            |> Seq.sort
+            |> Seq.toList
+            |> should equal [ "path"; "revision"; "targetNodeId" ]
+
+            fields["targetNodeId"] |> should equal (RpcValue.String context.SolutionItemId)
+            fields["path"] |> should equal (RpcValue.String context.SolutionItemPath)
+            fields["revision"] |> RpcValue.requireInteger "revision" |> should equal 0L)
+
+    [<Theory>]
+    [<InlineData(".sln")>]
+    [<InlineData(".slnx")>]
+    member _.``should reject a non-file workspace node when resolving a file path``
+        (extension: string)
+        =
+        WorkspaceFileResolutionScenario.run extension (fun context ->
+            let error, _ =
+                WorkspaceFileResolutionScenario.resolve context 10u context.RootNodeId 0L
+
+            error |> Option.map _.Code |> should equal (Some "invalid_params"))
+
+    [<Theory>]
+    [<InlineData(".sln")>]
+    [<InlineData(".slnx")>]
+    member _.``should reject a stale workspace revision when resolving a file path``
+        (extension: string)
+        =
+        WorkspaceFileResolutionScenario.run extension (fun context ->
+            let error, _ =
+                WorkspaceFileResolutionScenario.resolve context 10u context.SolutionItemId 1L
+
+            error |> Option.map _.Code |> should equal (Some "workspace_conflict"))

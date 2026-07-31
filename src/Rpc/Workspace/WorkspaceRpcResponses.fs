@@ -15,6 +15,7 @@ module WorkspaceRpcResponses =
             StringComparer.Ordinal,
             [ "workspace.root"
               "workspace.children"
+              "workspace.file.resolve"
               "workspace.export.start"
               "workspace.refresh"
               "workspace.delta"
@@ -131,6 +132,12 @@ module WorkspaceRpcResponses =
 
     let createOptionsResult revision (options: seq<RpcValue>) =
         map [ "revision", integer revision; "options", RpcValue.array options ]
+
+    let fileResolveResult revision targetNodeId path =
+        map
+            [ "revision", integer revision
+              "targetNodeId", text targetNodeId
+              "path", text path ]
 
     let node (workspaceId: WorkspaceId) revision (value: WorkspaceNode) =
         map

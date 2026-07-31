@@ -6,6 +6,7 @@ open Dotnet.WorkspaceExplorer.WorkspaceIndex
 
 #nowarn "3511"
 
+open System.IO
 open System.Threading.Tasks
 
 module internal WorkspaceNavigationRequests =
@@ -205,6 +206,51 @@ module internal WorkspaceNavigationRequests =
                               StopAfterResponse = false }
         }
 
+    let private dispatchResolveFile
+        (context: WorkspaceRpcContext)
+        targetNodeId
+        expectedRevision
+        cancellationToken
+        =
+        task {
+            let! resolved =
+                context.State.SemanticContextAsync(
+                    targetNodeId,
+                    Some expectedRevision,
+                    cancellationToken
+                )
+
+            match resolved with
+            | Error rpcError -> return Error rpcError
+            | Ok(revision, target) ->
+                match target.Node.Kind, target.PhysicalPath with
+                | (WorkspaceNodeKind.ProjectFile | WorkspaceNodeKind.SolutionItem), Some path when
+                    File.Exists path.Value
+                    ->
+                    return
+                        Ok
+                            { Result =
+                                WorkspaceRpcResponses.fileResolveResult
+                                    revision
+                                    target.Node.Id.Value
+                                    path.Value
+                              Notifications = []
+                              BackgroundWork = None
+                              AfterResponse = None
+                              StopAfterResponse = false }
+                | (WorkspaceNodeKind.ProjectFile | WorkspaceNodeKind.SolutionItem), _ ->
+                    return
+                        Error(
+                            RpcErrors.create "not_found" "The workspace file no longer exists." None
+                        )
+                | _ ->
+                    return
+                        Error(
+                            RpcErrors.invalidParams
+                                "The requested workspace node is not an openable file."
+                        )
+        }
+
     let private dispatchCancel (context: WorkspaceRpcContext) operationId =
         let accepted, afterResponse =
             match context.ActiveOperations.TryGetValue operationId with
@@ -243,6 +289,9 @@ module internal WorkspaceNavigationRequests =
         | WorkspaceRpcRequest.Root -> dispatchRoot context cancellationToken |> someAsync
         | WorkspaceRpcRequest.Children(parentNodeId, pageSize, continuation) ->
             dispatchChildren context parentNodeId pageSize continuation cancellationToken
+            |> someAsync
+        | WorkspaceRpcRequest.ResolveFile(targetNodeId, expectedRevision) ->
+            dispatchResolveFile context targetNodeId expectedRevision cancellationToken
             |> someAsync
         | WorkspaceRpcRequest.Refresh expectedRevision ->
             dispatchRefresh context expectedRevision cancellationToken |> someAsync
