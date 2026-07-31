@@ -6,6 +6,8 @@ open System
 open System.Collections.Generic
 open System.Diagnostics
 open System.IO
+open System.Text.Json
+open System.Text.Json.Nodes
 open System.Threading
 open Microsoft.VisualStudio.SolutionPersistence.Model
 open Microsoft.VisualStudio.SolutionPersistence.Serializer
@@ -46,15 +48,80 @@ module internal WorkspaceRpcScenario =
             + "</PropertyGroup></Project>"
         )
 
-    let temporaryDirectory name =
-        let path =
-            Path.Combine(
-                AppContext.BaseDirectory,
-                $".dotnet-workspace-explorer-{name}-{Guid.NewGuid():N}"
-            )
+    let private sdkVersion (solution: string) =
+        let start = ProcessStartInfo "dotnet"
+        start.WorkingDirectory <- Path.GetDirectoryName solution
+        start.UseShellExecute <- false
+        start.RedirectStandardOutput <- true
+        start.RedirectStandardError <- true
+        start.ArgumentList.Add "--version"
+        use child = Process.Start start
+        (child) |> should not' (be Null)
+        let output = child.StandardOutput.ReadToEnd()
+        let error = child.StandardError.ReadToEnd()
+        child.WaitForExit()
 
-        Directory.CreateDirectory path |> ignore
-        path
+        if child.ExitCode <> 0 then
+            failwithf "Could not resolve the fixture SDK: %s" error
+
+        output.Trim()
+
+    let private templateCatalogPath solution cliHome =
+        Path.Combine(
+            cliHome,
+            ".templateengine",
+            "dotnetcli",
+            sdkVersion solution,
+            "templatecache.json"
+        )
+
+    let writeTemplateCatalog (solution: string) (cliHome: string) (contents: string) =
+        let path = templateCatalogPath solution cliHome
+
+        Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+        File.WriteAllText(path, contents)
+
+    let initializeCreationTemplateCatalog (solution: string) (cliHome: string) =
+        let start = ProcessStartInfo "dotnet"
+        start.WorkingDirectory <- Path.GetDirectoryName solution
+        start.UseShellExecute <- false
+        start.RedirectStandardOutput <- true
+        start.RedirectStandardError <- true
+        start.Environment["DOTNET_CLI_HOME"] <- cliHome
+        start.ArgumentList.Add "new"
+        start.ArgumentList.Add "list"
+        use child = Process.Start start
+        (child) |> should not' (be Null)
+        let output = child.StandardOutput.ReadToEnd()
+        let error = child.StandardError.ReadToEnd()
+        child.WaitForExit()
+
+        if child.ExitCode <> 0 then
+            failwithf "Could not initialize the fixture template catalog: %s%s" output error
+
+        let path = templateCatalogPath solution cliHome
+        let root = JsonNode.Parse(File.ReadAllText path).AsObject()
+        let templates = root["TemplateInfo"].AsArray()
+
+        let selected = JsonArray()
+
+        for name in [ "Interface"; "Class Library" ] do
+            templates
+            |> Seq.filter (fun template ->
+                let tags = template["TagsCollection"]
+
+                template["Name"].GetValue<string>() = name
+                && tags["language"].GetValue<string>() = "C#")
+            |> Seq.maxBy (fun template -> template["Precedence"].GetValue<int>())
+            |> _.DeepClone()
+            |> selected.Add
+
+        root["TemplateInfo"] <- selected
+
+        File.WriteAllText(path, root.ToJsonString(JsonSerializerOptions(WriteIndented = true)))
+
+    let temporaryDirectory name =
+        DirectCommandProcess.temporaryDirectory name
 
     let rec private repositoryRoot directory =
         if File.Exists(Path.Combine(directory, "Directory.Packages.props")) then

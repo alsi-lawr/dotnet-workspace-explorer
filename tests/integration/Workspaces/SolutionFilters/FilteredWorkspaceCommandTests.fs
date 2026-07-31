@@ -312,10 +312,34 @@ type FilteredWorkspaceCommandTests() =
         try
             let solution = Path.Combine(directory, "Demo.slnx")
             let filter = Path.Combine(directory, "Demo.slnf")
+            let cliHome = Path.Combine(directory, "home")
             WorkspaceRpcScenario.save solution (SolutionModel())
             File.WriteAllText(filter, """{ "solution": { "path": "Demo.slnx" } }""")
+
+            WorkspaceRpcScenario.writeTemplateCatalog
+                solution
+                cliHome
+                """
+                {
+                  "TemplateInfo": [
+                    {
+                      "Identity": "fixture.project",
+                      "Name": "Fixture project",
+                      "ShortNameList": ["fixture"],
+                      "Precedence": 100,
+                      "TagsCollection": { "language": "C#", "type": "project" }
+                    }
+                  ]
+                }
+                """
+
             let before = File.ReadAllBytes solution
-            use child = WorkspaceRpcScenario.startWorkspaceRpc "solution" filter
+
+            use child =
+                WorkspaceRpcScenario.startPipeWithEnvironment
+                    "solution"
+                    filter
+                    [ "DOTNET_CLI_HOME", cliHome ]
 
             try
                 let initialize =

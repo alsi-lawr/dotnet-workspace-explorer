@@ -356,11 +356,10 @@ type ContextWorkspaceCommandTests() =
         ()
         =
         let runCase mode =
-            let partialRecoveryExpected = mode = "partial"
             let postactionExpected = mode = "postaction"
             let nestedProjectExpected = mode = "nested-project"
             let projectTemplateExpected = postactionExpected || nestedProjectExpected
-            let failureExpected = mode = "failure" || partialRecoveryExpected
+            let failureExpected = mode = "failure"
             let cancellationExpected = mode = "cancel"
 
             let directory =
@@ -423,8 +422,6 @@ type ContextWorkspaceCommandTests() =
                   "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_DOTNET_SDK_ROOT", sdkRoot
                   if failureExpected then
                       "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_DOTNET_FAIL_AFTER_EDIT", "true"
-                  if partialRecoveryExpected then
-                      "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_TEMPLATE_BLOCK_CLEANUP", "true"
                   if postactionExpected then
                       "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_TEMPLATE_POSTACTION", "true"
                   if nestedProjectExpected then
@@ -436,8 +433,6 @@ type ContextWorkspaceCommandTests() =
 
             use child =
                 WorkspaceRpcScenario.startPipeWithEnvironment "solution" solution environment
-
-            let mutable stagingToClean = None
 
             try
                 WorkspaceRpcScenario.send
@@ -583,16 +578,6 @@ type ContextWorkspaceCommandTests() =
                     WorkspaceRpcScenario.field "operationId" executeResult
                     |> RpcValue.requireString "operationId"
 
-                if partialRecoveryExpected then
-                    stagingToClean <-
-                        Some(
-                            Path.Combine(
-                                Path.GetTempPath(),
-                                "dotnet-workspace-explorer",
-                                operationId
-                            )
-                        )
-
                 let outcome, diagnostic =
                     if cancellationExpected then
                         DirectCommandProcess.waitForFile started
@@ -657,12 +642,7 @@ type ContextWorkspaceCommandTests() =
                     (Directory.Exists(Path.GetDirectoryName destination)) |> should equal false
                 elif failureExpected then
                     (outcome) |> should equal ("failed")
-
-                    if partialRecoveryExpected then
-                        (diagnostic.Value) |> should haveSubstring ("partial_recovery_required")
-                    else
-                        (diagnostic.Value) |> should haveSubstring ("external_tool_failed")
-
+                    (diagnostic.Value) |> should haveSubstring ("external_tool_failed")
                     (File.Exists destination) |> should equal false
                     (Directory.Exists(Path.GetDirectoryName destination)) |> should equal false
                 else
@@ -672,19 +652,6 @@ type ContextWorkspaceCommandTests() =
                 WorkspaceRpcScenario.shutdown child 8u
             finally
                 WorkspaceRpcScenario.disposeProcess child
-
-                if partialRecoveryExpected && not (OperatingSystem.IsWindows()) then
-                    stagingToClean
-                    |> Option.iter (fun staging ->
-                        if Directory.Exists staging then
-                            File.SetUnixFileMode(
-                                staging,
-                                UnixFileMode.UserRead
-                                ||| UnixFileMode.UserWrite
-                                ||| UnixFileMode.UserExecute
-                            )
-
-                            Directory.Delete(staging, true))
 
                 for path in [ started; continuePath ] do
                     if File.Exists path then
@@ -698,9 +665,6 @@ type ContextWorkspaceCommandTests() =
         runCase "cancel"
         runCase "postaction"
         runCase "nested-project"
-
-        if not (OperatingSystem.IsWindows()) then
-            runCase "partial"
 
     [<Fact>]
     member _.``a template catalog change after preview rejects execution before the child starts``
@@ -1040,6 +1004,8 @@ type ContextWorkspaceCommandTests() =
         Directory.CreateDirectory nestedDirectory |> ignore
         File.WriteAllText(nestedExisting, "internal sealed class Nested { }")
         restore project
+
+        WorkspaceRpcScenario.initializeCreationTemplateCatalog solution cliHome
 
         let workspace =
             match SolutionWorkspaceReader.OpenAsync(solution).Result with

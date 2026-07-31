@@ -56,10 +56,3 @@ module internal TemplateCreation =
                     "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_TEMPLATE_POSTACTION"
             then
                 File.WriteAllText(Path.Combine(output, "postaction.txt"), "postaction")
-
-            if
-                not (OperatingSystem.IsWindows())
-                && InvocationSettings.isEnabled
-                    "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_TEMPLATE_BLOCK_CLEANUP"
-            then
-                File.SetUnixFileMode(output, UnixFileMode.None)
