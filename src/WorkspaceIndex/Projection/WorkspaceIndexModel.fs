@@ -21,6 +21,7 @@ type internal IndexedNode =
     { Key: IndexedNodeKey
       Node: WorkspaceNode
       ParentWorkspaceNodeId: WorkspaceNodeId option
+      PhysicalRelativePath: string option
       Index: int }
 
 type internal IndexedWorkspace =
@@ -34,4 +35,5 @@ type internal ProjectNodePlacement =
     { PlacementKey: IndexedNodeKey
       PlacementNode: WorkspaceNode
       ParentNodeId: WorkspaceNodeId
+      PhysicalRelativePath: string option
       SiblingOrder: string list }

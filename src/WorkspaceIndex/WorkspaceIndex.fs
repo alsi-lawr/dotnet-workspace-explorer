@@ -38,6 +38,16 @@ type internal WorkspaceIndex
         let value = Path.GetFullPath path
         if insensitive then value.ToUpperInvariant() else value
 
+    let projectPhysicalPath projectDirectory (placement: IndexedNode) =
+        placement.PhysicalRelativePath
+        |> Option.map (fun relativePath ->
+            WorkspaceArtifactPath.Create(
+                Path.GetFullPath(
+                    relativePath.Replace('/', Path.DirectorySeparatorChar),
+                    projectDirectory
+                )
+            ))
+
     let mutable current = initial
     let mutable disposed = false
 
@@ -404,30 +414,9 @@ type internal WorkspaceIndex
 
                                     let physicalPath =
                                         match placement.Key with
-                                        | IndexedNodeKey [ "project-folder"; _; relativePath ] ->
-                                            Some(
-                                                WorkspaceArtifactPath.Create(
-                                                    Path.GetFullPath(
-                                                        relativePath.Replace(
-                                                            '/',
-                                                            Path.DirectorySeparatorChar
-                                                        ),
-                                                        projectDirectory
-                                                    )
-                                                )
-                                            )
-                                        | IndexedNodeKey [ "project-file"; _; _; relativePath ] ->
-                                            Some(
-                                                WorkspaceArtifactPath.Create(
-                                                    Path.GetFullPath(
-                                                        relativePath.Replace(
-                                                            '/',
-                                                            Path.DirectorySeparatorChar
-                                                        ),
-                                                        projectDirectory
-                                                    )
-                                                )
-                                            )
+                                        | IndexedNodeKey [ "project-folder"; _; _ ]
+                                        | IndexedNodeKey [ "project-file"; _; _; _ ] ->
+                                            projectPhysicalPath projectDirectory placement
                                         | _ -> None
 
                                     let physicalDirectory =
@@ -538,7 +527,7 @@ type internal WorkspaceIndex
                                         |> Option.ofObj
                                         |> Option.map WorkspaceArtifactPath.Create
                                     | None -> None, None
-                                | IndexedNodeKey [ "project-folder"; projectKey; relativePath ] ->
+                                | IndexedNodeKey [ "project-folder"; projectKey; _ ] ->
                                     match projectFor projectKey with
                                     | Some project ->
                                         let directory =
@@ -546,20 +535,11 @@ type internal WorkspaceIndex
                                             |> Option.ofObj
                                             |> Option.defaultValue solutionDirectory
 
-                                        let path =
-                                            WorkspaceArtifactPath.Create(
-                                                Path.GetFullPath(
-                                                    relativePath.Replace(
-                                                        '/',
-                                                        Path.DirectorySeparatorChar
-                                                    ),
-                                                    directory
-                                                )
-                                            )
-
-                                        Some path, Some path
+                                        match projectPhysicalPath directory placement with
+                                        | Some path -> Some path, Some path
+                                        | None -> None, None
                                     | None -> None, None
-                                | IndexedNodeKey [ "project-file"; projectKey; _; relativePath ] ->
+                                | IndexedNodeKey [ "project-file"; projectKey; _; _ ] ->
                                     match projectFor projectKey with
                                     | Some project ->
                                         let directory =
@@ -567,18 +547,7 @@ type internal WorkspaceIndex
                                             |> Option.ofObj
                                             |> Option.defaultValue solutionDirectory
 
-                                        Some(
-                                            WorkspaceArtifactPath.Create(
-                                                Path.GetFullPath(
-                                                    relativePath.Replace(
-                                                        '/',
-                                                        Path.DirectorySeparatorChar
-                                                    ),
-                                                    directory
-                                                )
-                                            )
-                                        ),
-                                        None
+                                        projectPhysicalPath directory placement, None
                                     | None -> None, None
                                 | _ -> None, None
 

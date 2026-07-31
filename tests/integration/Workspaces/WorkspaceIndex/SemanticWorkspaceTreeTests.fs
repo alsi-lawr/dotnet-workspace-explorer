@@ -438,6 +438,12 @@ type SemanticWorkspaceTreeTests() =
                 |> Seq.exactlyOne
 
             (insensitiveSource.Node.Name) |> should equal ("src")
+            (insensitiveSource.PhysicalRelativePath) |> should equal (Some "src")
+
+            (insensitiveSource.Key)
+            |> should
+                equal
+                (IndexedNodeKey [ "project-folder"; insensitiveApp.Node.Id.Value; "SRC" ])
 
             let insensitiveApi =
                 childrenFor insensitivePlacements insensitiveSource.Node.Id
@@ -451,10 +457,30 @@ type SemanticWorkspaceTreeTests() =
                 |> Seq.exactlyOne
 
             (insensitiveApi.Node.Name) |> should equal ("Api")
+            (insensitiveApi.PhysicalRelativePath) |> should equal (Some "src/Api")
 
-            (childrenFor insensitivePlacements insensitiveApi.Node.Id
-             |> Array.map _.Node.Name)
+            (insensitiveApi.Key)
+            |> should
+                equal
+                (IndexedNodeKey [ "project-folder"; insensitiveApp.Node.Id.Value; "SRC/API" ])
+
+            let insensitiveFiles = childrenFor insensitivePlacements insensitiveApi.Node.Id
+
+            (insensitiveFiles |> Array.map _.Node.Name)
             |> should equal ([| "First.fs"; "Second.fs" |])
+
+            let insensitiveFirst =
+                insensitiveFiles
+                |> Array.find (fun placement -> placement.Node.Name = "First.fs")
+
+            (insensitiveFirst.PhysicalRelativePath)
+            |> should equal (Some "src/Api/First.fs")
+
+            (insensitiveFirst.Key)
+            |> should
+                equal
+                (IndexedNodeKey
+                    [ "project-file"; insensitiveApp.Node.Id.Value; "Compile"; "SRC/API/FIRST.FS" ])
 
             let fileReorderedItems =
                 outerItems

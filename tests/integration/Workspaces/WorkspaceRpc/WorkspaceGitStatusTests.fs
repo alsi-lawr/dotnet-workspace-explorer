@@ -54,6 +54,18 @@ module private WorkspaceGitStatusScenario =
 
         WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response requestId
 
+    let private deleteRepository directory =
+        if OperatingSystem.IsWindows() then
+            Directory.EnumerateFileSystemEntries(directory, "*", SearchOption.AllDirectories)
+            |> Seq.append [ directory ]
+            |> Seq.iter (fun path ->
+                let attributes = File.GetAttributes path
+
+                if attributes.HasFlag FileAttributes.ReadOnly then
+                    File.SetAttributes(path, attributes &&& ~~~FileAttributes.ReadOnly))
+
+        Directory.Delete(directory, true)
+
     let withRepository action =
         let directory = WorkspaceRpcScenario.temporaryDirectory "git-status"
 
@@ -71,7 +83,7 @@ module private WorkspaceGitStatusScenario =
             runGit directory [ "commit"; "--quiet"; "-m"; "baseline" ]
             action directory solution project
         finally
-            Directory.Delete(directory, true)
+            deleteRepository directory
 
 [<Collection("Workspace scenarios")>]
 type WorkspaceGitStatusTests() =

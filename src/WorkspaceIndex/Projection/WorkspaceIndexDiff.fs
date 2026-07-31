@@ -23,11 +23,17 @@ module internal WorkspaceIndexDiff =
         let root = data.Workspace.Contents
 
         let raw =
-            ResizeArray<IndexedNodeKey * WorkspaceNode * WorkspaceNodeId option * string list>()
+            ResizeArray<
+                IndexedNodeKey *
+                WorkspaceNode *
+                WorkspaceNodeId option *
+                string option *
+                string list
+             >()
 
         let workspaceRoot = WorkspaceIndexPure.workspaceRoot data.Workspace.Descriptor
 
-        raw.Add(IndexedNodeKey [ "workspace-root" ], workspaceRoot, None, [ "0" ])
+        raw.Add(IndexedNodeKey [ "workspace-root" ], workspaceRoot, None, None, [ "0" ])
 
         let folderIds =
             Dictionary<string, WorkspaceNodeId>(
@@ -52,6 +58,7 @@ module internal WorkspaceIndexDiff =
                 IndexedNodeKey [ "folder"; folder.Path ],
                 folder.Node,
                 folderParent folder.ParentPath |> Option.orElse (Some workspaceRoot.Id),
+                None,
                 [ "1"; folder.Path ]
             )
 
@@ -63,6 +70,7 @@ module internal WorkspaceIndexDiff =
                       item.RelativePath ],
                 item.Node,
                 folderParent item.FolderPath |> Option.orElse (Some workspaceRoot.Id),
+                None,
                 [ "2"; item.RelativePath ]
             )
 
@@ -86,6 +94,7 @@ module internal WorkspaceIndexDiff =
                 IndexedNodeKey [ "project"; key ],
                 node,
                 folderParent project.ParentFolderPath |> Option.orElse (Some workspaceRoot.Id),
+                None,
                 [ "3"; key ]
             )
 
@@ -102,20 +111,22 @@ module internal WorkspaceIndexDiff =
                         placement.PlacementKey,
                         placement.PlacementNode,
                         Some placement.ParentNodeId,
+                        placement.PhysicalRelativePath,
                         placement.SiblingOrder
                     )
             | None -> ()
 
         raw
-        |> Seq.groupBy (fun (_, _, parentNodeId, _) ->
+        |> Seq.groupBy (fun (_, _, parentNodeId, _, _) ->
             parentNodeId |> Option.map _.Value |> Option.defaultValue String.Empty)
         |> Seq.collect (fun (_, siblings) ->
             siblings
-            |> Seq.sortBy (fun (key, _, _, order) -> order, key)
-            |> Seq.mapi (fun index (key, node, parentNodeId, _) ->
+            |> Seq.sortBy (fun (key, _, _, _, order) -> order, key)
+            |> Seq.mapi (fun index (key, node, parentNodeId, physicalRelativePath, _) ->
                 { Key = key
                   Node = node
                   ParentWorkspaceNodeId = parentNodeId
+                  PhysicalRelativePath = physicalRelativePath
                   Index = index }))
         |> Seq.sortBy _.Key
         |> Seq.toArray

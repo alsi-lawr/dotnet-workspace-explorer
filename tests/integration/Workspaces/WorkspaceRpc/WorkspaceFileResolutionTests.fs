@@ -126,19 +126,124 @@ module private WorkspaceFileResolutionScenario =
     let run extension action =
         runWithProject extension ".fsproj" action
 
-    let resolve context requestId targetNodeId expectedRevision =
+    let runWithProjectFile action =
+        let directory = WorkspaceRpcScenario.temporaryDirectory "project-file-resolution"
+
+        try
+            let solution = Path.Combine(directory, "Demo.slnx")
+            let projectPath = Path.Combine(directory, "Demo.csproj")
+            let sourceDirectory = Path.Combine(directory, "Source")
+            let sourcePath = Path.Combine(sourceDirectory, "ExactCase.cs")
+            let model = SolutionModel()
+            model.AddProject(Path.GetFileName projectPath, "Demo", null) |> ignore
+            Directory.CreateDirectory(sourceDirectory) |> ignore
+            WorkspaceRpcScenario.writeProject projectPath
+            File.WriteAllText(sourcePath, "class ExactCase {}")
+            WorkspaceRpcScenario.save solution model
+
+            use child =
+                WorkspaceRpcScenario.startWorkspaceRpc "project-file-resolution" solution
+
+            try
+                WorkspaceRpcScenario.send
+                    child
+                    false
+                    (WorkspaceRpcScenario.request 1u "initialize" WorkspaceRpcScenario.initialize)
+
+                WorkspaceRpcScenario.readFrame child
+                |> WorkspaceRpcScenario.response 1u
+                |> fst
+                |> should equal None
+
+                WorkspaceRpcScenario.send
+                    child
+                    false
+                    (WorkspaceRpcScenario.request 2u "workspace/root" RpcValue.emptyMap)
+
+                let rootError, root =
+                    WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response 2u
+
+                rootError |> should equal None
+
+                let projectNodeId =
+                    children
+                        child
+                        3u
+                        (root
+                         |> WorkspaceRpcScenario.field "nodes"
+                         |> RpcValue.requireArray "nodes"
+                         |> Seq.exactlyOne
+                         |> WorkspaceRpcScenario.field "id"
+                         |> RpcValue.requireString "id")
+                    |> WorkspaceRpcScenario.field "nodes"
+                    |> RpcValue.requireArray "nodes"
+                    |> Seq.find (fun node ->
+                        WorkspaceRpcScenario.field "name" node = RpcValue.String "Demo")
+                    |> WorkspaceRpcScenario.field "id"
+                    |> RpcValue.requireString "id"
+
+                WorkspaceRpcScenario.send
+                    child
+                    false
+                    (WorkspaceRpcScenario.request
+                        4u
+                        "workspace/children"
+                        (WorkspaceRpcScenario.map
+                            [ "parentNodeId", RpcValue.String projectNodeId
+                              "pageSize", RpcValue.Integer 50L ]))
+
+                let (projectChildrenError, projectChildren), _, notifications =
+                    WorkspaceRpcScenario.responseAfterWorkspaceNotifications child 4u 0L
+
+                projectChildrenError |> should equal None
+
+                if notifications.IsEmpty then
+                    match WorkspaceRpcScenario.readFrame child with
+                    | Notification("workspace/delta", _) -> ()
+                    | frame -> failwithf "Expected the project hydration delta, got %A" frame
+
+                let revision =
+                    projectChildren
+                    |> WorkspaceRpcScenario.field "revision"
+                    |> RpcValue.requireInteger "revision"
+
+                let sourceFolderId =
+                    projectChildren
+                    |> WorkspaceRpcScenario.field "nodes"
+                    |> RpcValue.requireArray "nodes"
+                    |> Seq.find (fun node ->
+                        WorkspaceRpcScenario.field "name" node = RpcValue.String "Source")
+                    |> WorkspaceRpcScenario.field "id"
+                    |> RpcValue.requireString "id"
+
+                let sourceNodeId =
+                    children child 5u sourceFolderId
+                    |> WorkspaceRpcScenario.field "nodes"
+                    |> RpcValue.requireArray "nodes"
+                    |> Seq.exactlyOne
+                    |> WorkspaceRpcScenario.field "id"
+                    |> RpcValue.requireString "id"
+
+                action child sourceNodeId sourcePath revision
+                WorkspaceRpcScenario.shutdown child 99u
+            finally
+                WorkspaceRpcScenario.disposeProcess child
+        finally
+            if Directory.Exists directory then
+                Directory.Delete(directory, true)
+
+    let resolve child requestId targetNodeId expectedRevision =
         let parameters =
             WorkspaceRpcScenario.map
                 [ "targetNodeId", RpcValue.String targetNodeId
                   "expectedRevision", RpcValue.Integer expectedRevision ]
 
         WorkspaceRpcScenario.send
-            context.Child
+            child
             false
             (WorkspaceRpcScenario.request requestId "workspace/file/resolve" parameters)
 
-        WorkspaceRpcScenario.readFrame context.Child
-        |> WorkspaceRpcScenario.response requestId
+        WorkspaceRpcScenario.readFrame child |> WorkspaceRpcScenario.response requestId
 
 [<Collection("Workspace scenarios")>]
 type WorkspaceFileResolutionTests() =
@@ -151,7 +256,7 @@ type WorkspaceFileResolutionTests() =
         =
         WorkspaceFileResolutionScenario.runWithProject ".slnx" projectExtension (fun context ->
             let error, result =
-                WorkspaceFileResolutionScenario.resolve context 10u context.ProjectNodeId 0L
+                WorkspaceFileResolutionScenario.resolve context.Child 10u context.ProjectNodeId 0L
 
             error |> should equal None
             let fields = RpcValue.requireMap "file.resolve.result" result
@@ -167,7 +272,7 @@ type WorkspaceFileResolutionTests() =
         =
         WorkspaceFileResolutionScenario.run extension (fun context ->
             let error, result =
-                WorkspaceFileResolutionScenario.resolve context 10u context.SolutionItemId 0L
+                WorkspaceFileResolutionScenario.resolve context.Child 10u context.SolutionItemId 0L
 
             error |> should equal None
             let fields = RpcValue.requireMap "file.resolve.result" result
@@ -181,6 +286,21 @@ type WorkspaceFileResolutionTests() =
             fields["path"] |> should equal (RpcValue.String context.SolutionItemPath)
             fields["revision"] |> RpcValue.requireInteger "revision" |> should equal 0L)
 
+    [<Fact>]
+    member _.``resolving a project file preserves its evaluated physical path casing``() =
+        WorkspaceFileResolutionScenario.runWithProjectFile (fun child nodeId sourcePath revision ->
+            let error, result =
+                WorkspaceFileResolutionScenario.resolve child 10u nodeId revision
+
+            error |> should equal None
+            let fields = RpcValue.requireMap "file.resolve.result" result
+            fields["targetNodeId"] |> should equal (RpcValue.String nodeId)
+            fields["path"] |> should equal (RpcValue.String sourcePath)
+
+            fields["revision"]
+            |> RpcValue.requireInteger "revision"
+            |> should equal revision)
+
     [<Theory>]
     [<InlineData(".sln")>]
     [<InlineData(".slnx")>]
@@ -189,7 +309,7 @@ type WorkspaceFileResolutionTests() =
         =
         WorkspaceFileResolutionScenario.run extension (fun context ->
             let error, _ =
-                WorkspaceFileResolutionScenario.resolve context 10u context.RootNodeId 0L
+                WorkspaceFileResolutionScenario.resolve context.Child 10u context.RootNodeId 0L
 
             error |> Option.map _.Code |> should equal (Some "invalid_params"))
 
@@ -201,6 +321,6 @@ type WorkspaceFileResolutionTests() =
         =
         WorkspaceFileResolutionScenario.run extension (fun context ->
             let error, _ =
-                WorkspaceFileResolutionScenario.resolve context 10u context.SolutionItemId 1L
+                WorkspaceFileResolutionScenario.resolve context.Child 10u context.SolutionItemId 1L
 
             error |> Option.map _.Code |> should equal (Some "workspace_conflict"))

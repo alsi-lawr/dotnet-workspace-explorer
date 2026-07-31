@@ -367,6 +367,7 @@ module internal SemanticProjectProjection =
                 { PlacementKey = IndexedNodeKey [ "project-folder"; project.Node.Id.Value; key ]
                   PlacementNode = node
                   ParentNodeId = parentId
+                  PhysicalRelativePath = Some folder.RelativePath
                   SiblingOrder = "1" :: orderValue folder.DimensionOrder folder.Ordinal @ [ key ] })
 
         for file in files do
@@ -401,6 +402,7 @@ module internal SemanticProjectProjection =
                           file.CanonicalRelativePath ]
                   PlacementNode = node
                   ParentNodeId = parentId
+                  PhysicalRelativePath = Some file.RelativePath
                   SiblingOrder =
                     "2" :: orderValue file.DimensionOrder file.Ordinal
                     @ [ file.ItemType; file.CanonicalRelativePath ] }
@@ -418,6 +420,7 @@ module internal SemanticProjectProjection =
             { PlacementKey = IndexedNodeKey [ "dependency-container"; project.Node.Id.Value ]
               PlacementNode = container
               ParentNodeId = projectNode.Id
+              PhysicalRelativePath = None
               SiblingOrder = [ "0" ] }
 
         dependencyCandidates insensitive workspace project snapshot
@@ -437,6 +440,7 @@ module internal SemanticProjectProjection =
                     IndexedNodeKey [ "dependency"; project.Node.Id.Value; dependency.Identity ]
                   PlacementNode = node
                   ParentNodeId = container.Id
+                  PhysicalRelativePath = None
                   SiblingOrder = [ $"{index:D8}"; dependency.Identity ] }
 
             dependency.Details
@@ -460,6 +464,7 @@ module internal SemanticProjectProjection =
                               detailValue.DetailId ]
                       PlacementNode = detailNode
                       ParentNodeId = node.Id
+                      PhysicalRelativePath = None
                       SiblingOrder = [ $"{detailIndex:D8}"; detailValue.DetailId ] }))
 
         placements.ToArray()
