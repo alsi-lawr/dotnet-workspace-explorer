@@ -86,6 +86,16 @@ type WorkspaceEditTransaction
 
             writer.Flush()
             $"texts:{Convert.ToHexString(stream.ToArray())}"
+        | NodeIdArray values ->
+            use stream = new MemoryStream()
+            use writer = new BinaryWriter(stream, Encoding.UTF8, true)
+            WorkspaceEditFingerprint.writeSection writer "nodes" values.Length
+
+            for value in values do
+                WorkspaceEditFingerprint.writeValue writer value.Value
+
+            writer.Flush()
+            $"nodes:{Convert.ToHexString(stream.ToArray())}"
 
     let actionPaths =
         function
@@ -94,7 +104,8 @@ type WorkspaceEditTransaction
         | WorkspaceEditAction.Delete(path, _, _)
         | WorkspaceEditAction.Trash path -> [ path ]
         | WorkspaceEditAction.Rename(source, destination)
-        | WorkspaceEditAction.Move(source, destination) -> [ source; destination ]
+        | WorkspaceEditAction.Move(source, destination)
+        | WorkspaceEditAction.Copy(source, destination) -> [ source; destination ]
 
     let bind request (actions: WorkspaceEditAction array) =
         let workspaceRoot = ArtifactFiles.canonicalNoFollow false workspaceRoot.Value
@@ -237,6 +248,10 @@ type WorkspaceEditTransaction
                                 WorkspaceEditFingerprint.writeValue writer "move"
                                 WorkspaceEditFingerprint.writeValue writer (nextPath ())
                                 WorkspaceEditFingerprint.writeValue writer (nextPath ())
+                            | WorkspaceEditAction.Copy(_source, _destination) ->
+                                WorkspaceEditFingerprint.writeValue writer "copy"
+                                WorkspaceEditFingerprint.writeValue writer (nextPath ())
+                                WorkspaceEditFingerprint.writeValue writer (nextPath ())
                             | WorkspaceEditAction.Delete(_path, permanent, recursive) ->
                                 WorkspaceEditFingerprint.writeValue writer "delete"
                                 WorkspaceEditFingerprint.writeValue writer (nextPath ())
@@ -301,6 +316,12 @@ type WorkspaceEditTransaction
                    && (not (ArtifactFiles.exists destination)
                        || intents.Contains WorkspaceEditIntent.Overwrite)
                    && (not repeated || intents.Contains WorkspaceEditIntent.Overwrite)
+               | WorkspaceEditAction.Copy(source, destination) ->
+                   let repeated = repeatedDestination destination
+
+                   ArtifactFiles.exists source
+                   && not (ArtifactFiles.exists destination)
+                   && not repeated
                | WorkspaceEditAction.Delete(path, permanent, recursive) ->
                    ArtifactFiles.exists path
                    && (not permanent || intents.Contains WorkspaceEditIntent.PermanentDelete)
@@ -652,6 +673,36 @@ type WorkspaceEditTransaction
                                                  ArtifactFiles.copyNoFollow destination source
                                                  restoreDestination ())
                                         )
+                                | WorkspaceEditAction.Copy(source, destination) ->
+                                    let stage = ArtifactFiles.temporaryBeside destination "stage"
+                                    cleanup.Add stage
+                                    let expected = fingerprint source
+                                    ArtifactFiles.copyNoFollow source stage
+
+                                    verifyFingerprint
+                                        expected
+                                        stage
+                                        "The staged copy did not verify."
+
+                                    let _, restoreDestination =
+                                        try
+                                            commitStaged stage destination
+                                        with _ ->
+                                            ArtifactFiles.remove stage
+                                            reraise ()
+
+                                    reversals.Insert(
+                                        0,
+                                        ($"remove copy {destination}",
+                                         fun () ->
+                                             ArtifactFiles.remove destination
+                                             restoreDestination ())
+                                    )
+
+                                    verifyFingerprint
+                                        expected
+                                        destination
+                                        "The copied artifact did not verify."
                                 | WorkspaceEditAction.Delete(path, false, _)
                                 | WorkspaceEditAction.Trash path ->
                                     match trash.MoveToTrash path with

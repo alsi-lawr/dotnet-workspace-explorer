@@ -27,6 +27,7 @@
         <Compile Include="ProjectProperties/ProjectPropertyCommandTests.fs" />
         <Compile Include="WorkspaceRpc/WorkspaceSessionTests.fs" />
         <Compile Include="WorkspaceRpc/WorkspaceFileResolutionTests.fs" />
+        <Compile Include="WorkspaceRpc/WorkspaceGitStatusTests.fs" />
         <Compile Include="WorkspaceExport/WorkspaceExportStreamingTests.fs" />
         <Compile Include="WorkspaceIndex/WorkspacePagingAndResetTests.fs" />
         <Compile Include="WorkspaceRpc/WorkspaceEndpointLimitTests.fs" />
@@ -43,6 +44,7 @@
         <Compile Include="WorkspaceCommands/ProjectCreationCommandTests.fs" />
         <Compile Include="WorkspaceCommands/WorkspaceCommandLifecycleTests.fs" />
         <Compile Include="WorkspaceCommands/ContextWorkspaceContractFixtureTests.fs" />
+        <Compile Include="WorkspaceCommands/ContextWorkspaceBatchCommandTests.fs" />
         <Compile Include="WorkspaceCommands/ContextWorkspaceCommandTests.fs" />
         <Compile Include="Projects/ProjectRelocationTests.fs" />
         <Compile Include="LaunchProfiles/LaunchProfileStorageTests.fs" />

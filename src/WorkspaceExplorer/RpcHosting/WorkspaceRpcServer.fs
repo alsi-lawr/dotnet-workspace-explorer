@@ -48,6 +48,7 @@ module internal WorkspaceRpcServer =
                 let mutable watcherStarted = false
                 let mutable maximumFrameBytes = MessagePackRpcCodec.secureLimits.MaximumValueBytes
                 let mutable maximumPageSize = 256
+                let mutable gitStatusNegotiated = false
                 use publicationGate = new SemaphoreSlim(1, 1)
 
                 let watcher =
@@ -88,6 +89,8 @@ module internal WorkspaceRpcServer =
 
                 let workspaceRequestContext =
                     { State = state
+                      GitStatus = WorkspaceGitStatus(workspace.SolutionPath.Value)
+                      GitStatusNegotiated = fun () -> gitStatusNegotiated
                       Watcher = watcher
                       ActiveOperations = activeOperations
                       MaximumFrameBytes = fun () -> maximumFrameBytes
@@ -113,6 +116,9 @@ module internal WorkspaceRpcServer =
                         | Ok request ->
                             maximumFrameBytes <- request.MaximumFrameBytes
                             maximumPageSize <- request.MaximumPageSize
+
+                            gitStatusNegotiated <-
+                                request.Capabilities.Contains "workspace.git.status"
 
                             return
                                 Ok(
@@ -177,6 +183,7 @@ module internal WorkspaceRpcServer =
                             | Ok WorkspaceRpcRequest.Root
                             | Ok(WorkspaceRpcRequest.Children _)
                             | Ok(WorkspaceRpcRequest.ResolveFile _)
+                            | Ok(WorkspaceRpcRequest.GitStatus _)
                             | Ok(WorkspaceRpcRequest.Refresh _)
                             | Ok(WorkspaceRpcRequest.CreateOptions _)
                             | Ok(WorkspaceRpcRequest.CommandList _)

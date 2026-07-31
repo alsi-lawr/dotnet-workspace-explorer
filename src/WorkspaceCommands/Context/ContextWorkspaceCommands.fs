@@ -13,6 +13,9 @@ module internal ContextWorkspaceCommands =
             name
         )
 
+    let private typedParameter id parameterType name =
+        CommandParameterDescriptor.Create(CommandParameterId.Create id, parameterType, true, name)
+
     let create =
         CommandDescriptor.Create(
             CommandId.Create "workspace.create",
@@ -44,7 +47,57 @@ module internal ContextWorkspaceCommands =
               WorkspaceNodeKind.ProjectFile ]
         )
 
-    let all = ImmutableArray.Create(create, delete)
+    let rename =
+        CommandDescriptor.Create(
+            CommandId.Create "workspace.rename",
+            "Rename",
+            CommandAccess.Write,
+            [ typedParameter "name" CommandParameterType.Text "Name" ],
+            [ WorkspaceNodeKind.SolutionFolder
+              WorkspaceNodeKind.SolutionItem
+              WorkspaceNodeKind.Project
+              WorkspaceNodeKind.ProjectFolder
+              WorkspaceNodeKind.ProjectFile ]
+        )
+
+    let move =
+        CommandDescriptor.Create(
+            CommandId.Create "workspace.move",
+            "Move",
+            CommandAccess.Write,
+            [ typedParameter
+                  "sourceNodeIds"
+                  CommandParameterType.NodeIdArray
+                  "Source workspace nodes" ],
+            [ WorkspaceNodeKind.Workspace
+              WorkspaceNodeKind.SolutionFolder
+              WorkspaceNodeKind.SolutionItem
+              WorkspaceNodeKind.Project
+              WorkspaceNodeKind.ProjectFolder
+              WorkspaceNodeKind.ProjectFile
+              WorkspaceNodeKind.DependencyContainer
+              WorkspaceNodeKind.Dependency
+              WorkspaceNodeKind.DependencyProperty ]
+        )
+
+    let copy =
+        CommandDescriptor.Create(
+            CommandId.Create "workspace.copy",
+            "Copy",
+            CommandAccess.Write,
+            [ typedParameter
+                  "sourceNodeIds"
+                  CommandParameterType.NodeIdArray
+                  "Source workspace nodes" ],
+            [ WorkspaceNodeKind.Project
+              WorkspaceNodeKind.ProjectFolder
+              WorkspaceNodeKind.ProjectFile
+              WorkspaceNodeKind.DependencyContainer
+              WorkspaceNodeKind.Dependency
+              WorkspaceNodeKind.DependencyProperty ]
+        )
+
+    let all = ImmutableArray.Create(create, delete, rename, move, copy)
 
     let tryDescribe id =
         all |> Seq.tryFind (fun descriptor -> descriptor.Id = id)

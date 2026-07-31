@@ -69,6 +69,37 @@ type ArtifactEditingTests() =
             Directory.Delete(root, true)
 
     [<Fact>]
+    member _.``copying a directory through one transaction preserves source and destination trees``
+        ()
+        =
+        let root = WorkspaceEditScenario.directory "copy"
+
+        try
+            let source = Path.Combine(root, "source")
+            let destination = Path.Combine(root, "destination")
+            Directory.CreateDirectory source |> ignore
+            File.WriteAllText(Path.Combine(source, "child.txt"), "child")
+
+            let coordinator =
+                WorkspaceEditScenario.coordinator
+                    root
+                    TimeProvider.System
+                    (fun () -> WorkspaceRevision.Create 0L)
+                    (WorkspaceEditScenario.RefusingTrash "unused")
+
+            let request = WorkspaceEditScenario.request [] [ source; destination ] [] 0L
+            let copy = [ WorkspaceEditAction.Copy(source, destination) ]
+            let preview = WorkspaceEditScenario.preview coordinator request copy
+
+            coordinator.Execute(request, copy, preview.Confirmation, CancellationToken.None)
+            |> should equal (Success Applied)
+
+            File.ReadAllText(Path.Combine(source, "child.txt")) |> should equal "child"
+            File.ReadAllText(Path.Combine(destination, "child.txt")) |> should equal "child"
+        finally
+            Directory.Delete(root, true)
+
+    [<Fact>]
     member _.``terminal symbolic-link replacement and deletion avoid traversing linked targets``() =
         if not (OperatingSystem.IsWindows()) then
             let root = WorkspaceEditScenario.directory "links"

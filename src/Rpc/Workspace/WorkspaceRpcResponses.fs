@@ -16,6 +16,7 @@ module WorkspaceRpcResponses =
             [ "workspace.root"
               "workspace.children"
               "workspace.file.resolve"
+              "workspace.git.status"
               "workspace.export.start"
               "workspace.refresh"
               "workspace.delta"
@@ -83,6 +84,7 @@ module WorkspaceRpcResponses =
         | CommandParameterType.NodeId -> "nodeId"
         | CommandParameterType.Choice -> "choice"
         | CommandParameterType.TextArray -> "textArray"
+        | CommandParameterType.NodeIdArray -> "nodeIdArray"
         | _ -> "unknown"
 
     let commandDescriptor (value: CommandDescriptor) =
@@ -139,6 +141,16 @@ module WorkspaceRpcResponses =
             [ "revision", integer revision
               "targetNodeId", text targetNodeId
               "path", text path ]
+
+    let gitStatusResult available workspaceRevision statusRevision decorations =
+        map
+            [ "available", boolean available
+              "workspaceRevision", integer workspaceRevision
+              "statusRevision", integer statusRevision
+              "decorations",
+              decorations
+              |> Seq.map (fun (nodeId, state) -> map [ "nodeId", text nodeId; "state", text state ])
+              |> RpcValue.array ]
 
     let node (workspaceId: WorkspaceId) revision (value: WorkspaceNode) =
         map

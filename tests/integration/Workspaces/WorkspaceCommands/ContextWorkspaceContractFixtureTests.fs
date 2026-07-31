@@ -218,6 +218,32 @@ type ContextWorkspaceContractFixtureTests() =
 
         (ContextWorkspaceCommands.delete.Parameters) |> should be Empty
 
+        ContextWorkspaceCommands.rename.Parameters
+        |> Seq.map (fun parameter -> parameter.Id.Value, parameter.Type, parameter.Required)
+        |> Seq.toArray
+        |> should equal [| "name", CommandParameterType.Text, true |]
+
+        for descriptor in [ ContextWorkspaceCommands.move; ContextWorkspaceCommands.copy ] do
+            descriptor.Parameters
+            |> Seq.map (fun parameter -> parameter.Id.Value, parameter.Type, parameter.Required)
+            |> Seq.toArray
+            |> should equal [| "sourceNodeIds", CommandParameterType.NodeIdArray, true |]
+
+        let publicMove =
+            WorkspaceRpcResponses.commandDescriptor ContextWorkspaceCommands.move
+            |> RpcValue.requireMap "workspace.move"
+
+        publicMove.Keys
+        |> Seq.sort
+        |> Seq.toList
+        |> should equal [ "access"; "id"; "name"; "parameters"; "targetKinds" ]
+
+        publicMove["parameters"]
+        |> RpcValue.requireArray "parameters"
+        |> Seq.exactlyOne
+        |> fun parameter -> WorkspaceRpcScenario.field "type" parameter
+        |> should equal (RpcValue.String "nodeIdArray")
+
         let entries =
             parsed
                 "catalog"

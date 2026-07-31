@@ -15,6 +15,46 @@ open WorkspaceCommandEditing
 open WorkspaceCommandArguments
 
 module internal WorkspaceCommandRequests =
+    let private publishMutationNotifications
+        (context: WorkspaceCommandContext)
+        invalidated
+        cancellationToken
+        =
+        task {
+            let reset =
+                match invalidated with
+                | WorkspaceProjectInvalidationResult.Reset _ -> true
+                | _ -> false
+
+            if reset then
+                context.Watcher.Pause()
+
+            let! watcherNotifications =
+                if reset then
+                    Task.FromResult []
+                else
+                    context.RebuildWatcher cancellationToken
+
+            let notifications = context.MutationNotifications invalidated @ watcherNotifications
+
+            if
+                notifications
+                |> List.exists (fun notification ->
+                    let encodedBytes = (MessagePackRpcCodec.encodeFrame notification).Length
+
+                    encodedBytes > context.MaximumFrameBytes())
+            then
+                let! pressureReset =
+                    WorkspaceNavigationRequests.resetForFramePressure
+                        context.State
+                        cancellationToken
+
+                context.Watcher.Pause()
+                return [ WorkspaceRpcNotifications.workspaceReset pressureReset ]
+            else
+                return notifications
+        }
+
     let private createOption (entry: WorkspaceTemplateEntry) =
         let kind =
             match entry.Kind with
@@ -57,7 +97,8 @@ module internal WorkspaceCommandRequests =
                     Target = path
                     Recursive = false } ]
             | WorkspaceEditAction.Rename(source, destination)
-            | WorkspaceEditAction.Move(source, destination) ->
+            | WorkspaceEditAction.Move(source, destination)
+            | WorkspaceEditAction.Copy(source, destination) ->
                 [ { Operation = "modify"
                     Target = source
                     Recursive = false }
@@ -84,7 +125,21 @@ module internal WorkspaceCommandRequests =
         (cancellationToken: CancellationToken)
         =
         task {
-            if ContextWorkspaceCommands.tryDescribe descriptor.Id |> Option.isSome then
+            if
+                descriptor.Id.Value = "workspace.rename"
+                || descriptor.Id.Value = "workspace.move"
+                || descriptor.Id.Value = "workspace.copy"
+            then
+                return!
+                    ContextWorkspaceBatchActions.prepareAsync
+                        workspace
+                        context.State
+                        targetContext
+                        descriptor
+                        parsed
+                        expectedRevision
+                        cancellationToken
+            elif ContextWorkspaceCommands.tryDescribe descriptor.Id |> Option.isSome then
                 return!
                     ContextWorkspaceActions.prepareAsync
                         workspace
@@ -473,28 +528,18 @@ module internal WorkspaceCommandRequests =
                                                 CancellationToken.None
                                             )
 
-                                        let reset =
-                                            match invalidated with
-                                            | WorkspaceProjectInvalidationResult.Reset _ -> true
-                                            | _ -> false
-
-                                        if reset then
-                                            context.Watcher.Pause()
-
-                                        let! watcherNotifications =
-                                            if reset then
-                                                Task.FromResult []
-                                            else
-                                                context.RebuildWatcher CancellationToken.None
+                                        let! notifications =
+                                            publishMutationNotifications
+                                                context
+                                                invalidated
+                                                CancellationToken.None
 
                                         return
                                             Ok
                                                 { Result =
                                                     WorkspaceRpcResponses.commandExecuteResult
                                                         context.State.Revision
-                                                  Notifications =
-                                                    context.MutationNotifications invalidated
-                                                    @ watcherNotifications
+                                                  Notifications = notifications
                                                   BackgroundWork = None
                                                   AfterResponse = None
                                                   StopAfterResponse = false }
@@ -702,28 +747,18 @@ module internal WorkspaceCommandRequests =
                                                 CancellationToken.None
                                             )
 
-                                        let reset =
-                                            match invalidated with
-                                            | WorkspaceProjectInvalidationResult.Reset _ -> true
-                                            | _ -> false
-
-                                        if reset then
-                                            context.Watcher.Pause()
-
-                                        let! watcherNotifications =
-                                            if reset then
-                                                Task.FromResult []
-                                            else
-                                                context.RebuildWatcher CancellationToken.None
+                                        let! notifications =
+                                            publishMutationNotifications
+                                                context
+                                                invalidated
+                                                CancellationToken.None
 
                                         return
                                             Ok
                                                 { Result =
                                                     WorkspaceRpcResponses.commandExecuteResult
                                                         context.State.Revision
-                                                  Notifications =
-                                                    context.MutationNotifications invalidated
-                                                    @ watcherNotifications
+                                                  Notifications = notifications
                                                   BackgroundWork = None
                                                   AfterResponse = None
                                                   StopAfterResponse = false }

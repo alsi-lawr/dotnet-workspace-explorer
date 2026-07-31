@@ -71,3 +71,9 @@ type internal WorkspaceProjectInvalidationResult =
     | None
     | Delta of WorkspaceDelta
     | Reset of WorkspaceReset
+
+type internal WorkspaceGitNode =
+    { NodeId: WorkspaceNodeId
+      ParentNodeId: WorkspaceNodeId option
+      PhysicalPath: WorkspaceArtifactPath option
+      ContainerPath: WorkspaceArtifactPath option }

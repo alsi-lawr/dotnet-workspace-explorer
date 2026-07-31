@@ -15,6 +15,7 @@ type WorkspaceRpcRequest =
     | Root
     | Children of parentNodeId: string * pageSize: int option * continuationToken: string option
     | ResolveFile of targetNodeId: string * expectedRevision: int64
+    | GitStatus of expectedRevision: int64
     | Export
     | Refresh of expectedRevision: int64 option
     | CreateOptions of targetNodeId: string * expectedRevision: int64

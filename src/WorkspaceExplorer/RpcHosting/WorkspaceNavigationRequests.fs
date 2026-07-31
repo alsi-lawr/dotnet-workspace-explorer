@@ -223,7 +223,13 @@ module internal WorkspaceNavigationRequests =
             match resolved with
             | Error rpcError -> return Error rpcError
             | Ok(revision, target) ->
-                match target.Node.Kind, target.PhysicalPath with
+                let resolvedPath =
+                    match target.Node.Kind with
+                    | WorkspaceNodeKind.Project -> target.ProjectPath
+                    | _ -> target.PhysicalPath
+
+                match target.Node.Kind, resolvedPath with
+                | WorkspaceNodeKind.Project, Some path
                 | (WorkspaceNodeKind.ProjectFile | WorkspaceNodeKind.SolutionItem), Some path when
                     File.Exists path.Value
                     ->
@@ -238,7 +244,8 @@ module internal WorkspaceNavigationRequests =
                               BackgroundWork = None
                               AfterResponse = None
                               StopAfterResponse = false }
-                | (WorkspaceNodeKind.ProjectFile | WorkspaceNodeKind.SolutionItem), _ ->
+                | (WorkspaceNodeKind.Project | WorkspaceNodeKind.ProjectFile | WorkspaceNodeKind.SolutionItem),
+                  _ ->
                     return
                         Error(
                             RpcErrors.create "not_found" "The workspace file no longer exists." None
@@ -249,6 +256,32 @@ module internal WorkspaceNavigationRequests =
                             RpcErrors.invalidParams
                                 "The requested workspace node is not an openable file."
                         )
+        }
+
+    let private dispatchGitStatus
+        (context: WorkspaceRpcContext)
+        expectedRevision
+        cancellationToken
+        =
+        task {
+            if not (context.GitStatusNegotiated()) then
+                return
+                    Error(
+                        RpcErrors.unsupported
+                            "workspace.git.status was not negotiated for this session."
+                    )
+            else
+                let! result =
+                    context.GitStatus.ReadAsync(context.State, expectedRevision, cancellationToken)
+
+                return
+                    result
+                    |> Result.map (fun value ->
+                        { Result = value
+                          Notifications = []
+                          BackgroundWork = None
+                          AfterResponse = None
+                          StopAfterResponse = false })
         }
 
     let private dispatchCancel (context: WorkspaceRpcContext) operationId =
@@ -293,6 +326,8 @@ module internal WorkspaceNavigationRequests =
         | WorkspaceRpcRequest.ResolveFile(targetNodeId, expectedRevision) ->
             dispatchResolveFile context targetNodeId expectedRevision cancellationToken
             |> someAsync
+        | WorkspaceRpcRequest.GitStatus expectedRevision ->
+            dispatchGitStatus context expectedRevision cancellationToken |> someAsync
         | WorkspaceRpcRequest.Refresh expectedRevision ->
             dispatchRefresh context expectedRevision cancellationToken |> someAsync
         | WorkspaceRpcRequest.Cancel operationId -> dispatchCancel context operationId |> someAsync

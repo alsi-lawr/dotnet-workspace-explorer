@@ -181,6 +181,15 @@ module WorkspaceRpc =
                         |> RpcValue.requireField "expectedRevision"
                         |> revision "expectedRevision"
                     )
+                | "workspace/git/status" ->
+                    let fields = RpcValue.requireMap "params" parameters
+                    RpcValue.ensureOnly "params" [ "expectedRevision" ] fields
+
+                    WorkspaceRpcRequest.GitStatus(
+                        fields
+                        |> RpcValue.requireField "expectedRevision"
+                        |> revision "expectedRevision"
+                    )
                 | "workspace/create/options" ->
                     let fields = RpcValue.requireMap "params" parameters
                     RpcValue.ensureOnly "params" [ "targetNodeId"; "expectedRevision" ] fields
@@ -279,6 +288,7 @@ module WorkspaceRpcProfile =
                     "workspace/root"
                     "workspace/children"
                     "workspace/file/resolve"
+                    "workspace/git/status"
                     "workspace/export/start"
                     "workspace/refresh"
                     "workspace/create/options"

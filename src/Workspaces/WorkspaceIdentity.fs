@@ -98,6 +98,9 @@ type WorkspaceNodeIdentity private (value: string) =
 type WorkspaceNodeId private (value: string) =
     member _.Value = value
 
+    static member Parse(value: string) =
+        value |> WorkspaceValue.nonEmpty (nameof value) |> WorkspaceNodeId
+
     static member Create
         (workspaceId: WorkspaceId, kind: WorkspaceNodeKind, semanticIdentity: WorkspaceNodeIdentity)
         =

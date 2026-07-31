@@ -490,6 +490,108 @@ type internal WorkspaceIndex
                 gate.Release() |> ignore
         }
 
+    member _.GitNodesAsync(expectedRevision: int64, cancellationToken: CancellationToken) =
+        task {
+            do! gate.WaitAsync cancellationToken
+
+            try
+                let! ready = ensureReadyUnsafe cancellationToken
+
+                match ready with
+                | Error error -> return Error error
+                | Ok() when current.Revision <> expectedRevision ->
+                    return Error(WorkspaceRpcResponses.workspaceConflict current.Revision)
+                | Ok() ->
+                    let workspace = current.Workspace
+
+                    let solutionDirectory =
+                        Path.GetDirectoryName workspace.SolutionPath.Value
+                        |> Option.ofObj
+                        |> Option.defaultValue (Directory.GetCurrentDirectory())
+
+                    let projectFor key =
+                        workspace.Contents.Projects
+                        |> Seq.tryFind (fun project ->
+                            pathKey project.Path.AbsolutePath.Value = key
+                            || project.Node.Id.Value = key)
+
+                    let values =
+                        WorkspaceIndexDiff.placements insensitive current
+                        |> Array.map (fun placement ->
+                            let physicalPath, containerPath =
+                                match placement.Key with
+                                | IndexedNodeKey [ "workspace-root" ] ->
+                                    Some workspace.SolutionPath,
+                                    Some(WorkspaceArtifactPath.Create solutionDirectory)
+                                | IndexedNodeKey [ "solution-item"; _; relativePath ] ->
+                                    Some(
+                                        WorkspaceArtifactPath.Create(
+                                            Path.GetFullPath(relativePath, solutionDirectory)
+                                        )
+                                    ),
+                                    None
+                                | IndexedNodeKey("project" :: projectKey :: _) ->
+                                    match projectFor projectKey with
+                                    | Some project ->
+                                        Some project.Path.AbsolutePath,
+                                        Path.GetDirectoryName project.Path.AbsolutePath.Value
+                                        |> Option.ofObj
+                                        |> Option.map WorkspaceArtifactPath.Create
+                                    | None -> None, None
+                                | IndexedNodeKey [ "project-folder"; projectKey; relativePath ] ->
+                                    match projectFor projectKey with
+                                    | Some project ->
+                                        let directory =
+                                            Path.GetDirectoryName project.Path.AbsolutePath.Value
+                                            |> Option.ofObj
+                                            |> Option.defaultValue solutionDirectory
+
+                                        let path =
+                                            WorkspaceArtifactPath.Create(
+                                                Path.GetFullPath(
+                                                    relativePath.Replace(
+                                                        '/',
+                                                        Path.DirectorySeparatorChar
+                                                    ),
+                                                    directory
+                                                )
+                                            )
+
+                                        Some path, Some path
+                                    | None -> None, None
+                                | IndexedNodeKey [ "project-file"; projectKey; _; relativePath ] ->
+                                    match projectFor projectKey with
+                                    | Some project ->
+                                        let directory =
+                                            Path.GetDirectoryName project.Path.AbsolutePath.Value
+                                            |> Option.ofObj
+                                            |> Option.defaultValue solutionDirectory
+
+                                        Some(
+                                            WorkspaceArtifactPath.Create(
+                                                Path.GetFullPath(
+                                                    relativePath.Replace(
+                                                        '/',
+                                                        Path.DirectorySeparatorChar
+                                                    ),
+                                                    directory
+                                                )
+                                            )
+                                        ),
+                                        None
+                                    | None -> None, None
+                                | _ -> None, None
+
+                            { NodeId = placement.Node.Id
+                              ParentNodeId = placement.ParentWorkspaceNodeId
+                              PhysicalPath = physicalPath
+                              ContainerPath = containerPath })
+
+                    return Ok(current.Revision, values)
+            finally
+                gate.Release() |> ignore
+        }
+
     member _.ProjectAsync(projectId: WorkspaceNodeId, cancellationToken: CancellationToken) =
         task {
             do! gate.WaitAsync cancellationToken

@@ -43,6 +43,7 @@ type CommandParameterType =
     | NodeId = 4
     | Choice = 5
     | TextArray = 6
+    | NodeIdArray = 7
 
 type CommandAccess =
     | Read = 0
@@ -152,6 +153,7 @@ type CommandParameterValue =
     | Node of value: WorkspaceNodeId
     | Choice of value: CommandChoiceId
     | TextArray of values: ImmutableArray<string>
+    | NodeIdArray of values: ImmutableArray<WorkspaceNodeId>
 
 type CommandArgument =
     { ParameterId: CommandParameterId

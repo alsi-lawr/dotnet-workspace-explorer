@@ -12,6 +12,8 @@ module private WorkspaceFileResolutionScenario =
     type Context =
         { Child: System.Diagnostics.Process
           RootNodeId: string
+          ProjectNodeId: string
+          ProjectPath: string
           SolutionItemId: string
           SolutionItemPath: string }
 
@@ -32,17 +34,18 @@ module private WorkspaceFileResolutionScenario =
         error |> should equal None
         result
 
-    let run extension action =
+    let runWithProject extension projectExtension action =
         let directory = WorkspaceRpcScenario.temporaryDirectory "file-resolution"
 
         try
             let solution = Path.Combine(directory, "Demo" + extension)
             let solutionItem = Path.Combine(directory, "Directory.Build.props")
             let model = SolutionModel()
-            model.AddProject("Demo.fsproj", "Demo", null) |> ignore
+            let projectPath = Path.Combine(directory, "Demo" + projectExtension)
+            model.AddProject(Path.GetFileName projectPath, "Demo", null) |> ignore
             let solutionFolder = model.AddFolder "/Solution Items/"
             solutionFolder.AddFile(Path.GetFileName solutionItem) |> ignore
-            WorkspaceRpcScenario.writeProject (Path.Combine(directory, "Demo.fsproj"))
+            WorkspaceRpcScenario.writeProject projectPath
             File.WriteAllText(solutionItem, "<Project />")
             WorkspaceRpcScenario.save solution model
             use child = WorkspaceRpcScenario.startWorkspaceRpc "file-resolution" solution
@@ -76,12 +79,24 @@ module private WorkspaceFileResolutionScenario =
                     |> RpcValue.requireString "id"
 
                 let solutionFolderId =
-                    children child 3u rootNodeId
-                    |> WorkspaceRpcScenario.field "nodes"
-                    |> RpcValue.requireArray "nodes"
+                    let rootChildren =
+                        children child 3u rootNodeId
+                        |> WorkspaceRpcScenario.field "nodes"
+                        |> RpcValue.requireArray "nodes"
+
+                    rootChildren
                     |> Seq.find (fun node ->
                         let name = WorkspaceRpcScenario.field "name" node
                         name = RpcValue.String "Solution Items")
+                    |> WorkspaceRpcScenario.field "id"
+                    |> RpcValue.requireString "id"
+
+                let projectNodeId =
+                    children child 5u rootNodeId
+                    |> WorkspaceRpcScenario.field "nodes"
+                    |> RpcValue.requireArray "nodes"
+                    |> Seq.find (fun node ->
+                        WorkspaceRpcScenario.field "name" node = RpcValue.String "Demo")
                     |> WorkspaceRpcScenario.field "id"
                     |> RpcValue.requireString "id"
 
@@ -96,6 +111,8 @@ module private WorkspaceFileResolutionScenario =
                 action
                     { Child = child
                       RootNodeId = rootNodeId
+                      ProjectNodeId = projectNodeId
+                      ProjectPath = projectPath
                       SolutionItemId = solutionItemId
                       SolutionItemPath = solutionItem }
 
@@ -105,6 +122,9 @@ module private WorkspaceFileResolutionScenario =
         finally
             if Directory.Exists directory then
                 Directory.Delete(directory, true)
+
+    let run extension action =
+        runWithProject extension ".fsproj" action
 
     let resolve context requestId targetNodeId expectedRevision =
         let parameters =
@@ -122,6 +142,23 @@ module private WorkspaceFileResolutionScenario =
 
 [<Collection("Workspace scenarios")>]
 type WorkspaceFileResolutionTests() =
+    [<Theory>]
+    [<InlineData(".csproj")>]
+    [<InlineData(".fsproj")>]
+    [<InlineData(".vbproj")>]
+    member _.``resolving a CSharp FSharp or VisualBasic project returns its exact project file``
+        (projectExtension: string)
+        =
+        WorkspaceFileResolutionScenario.runWithProject ".slnx" projectExtension (fun context ->
+            let error, result =
+                WorkspaceFileResolutionScenario.resolve context 10u context.ProjectNodeId 0L
+
+            error |> should equal None
+            let fields = RpcValue.requireMap "file.resolve.result" result
+            fields["targetNodeId"] |> should equal (RpcValue.String context.ProjectNodeId)
+            fields["path"] |> should equal (RpcValue.String context.ProjectPath)
+            fields["revision"] |> RpcValue.requireInteger "revision" |> should equal 0L)
+
     [<Theory>]
     [<InlineData(".sln")>]
     [<InlineData(".slnx")>]

@@ -16,15 +16,17 @@ The v1.0 allowlist is exactly:
 1. `initialize`
 2. `workspace/root`
 3. `workspace/children`
-4. `workspace/export/start`
-5. `workspace/refresh`
-6. `workspace/create/options`
-7. `workspace/commands/list`
-8. `workspace/commands/describe`
-9. `workspace/commands/preview`
-10. `workspace/commands/execute`
-11. `workspace/operations/cancel`
-12. `shutdown`
+4. `workspace/file/resolve`
+5. `workspace/git/status`
+6. `workspace/export/start`
+7. `workspace/refresh`
+8. `workspace/create/options`
+9. `workspace/commands/list`
+10. `workspace/commands/describe`
+11. `workspace/commands/preview`
+12. `workspace/commands/execute`
+13. `workspace/operations/cancel`
+14. `shutdown`
 
 `workspace/root` returns exactly one `workspace` node named from the opened workspace.
 `workspace/children` pages a parent by node ID, page size, and continuation token. The semantic
@@ -45,6 +47,11 @@ core-resolved local path. Other ordinary nodes remain path-free. Property mutati
 descriptors such as `project.property.set`. Filtered and `.slnf` workspaces can contain
 read-only/excluded views. Clients must use revisions and must tolerate paging, export chunks, and
 reset notifications.
+
+`workspace/file/resolve` accepts exactly `{ targetNodeId, expectedRevision }`. At the current
+revision, project nodes resolve to their exact `.csproj`, `.fsproj`, or `.vbproj` path, and project
+files and solution items resolve to their exact existing file. Its exact result is
+`{ revision, targetNodeId, path }`. Other node kinds are not openable and stale revisions conflict.
 
 `workspace/commands/list` discovers descriptors, `workspace/commands/describe` obtains one descriptor,
 and `workspace/commands/preview` creates a revision-bound plan. A mutating or destructive
@@ -84,6 +91,57 @@ Every command preview contains exactly `confirmationToken`, `expiresAtUtc`, `sum
 `removeFromSolution`. Empty creation and deletion complete synchronously. Item and project
 templates return `{ operationId, revision }`; `workspace/operations/completed` is their definitive
 outcome.
+
+## Contextual Rename, Move, and Copy
+
+`workspace.rename` is a write command for one project, project file, physical project directory,
+solution item, or logical solution folder. Its generic `targetNodeId` is the source and its
+arguments are exactly `{ name }`, where `name` is text and one valid path segment.
+
+`workspace.move` and `workspace.copy` use the generic `targetNodeId` as the selected destination.
+Their arguments are exactly `{ sourceNodeIds }`; the public descriptor type of `sourceNodeIds` is
+`nodeIdArray`. Duplicate and parent-child selections normalize to one effective source. Move
+supports applicable physical project files/directories and logical solution projects, items, and
+folders. Copy supports only physical project files and directories.
+
+All sources and the destination resolve against the requested workspace revision. A preview rejects
+unsupported members, cycles, overlaps, invalid names, and existing or duplicate destinations before
+issuing a token. Physical moves can cross projects and compose both project memberships. Logical
+moves compose one solution document. A batch is one no-overwrite transaction: execution either
+applies every filesystem and membership action or compensates actions already applied. Relocated
+path-derived nodes may receive new semantic IDs; unrelated IDs remain stable.
+
+Describe uses exactly `{ commandId, targetNodeId }`. Preview uses exactly
+`{ commandId, targetNodeId, arguments, expectedRevision }`. Execute is an exact deep copy of that
+preview request with only `confirmationToken` added. Synchronous execution returns exactly
+`{ applied: true, revision }`.
+
+## Git status
+
+A client must negotiate `workspace.git.status` before calling `workspace/git/status`. The request is
+exactly `{ expectedRevision }`; absent negotiation returns `unsupported_capability`, and a stale
+workspace revision returns `workspace_conflict`. The exact result is:
+
+```text
+{
+  available,
+  workspaceRevision,
+  statusRevision,
+  decorations: [{ nodeId, state }]
+}
+```
+
+`state` is only `added` or `changed`. Added and untracked paths use `added`; all other working-tree
+changes use `changed`, with `added` taking precedence. Decorations are unique, deterministic, and
+aggregate to visible semantic ancestors. `statusRevision` is monotonic within one live session. It
+advances only when normalized availability or decorations change and is reused for an identical
+snapshot.
+
+The server inspects only the active solution's containing Git worktree through bounded
+`git status --porcelain=v1 -z`. A target outside Git returns `available=false` and no decorations.
+Git launch, output-bound, parse, and mapping failures are structured errors. Status inspection never
+changes workspace revision, emits a workspace delta/reset, mutates files, scans nested
+repositories, or starts a poller.
 
 ## Notifications
 

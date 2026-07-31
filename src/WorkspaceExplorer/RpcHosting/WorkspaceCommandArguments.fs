@@ -80,6 +80,20 @@ module internal WorkspaceCommandArguments =
                                     |> Seq.map (RpcValue.requireString parameter.Id.Value)
                                     |> ImmutableArray.CreateRange
                                 )
+                            | CommandParameterType.NodeIdArray ->
+                                let nodeIds =
+                                    RpcValue.requireArray parameter.Id.Value raw
+                                    |> Seq.map (fun value ->
+                                        RpcValue.requireString parameter.Id.Value value
+                                        |> WorkspaceNodeId.Parse)
+                                    |> ImmutableArray.CreateRange
+
+                                if nodeIds.IsDefaultOrEmpty then
+                                    invalidArg
+                                        parameter.Id.Value
+                                        "Expected at least one workspace node ID."
+
+                                NodeIdArray nodeIds
                             | _ ->
                                 invalidArg parameter.Id.Value "Unsupported command parameter type."
 

@@ -79,6 +79,7 @@ type WorkspaceRpcInitializationTests() =
                 [ "workspace.root"
                   "workspace.create.options"
                   "workspace.file.resolve"
+                  "workspace.git.status"
                   "unknown.claim"
                   "workspace.operations.cancel" ]
                 (Some(
@@ -122,6 +123,7 @@ type WorkspaceRpcInitializationTests() =
             equal
             [ "workspace.create.options"
               "workspace.file.resolve"
+              "workspace.git.status"
               "workspace.operations.cancel"
               "workspace.root" ]
 
@@ -185,6 +187,21 @@ type WorkspaceRpcInitializationTests() =
             match WorkspaceRpc.parseRequest "workspace/file/resolve" parameters with
             | Error error -> (error.Code) |> should equal ("invalid_params")
             | result -> failwithf "invalid file resolve request was accepted: %A" result)
+
+        match
+            WorkspaceRpc.parseRequest
+                "workspace/git/status"
+                (Test.map [ "expectedRevision", RpcValue.Integer 12L ])
+        with
+        | Ok(WorkspaceRpcRequest.GitStatus 12L) -> ()
+        | result -> failwithf "git status schema changed: %A" result
+
+        [ Test.empty
+          Test.map [ "expectedRevision", RpcValue.Integer 0L; "extra", RpcValue.Boolean true ] ]
+        |> List.iter (fun parameters ->
+            match WorkspaceRpc.parseRequest "workspace/git/status" parameters with
+            | Error error -> error.Code |> should equal "invalid_params"
+            | result -> failwithf "invalid git status request was accepted: %A" result)
 
         match
             WorkspaceRpc.parseRequest
