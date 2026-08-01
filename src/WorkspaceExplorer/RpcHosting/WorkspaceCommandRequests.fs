@@ -61,6 +61,8 @@ module internal WorkspaceCommandRequests =
             | WorkspaceCreateKind.Empty -> "empty"
             | WorkspaceCreateKind.ItemTemplate -> "itemTemplate"
             | WorkspaceCreateKind.ProjectTemplate -> "projectTemplate"
+            | WorkspaceCreateKind.SolutionFolder -> "solutionFolder"
+            | WorkspaceCreateKind.AddExisting -> "addExisting"
 
         let execution =
             match entry.Execution with
@@ -129,7 +131,24 @@ module internal WorkspaceCommandRequests =
         (cancellationToken: CancellationToken)
         =
         task {
-            if
+            if descriptor.Id.Value = "workspace.addExisting" then
+                if not (context.AddExistingNegotiated()) then
+                    return
+                        Error(
+                            RpcErrors.unsupported
+                                "The client did not negotiate workspace.addExisting.selector."
+                        )
+                else
+                    return!
+                        AddExistingMutation.prepareAsync
+                            workspace
+                            context.State
+                            context.AddExistingSelector
+                            targetContext
+                            parsed
+                            expectedRevision
+                            cancellationToken
+            elif
                 descriptor.Id.Value = "workspace.rename"
                 || descriptor.Id.Value = "workspace.move"
                 || descriptor.Id.Value = "workspace.copy"
@@ -174,7 +193,11 @@ module internal WorkspaceCommandRequests =
                               TemplateExecution = None }
         }
 
-    let private availableCommands workspace (context: WorkspaceSemanticContext) =
+    let private availableCommands
+        (requestContext: WorkspaceCommandContext)
+        workspace
+        (context: WorkspaceSemanticContext)
+        =
         let target = commandTarget context
 
         let solutionAndProjectCommands =
@@ -193,8 +216,12 @@ module internal WorkspaceCommandRequests =
         |> Seq.append (
             ContextWorkspaceCommands.discover workspace.Descriptor.IsReadOnly (Some context.Node)
         )
+        |> Seq.filter (fun descriptor ->
+            descriptor.Id.Value <> "workspace.addExisting"
+            || requestContext.AddExistingNegotiated())
 
     let private contextualCommandIsApplicable
+        (requestContext: WorkspaceCommandContext)
         (context: WorkspaceSemanticContext)
         (descriptor: CommandDescriptor)
         =
@@ -202,6 +229,9 @@ module internal WorkspaceCommandRequests =
         | None -> true
         | Some _ ->
             ContextWorkspaceCommands.discover false (Some context.Node)
+            |> Seq.filter (fun candidate ->
+                candidate.Id.Value <> "workspace.addExisting"
+                || requestContext.AddExistingNegotiated())
             |> Seq.exists (fun candidate -> candidate.Id = descriptor.Id)
 
     let private resolveTarget
@@ -258,7 +288,14 @@ module internal WorkspaceCommandRequests =
                             catalog
                             |> Result.map (fun catalog ->
                                 { Result =
-                                    WorkspaceTemplateCatalog.options target catalog
+                                    WorkspaceTemplateCatalog.options
+                                        target
+                                        (context.AddExistingNegotiated())
+                                        catalog
+                                    |> Seq.filter (fun option ->
+                                        not workspace.Descriptor.IsReadOnly
+                                        || (option.Kind <> WorkspaceCreateKind.SolutionFolder
+                                            && option.Kind <> WorkspaceCreateKind.AddExisting))
                                     |> Seq.map createOption
                                     |> WorkspaceRpcResponses.createOptionsResult revision
                                   Notifications = []
@@ -281,7 +318,7 @@ module internal WorkspaceCommandRequests =
                     return
                         Ok
                             { Result =
-                                availableCommands workspace target
+                                availableCommands context workspace target
                                 |> WorkspaceRpcResponses.commandListResult
                               Notifications = []
                               BackgroundWork = None
@@ -296,7 +333,7 @@ module internal WorkspaceCommandRequests =
                 | _, None ->
                     return Error(RpcErrors.create "not_found" "The command was not found." None)
                 | Ok(_, target), Some descriptor when
-                    availableCommands workspace target
+                    availableCommands context workspace target
                     |> Seq.exists (fun candidate -> candidate.Id = descriptor.Id)
                     ->
                     return
@@ -329,7 +366,7 @@ module internal WorkspaceCommandRequests =
                     | _, None ->
                         return Error(RpcErrors.create "not_found" "The command was not found." None)
                     | Ok(_, targetContext), Some descriptor when
-                        not (contextualCommandIsApplicable targetContext descriptor)
+                        not (contextualCommandIsApplicable context targetContext descriptor)
                         ->
                         return
                             Error(
@@ -448,7 +485,7 @@ module internal WorkspaceCommandRequests =
                                         "The selected .slnf workspace is read-only."
                                 )
                         | Ok(_, targetContext), Some descriptor, _ when
-                            not (contextualCommandIsApplicable targetContext descriptor)
+                            not (contextualCommandIsApplicable context targetContext descriptor)
                             ->
                             return
                                 Error(
@@ -526,6 +563,9 @@ module internal WorkspaceCommandRequests =
                                     | Success(RolledBack failure) ->
                                         return Error(WorkspaceRpcResponses.failureError failure)
                                     | Success Applied ->
+                                        if descriptor.Id.Value = "workspace.addExisting" then
+                                            context.AddExistingSelector.Invalidate()
+
                                         let! invalidated =
                                             context.State.InvalidateFromTransactionAsync(
                                                 plannedPaths prepared.Plan,

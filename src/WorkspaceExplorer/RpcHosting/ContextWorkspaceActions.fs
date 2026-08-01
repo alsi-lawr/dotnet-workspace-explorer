@@ -75,7 +75,9 @@ module internal ContextWorkspaceActions =
             match entry.Kind with
             | WorkspaceCreateKind.ItemTemplate -> "item"
             | WorkspaceCreateKind.ProjectTemplate -> "project"
-            | WorkspaceCreateKind.Empty ->
+            | WorkspaceCreateKind.Empty
+            | WorkspaceCreateKind.SolutionFolder
+            | WorkspaceCreateKind.AddExisting ->
                 invalidArg (nameof entry) "An empty creation is not a dotnet template."
 
         CommandArguments.Create
@@ -130,7 +132,9 @@ module internal ContextWorkspaceActions =
                       match entry.Kind with
                       | WorkspaceCreateKind.ItemTemplate -> "item"
                       | WorkspaceCreateKind.ProjectTemplate -> "project"
-                      | WorkspaceCreateKind.Empty ->
+                      | WorkspaceCreateKind.Empty
+                      | WorkspaceCreateKind.SolutionFolder
+                      | WorkspaceCreateKind.AddExisting ->
                           invalidArg (nameof entry) "An empty creation is not a dotnet template."
 
                   if entry.Kind = WorkspaceCreateKind.ProjectTemplate then
@@ -282,7 +286,7 @@ module internal ContextWorkspaceActions =
                 match catalog with
                 | Error rpcError -> return Error rpcError
                 | Ok catalog ->
-                    let available = WorkspaceTemplateCatalog.options context catalog
+                    let available = WorkspaceTemplateCatalog.options context true catalog
 
                     match
                         available |> Array.tryFind (fun entry -> entry.SelectionId = selectionId)
@@ -294,6 +298,33 @@ module internal ContextWorkspaceActions =
                                     "template_catalog_changed"
                                     "The selected creation option is no longer available."
                                     None
+                            )
+                    | Some entry when entry.Kind = WorkspaceCreateKind.SolutionFolder ->
+                        let request =
+                            { CommandId = CommandId.Create "solution.folder.add"
+                              TargetWorkspaceNodeId =
+                                WorkspaceCommandArguments.commandTarget context
+                              Arguments = CommandArguments.Create [ parameter "name" (Text name) ]
+                              ExpectedRevision = WorkspaceRevision.Create expectedRevision }
+
+                        let! planned = planLowLevel workspace state request cancellationToken
+
+                        return
+                            planned
+                            |> Result.map (fun plan ->
+                                { Plan = plan
+                                  CommandRequest = Some request
+                                  Summary = $"Create solution folder '{name}'"
+                                  Effects =
+                                    [| { Operation = "addToSolution"
+                                         Target = name
+                                         Recursive = false } |]
+                                  TemplateExecution = None })
+                    | Some entry when entry.Kind = WorkspaceCreateKind.AddExisting ->
+                        return
+                            Error(
+                                RpcErrors.invalidParams
+                                    "Add Existing must be started through the selector."
                             )
                     | Some entry when entry.Kind = WorkspaceCreateKind.Empty ->
                         match context.ProjectId, context.PhysicalDirectory with

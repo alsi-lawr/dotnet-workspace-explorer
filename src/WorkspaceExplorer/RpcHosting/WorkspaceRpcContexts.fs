@@ -28,5 +28,7 @@ type internal WorkspaceCommandContext =
       ActiveOperations: ConcurrentDictionary<string, WorkspaceExportOperation>
       WorkspaceRoot: string
       MaximumFrameBytes: unit -> int
+      AddExistingNegotiated: unit -> bool
+      AddExistingSelector: AddExistingSelector
       RebuildWatcher: CancellationToken -> Task<RpcFrame list>
       MutationNotifications: WorkspaceProjectInvalidationResult -> RpcFrame list }

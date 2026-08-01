@@ -18,6 +18,8 @@ type internal WorkspaceCreateKind =
     | Empty
     | ItemTemplate
     | ProjectTemplate
+    | SolutionFolder
+    | AddExisting
 
 [<RequireQualifiedAccess>]
 type internal WorkspaceCreateExecution =
@@ -121,6 +123,8 @@ module internal WorkspaceTemplateCatalog =
             | WorkspaceCreateKind.Empty -> "empty"
             | WorkspaceCreateKind.ItemTemplate -> "item"
             | WorkspaceCreateKind.ProjectTemplate -> "project"
+            | WorkspaceCreateKind.SolutionFolder -> "solution-folder"
+            | WorkspaceCreateKind.AddExisting -> "add-existing"
 
         String.concat
             "\u001f"
@@ -376,8 +380,25 @@ module internal WorkspaceTemplateCatalog =
                         return Error(invalid "cancelled" "Template discovery was cancelled.")
         }
 
-    let find selectionId catalog =
-        if selectionId = catalog.EmptySelectionId then
+    let find suppliedSelectionId (catalog: WorkspaceTemplateCatalog) =
+        let logical kind identity shortName displayName description =
+            let id = selectionId catalog.Fingerprint identity shortName None kind
+
+            if suppliedSelectionId = id then
+                Some
+                    { SelectionId = id
+                      Kind = kind
+                      DisplayName = displayName
+                      Description = description
+                      Language = None
+                      Execution = WorkspaceCreateExecution.Transaction
+                      Identity = identity
+                      ShortName = shortName
+                      Fingerprint = catalog.Fingerprint }
+            else
+                None
+
+        if suppliedSelectionId = catalog.EmptySelectionId then
             Some
                 { SelectionId = catalog.EmptySelectionId
                   Kind = WorkspaceCreateKind.Empty
@@ -389,7 +410,22 @@ module internal WorkspaceTemplateCatalog =
                   ShortName = "empty"
                   Fingerprint = catalog.Fingerprint }
         else
-            catalog.Entries |> Array.tryFind (fun entry -> entry.SelectionId = selectionId)
+            logical
+                WorkspaceCreateKind.SolutionFolder
+                "workspace.solution-folder"
+                "solution-folder"
+                "Solution Folder"
+                "Create a logical solution folder"
+            |> Option.orElseWith (fun () ->
+                logical
+                    WorkspaceCreateKind.AddExisting
+                    "workspace.add-existing"
+                    "add-existing"
+                    "Add Existing"
+                    "Add existing projects or files")
+            |> Option.orElseWith (fun () ->
+                catalog.Entries
+                |> Array.tryFind (fun entry -> entry.SelectionId = suppliedSelectionId))
 
     let binding (entry: WorkspaceTemplateEntry) =
         { SelectionId = entry.SelectionId
@@ -399,7 +435,7 @@ module internal WorkspaceTemplateCatalog =
           Kind = entry.Kind
           Language = entry.Language }
 
-    let validateBinding expected catalog =
+    let validateBinding (expected: WorkspaceTemplateBinding) (catalog: WorkspaceTemplateCatalog) =
         match find expected.SelectionId catalog with
         | Some entry when
             catalog.Fingerprint = expected.Fingerprint
@@ -430,11 +466,48 @@ module internal WorkspaceTemplateCatalog =
             | ".vbproj" -> Some "VB"
             | _ -> None)
 
-    let options (context: WorkspaceSemanticContext) catalog =
+    let options
+        (context: WorkspaceSemanticContext)
+        addExistingNegotiated
+        (catalog: WorkspaceTemplateCatalog)
+        =
         let projectLanguage = projectLanguage context.ProjectPath
         let hasProject = context.ProjectId.IsSome
 
         seq {
+            if
+                context.Node.Kind = WorkspaceNodeKind.Workspace
+                || context.Node.Kind = WorkspaceNodeKind.SolutionFolder
+            then
+                yield
+                    find
+                        (selectionId
+                            catalog.Fingerprint
+                            "workspace.solution-folder"
+                            "solution-folder"
+                            None
+                            WorkspaceCreateKind.SolutionFolder)
+                        catalog
+                    |> Option.get
+
+            if
+                addExistingNegotiated
+                && (context.Node.Kind = WorkspaceNodeKind.Workspace
+                    || context.Node.Kind = WorkspaceNodeKind.SolutionFolder
+                    || context.Node.Kind = WorkspaceNodeKind.Project
+                    || context.Node.Kind = WorkspaceNodeKind.ProjectFolder)
+            then
+                yield
+                    find
+                        (selectionId
+                            catalog.Fingerprint
+                            "workspace.add-existing"
+                            "add-existing"
+                            None
+                            WorkspaceCreateKind.AddExisting)
+                        catalog
+                    |> Option.get
+
             if hasProject then
                 yield
                     find catalog.EmptySelectionId catalog

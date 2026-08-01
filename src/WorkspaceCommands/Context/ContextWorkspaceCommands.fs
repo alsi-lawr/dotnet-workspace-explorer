@@ -97,7 +97,20 @@ module internal ContextWorkspaceCommands =
               WorkspaceNodeKind.DependencyProperty ]
         )
 
-    let all = ImmutableArray.Create(create, delete, rename, move, copy)
+    let addExisting =
+        CommandDescriptor.Create(
+            CommandId.Create "workspace.addExisting",
+            "Add Existing",
+            CommandAccess.Write,
+            [ typedParameter "selectorId" CommandParameterType.Text "Selector"
+              typedParameter "entryIds" CommandParameterType.TextArray "Entries" ],
+            [ WorkspaceNodeKind.Workspace
+              WorkspaceNodeKind.SolutionFolder
+              WorkspaceNodeKind.Project
+              WorkspaceNodeKind.ProjectFolder ]
+        )
+
+    let all = ImmutableArray.Create(create, delete, rename, move, copy, addExisting)
 
     let tryDescribe id =
         all |> Seq.tryFind (fun descriptor -> descriptor.Id = id)

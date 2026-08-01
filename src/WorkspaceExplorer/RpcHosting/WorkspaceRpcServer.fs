@@ -49,7 +49,11 @@ module internal WorkspaceRpcServer =
                 let mutable maximumFrameBytes = MessagePackRpcCodec.secureLimits.MaximumValueBytes
                 let mutable maximumPageSize = 256
                 let mutable gitStatusNegotiated = false
+                let mutable addExistingNegotiated = false
                 use publicationGate = new SemaphoreSlim(1, 1)
+
+                use addExistingSelector =
+                    new AddExistingSelector((fun () -> maximumPageSize), TimeProvider.System)
 
                 let watcher =
                     WorkspaceIndexWatcher(
@@ -105,6 +109,8 @@ module internal WorkspaceRpcServer =
                       ActiveOperations = activeOperations
                       WorkspaceRoot = workspaceRoot
                       MaximumFrameBytes = fun () -> maximumFrameBytes
+                      AddExistingNegotiated = fun () -> addExistingNegotiated
+                      AddExistingSelector = addExistingSelector
                       RebuildWatcher =
                         WorkspaceNavigationRequests.rebuildWatcher workspaceRequestContext
                       MutationNotifications = WorkspaceNavigationRequests.mutationNotifications }
@@ -119,6 +125,9 @@ module internal WorkspaceRpcServer =
 
                             gitStatusNegotiated <-
                                 request.Capabilities.Contains "workspace.git.status"
+
+                            addExistingNegotiated <-
+                                request.Capabilities.Contains "workspace.addExisting.selector"
 
                             return
                                 Ok(
@@ -139,36 +148,159 @@ module internal WorkspaceRpcServer =
                         match WorkspaceRpc.parseRequest methodName parameters with
                         | Error rpcError -> return Error rpcError
                         | Ok request ->
-                            let! workspaceResult =
-                                WorkspaceNavigationRequests.tryDispatch
-                                    workspaceRequestContext
-                                    request
-                                    requestCancellationToken
+                            let! addExistingResult =
+                                task {
+                                    let result value =
+                                        { Result = value
+                                          Notifications = []
+                                          BackgroundWork = None
+                                          AfterResponse = None
+                                          StopAfterResponse = false }
 
-                            match workspaceResult with
+                                    match request with
+                                    | WorkspaceRpcRequest.AddExistingStart(targetNodeId,
+                                                                           selectionId,
+                                                                           expectedRevision,
+                                                                           pageSize) ->
+                                        if not addExistingNegotiated then
+                                            return
+                                                Some(
+                                                    Error(
+                                                        RpcErrors.unsupported
+                                                            "The client did not negotiate workspace.addExisting.selector."
+                                                    )
+                                                )
+                                        else
+                                            let! opened =
+                                                state.WorkspaceAsync requestCancellationToken
+
+                                            match opened with
+                                            | Error error -> return Some(Error error)
+                                            | Ok workspace ->
+                                                let! resolved =
+                                                    state.SemanticContextAsync(
+                                                        targetNodeId,
+                                                        Some expectedRevision,
+                                                        requestCancellationToken
+                                                    )
+
+                                                match resolved with
+                                                | Error error -> return Some(Error error)
+                                                | Ok(_, target) ->
+                                                    let! catalog =
+                                                        WorkspaceTemplateCatalog.readAsync
+                                                            workspace
+                                                            requestCancellationToken
+
+                                                    match catalog with
+                                                    | Error error -> return Some(Error error)
+                                                    | Ok catalog ->
+                                                        let valid =
+                                                            WorkspaceTemplateCatalog.options
+                                                                target
+                                                                true
+                                                                catalog
+                                                            |> Seq.exists (fun entry ->
+                                                                entry.SelectionId = selectionId
+                                                                && entry.Kind = WorkspaceCreateKind.AddExisting)
+
+                                                        if not valid then
+                                                            return
+                                                                Some(
+                                                                    Error(
+                                                                        RpcErrors.invalidParams
+                                                                            "selectionId is not the currently advertised Add Existing option."
+                                                                    )
+                                                                )
+                                                        else
+                                                            let! started =
+                                                                addExistingSelector.StartAsync(
+                                                                    workspace,
+                                                                    state,
+                                                                    target,
+                                                                    selectionId,
+                                                                    expectedRevision,
+                                                                    pageSize,
+                                                                    requestCancellationToken
+                                                                )
+
+                                                            return
+                                                                Some(started |> Result.map result)
+                                    | WorkspaceRpcRequest.AddExistingChildren(selectorId,
+                                                                              parentEntryId,
+                                                                              pageSize,
+                                                                              continuationToken) ->
+                                        if not addExistingNegotiated then
+                                            return
+                                                Some(
+                                                    Error(
+                                                        RpcErrors.unsupported
+                                                            "The client did not negotiate workspace.addExisting.selector."
+                                                    )
+                                                )
+                                        else
+                                            return
+                                                Some(
+                                                    addExistingSelector.Children(
+                                                        selectorId,
+                                                        parentEntryId,
+                                                        pageSize,
+                                                        continuationToken,
+                                                        state.Revision
+                                                    )
+                                                    |> Result.map result
+                                                )
+                                    | WorkspaceRpcRequest.AddExistingClose selectorId ->
+                                        if not addExistingNegotiated then
+                                            return
+                                                Some(
+                                                    Error(
+                                                        RpcErrors.unsupported
+                                                            "The client did not negotiate workspace.addExisting.selector."
+                                                    )
+                                                )
+                                        else
+                                            return
+                                                Some(
+                                                    addExistingSelector.Close selectorId
+                                                    |> Result.map result
+                                                )
+                                    | _ -> return None
+                                }
+
+                            match addExistingResult with
                             | Some result -> return result
                             | None ->
-                                let! exportResult =
-                                    WorkspaceExportRequests.tryDispatch
+                                let! workspaceResult =
+                                    WorkspaceNavigationRequests.tryDispatch
                                         workspaceRequestContext
                                         request
                                         requestCancellationToken
 
-                                match exportResult with
+                                match workspaceResult with
                                 | Some result -> return result
                                 | None ->
-                                    match request with
-                                    | WorkspaceRpcRequest.CommandList _
-                                    | WorkspaceRpcRequest.CreateOptions _
-                                    | WorkspaceRpcRequest.CommandDescribe _
-                                    | WorkspaceRpcRequest.CommandPreview _
-                                    | WorkspaceRpcRequest.CommandExecute _ ->
-                                        return!
-                                            WorkspaceCommandRequests.dispatch
-                                                commandRequestContext
-                                                request
-                                                requestCancellationToken
-                                    | _ -> return Error RpcErrors.internalError
+                                    let! exportResult =
+                                        WorkspaceExportRequests.tryDispatch
+                                            workspaceRequestContext
+                                            request
+                                            requestCancellationToken
+
+                                    match exportResult with
+                                    | Some result -> return result
+                                    | None ->
+                                        match request with
+                                        | WorkspaceRpcRequest.CommandList _
+                                        | WorkspaceRpcRequest.CreateOptions _
+                                        | WorkspaceRpcRequest.CommandDescribe _
+                                        | WorkspaceRpcRequest.CommandPreview _
+                                        | WorkspaceRpcRequest.CommandExecute _ ->
+                                            return!
+                                                WorkspaceCommandRequests.dispatch
+                                                    commandRequestContext
+                                                    request
+                                                    requestCancellationToken
+                                        | _ -> return Error RpcErrors.internalError
                     }
 
                 let dispatch
@@ -186,6 +318,9 @@ module internal WorkspaceRpcServer =
                             | Ok(WorkspaceRpcRequest.GitStatus _)
                             | Ok(WorkspaceRpcRequest.Refresh _)
                             | Ok(WorkspaceRpcRequest.CreateOptions _)
+                            | Ok(WorkspaceRpcRequest.AddExistingStart _)
+                            | Ok(WorkspaceRpcRequest.AddExistingChildren _)
+                            | Ok(WorkspaceRpcRequest.AddExistingClose _)
                             | Ok(WorkspaceRpcRequest.CommandList _)
                             | Ok(WorkspaceRpcRequest.CommandDescribe _)
                             | Ok(WorkspaceRpcRequest.CommandPreview _)

@@ -33,12 +33,15 @@
         <Compile Include="RpcHosting/WorkspaceGitStatusMapping.fs" />
         <Compile Include="RpcHosting/WorkspaceGitProcess.fs" />
         <Compile Include="RpcHosting/WorkspaceGitStatus.fs" />
+        <Compile Include="RpcHosting/AddExisting/Contracts.fs" />
+        <Compile Include="RpcHosting/AddExisting/Selector.fs" />
         <Compile Include="RpcHosting/WorkspaceRpcContexts.fs" />
         <Compile Include="RpcHosting/WorkspaceNavigationRequests.fs" />
         <Compile Include="RpcHosting/WorkspaceExportRequests.fs" />
         <Compile Include="RpcHosting/WorkspaceCommandArguments.fs" />
         <Compile Include="RpcHosting/WorkspaceTemplateCatalog.fs" />
         <Compile Include="RpcHosting/ContextWorkspaceActions.fs" />
+        <Compile Include="RpcHosting/AddExisting/Mutation.fs" />
         <Compile Include="RpcHosting/ContextWorkspacePhysicalBatch.fs" />
         <Compile Include="RpcHosting/ContextWorkspaceSolutionBatch.fs" />
         <Compile Include="RpcHosting/ContextWorkspaceBatchActions.fs" />

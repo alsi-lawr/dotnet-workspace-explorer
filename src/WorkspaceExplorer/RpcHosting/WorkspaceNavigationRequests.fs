@@ -334,6 +334,9 @@ module internal WorkspaceNavigationRequests =
         | WorkspaceRpcRequest.Shutdown -> dispatchShutdown context |> someAsync
         | WorkspaceRpcRequest.Export
         | WorkspaceRpcRequest.CreateOptions _
+        | WorkspaceRpcRequest.AddExistingStart _
+        | WorkspaceRpcRequest.AddExistingChildren _
+        | WorkspaceRpcRequest.AddExistingClose _
         | WorkspaceRpcRequest.CommandList _
         | WorkspaceRpcRequest.CommandDescribe _
         | WorkspaceRpcRequest.CommandPreview _

@@ -278,13 +278,14 @@ type ContextWorkspaceContractFixtureTests() =
                 ProjectPath = Some(WorkspaceArtifactPath.Create(Path.GetFullPath "Fixture.csproj"))
                 PhysicalDirectory = Some(WorkspaceArtifactPath.Create(Path.GetFullPath ".")) }
 
-        let rootOptions = WorkspaceTemplateCatalog.options rootContext catalog
+        let rootOptions = WorkspaceTemplateCatalog.options rootContext false catalog
 
         (rootOptions)
+        |> Seq.filter (fun option -> option.Kind <> WorkspaceCreateKind.SolutionFolder)
         |> Seq.iter (fun option ->
             (option.Kind) |> should equal (WorkspaceCreateKind.ProjectTemplate))
 
-        let projectOptions = WorkspaceTemplateCatalog.options projectContext catalog
+        let projectOptions = WorkspaceTemplateCatalog.options projectContext false catalog
 
         (projectOptions)
         |> Seq.exists (fun option -> option.Kind = WorkspaceCreateKind.Empty)

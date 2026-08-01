@@ -30,7 +30,8 @@ module WorkspaceRpc =
         match commandId with
         | "workspace.rename"
         | "workspace.move"
-        | "workspace.copy" -> Some(requiredString "targetNodeId" fields)
+        | "workspace.copy"
+        | "workspace.addExisting" -> Some(requiredString "targetNodeId" fields)
         | _ -> optionalString "targetNodeId" fields
 
     let private revision name value =
@@ -207,6 +208,42 @@ module WorkspaceRpc =
                         |> RpcValue.requireField "expectedRevision"
                         |> revision "expectedRevision"
                     )
+                | "workspace/addExisting/start" ->
+                    let fields = RpcValue.requireMap "params" parameters
+
+                    RpcValue.ensureOnly
+                        "params"
+                        [ "targetNodeId"; "selectionId"; "expectedRevision"; "pageSize" ]
+                        fields
+
+                    WorkspaceRpcRequest.AddExistingStart(
+                        requiredString "targetNodeId" fields,
+                        requiredString "selectionId" fields,
+                        fields
+                        |> RpcValue.requireField "expectedRevision"
+                        |> revision "expectedRevision",
+                        RpcValue.optionalField "pageSize" fields
+                        |> Option.map (positiveInt 1 4096 "pageSize")
+                    )
+                | "workspace/addExisting/children" ->
+                    let fields = RpcValue.requireMap "params" parameters
+
+                    RpcValue.ensureOnly
+                        "params"
+                        [ "selectorId"; "parentEntryId"; "pageSize"; "continuationToken" ]
+                        fields
+
+                    WorkspaceRpcRequest.AddExistingChildren(
+                        requiredString "selectorId" fields,
+                        requiredString "parentEntryId" fields,
+                        RpcValue.optionalField "pageSize" fields
+                        |> Option.map (positiveInt 1 4096 "pageSize"),
+                        optionalString "continuationToken" fields
+                    )
+                | "workspace/addExisting/close" ->
+                    let fields = RpcValue.requireMap "params" parameters
+                    RpcValue.ensureOnly "params" [ "selectorId" ] fields
+                    WorkspaceRpcRequest.AddExistingClose(requiredString "selectorId" fields)
                 | "workspace/commands/list" ->
                     let fields = RpcValue.requireMap "params" parameters
                     RpcValue.ensureOnly "params" [ "targetNodeId" ] fields
@@ -301,6 +338,9 @@ module WorkspaceRpcProfile =
                     "workspace/export/start"
                     "workspace/refresh"
                     "workspace/create/options"
+                    "workspace/addExisting/start"
+                    "workspace/addExisting/children"
+                    "workspace/addExisting/close"
                     "workspace/commands/list"
                     "workspace/commands/describe"
                     "workspace/commands/preview"

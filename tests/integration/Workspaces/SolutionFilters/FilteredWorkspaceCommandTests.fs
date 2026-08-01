@@ -352,6 +352,7 @@ type FilteredWorkspaceCommandTests() =
                           RpcValue.array
                               [ RpcValue.String "workspace.root"
                                 RpcValue.String "workspace.create.options"
+                                RpcValue.String "workspace.addExisting.selector"
                                 RpcValue.String "workspace.commands.list"
                                 RpcValue.String "workspace.commands.describe"
                                 RpcValue.String "workspace.commands.preview"

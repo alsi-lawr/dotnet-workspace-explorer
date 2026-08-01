@@ -22,6 +22,7 @@ module WorkspaceRpcResponses =
               "workspace.delta"
               "workspace.reset"
               "workspace.create.options"
+              "workspace.addExisting.selector"
               "workspace.commands.list"
               "workspace.commands.describe"
               "workspace.commands.preview"

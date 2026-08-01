@@ -120,6 +120,7 @@ type WorkspaceRpcInitializationTests() =
                 "test"
                 [ "workspace.root"
                   "workspace.create.options"
+                  "workspace.addExisting.selector"
                   "workspace.file.resolve"
                   "workspace.git.status"
                   "unknown.claim"
@@ -163,7 +164,8 @@ type WorkspaceRpcInitializationTests() =
         negotiated
         |> should
             equal
-            [ "workspace.create.options"
+            [ "workspace.addExisting.selector"
+              "workspace.create.options"
               "workspace.file.resolve"
               "workspace.git.status"
               "workspace.operations.cancel"
@@ -264,3 +266,47 @@ type WorkspaceRpcInitializationTests() =
             match WorkspaceRpc.parseRequest "workspace/create/options" parameters with
             | Error error -> (error.Code) |> should equal ("invalid_params")
             | result -> failwithf "invalid create options request was accepted: %A" result)
+
+        match
+            WorkspaceRpc.parseRequest
+                "workspace/addExisting/start"
+                (Test.map
+                    [ "targetNodeId", RpcValue.String "node"
+                      "selectionId", RpcValue.String "selection"
+                      "expectedRevision", RpcValue.Integer 12L
+                      "pageSize", RpcValue.Integer 25L ])
+        with
+        | Ok(WorkspaceRpcRequest.AddExistingStart("node", "selection", 12L, Some 25)) -> ()
+        | result -> failwithf "Add Existing start schema changed: %A" result
+
+        match
+            WorkspaceRpc.parseRequest
+                "workspace/addExisting/children"
+                (Test.map
+                    [ "selectorId", RpcValue.String "selector"
+                      "parentEntryId", RpcValue.String "parent"
+                      "continuationToken", RpcValue.String "next" ])
+        with
+        | Ok(WorkspaceRpcRequest.AddExistingChildren("selector", "parent", None, Some "next")) -> ()
+        | result -> failwithf "Add Existing children schema changed: %A" result
+
+        match
+            WorkspaceRpc.parseRequest
+                "workspace/addExisting/close"
+                (Test.map [ "selectorId", RpcValue.String "selector" ])
+        with
+        | Ok(WorkspaceRpcRequest.AddExistingClose "selector") -> ()
+        | result -> failwithf "Add Existing close schema changed: %A" result
+
+        [ "workspace/addExisting/start", Test.empty
+          "workspace/addExisting/children",
+          Test.map
+              [ "selectorId", RpcValue.String "selector"
+                "parentEntryId", RpcValue.String "parent"
+                "pageSize", RpcValue.Integer 0L ]
+          "workspace/addExisting/close",
+          Test.map [ "selectorId", RpcValue.String "selector"; "extra", RpcValue.Boolean true ] ]
+        |> List.iter (fun (methodName, parameters) ->
+            match WorkspaceRpc.parseRequest methodName parameters with
+            | Error error -> error.Code |> should equal "invalid_params"
+            | result -> failwithf "invalid %s request was accepted: %A" methodName result)

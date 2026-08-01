@@ -28,6 +28,10 @@
         <Compile Include="WorkspaceRpc/WorkspaceSessionTests.fs" />
         <Compile Include="WorkspaceRpc/WorkspaceFileResolutionTests.fs" />
         <Compile Include="WorkspaceRpc/WorkspaceGitStatusTests.fs" />
+        <Compile Include="WorkspaceRpc/AddExisting/WorkspaceAddExistingScenario.fs" />
+        <Compile Include="WorkspaceRpc/AddExisting/WorkspaceAddExistingSolutionTests.fs" />
+        <Compile Include="WorkspaceRpc/AddExisting/WorkspaceAddExistingProjectTests.fs" />
+        <Compile Include="WorkspaceRpc/AddExisting/WorkspaceAddExistingSafetyTests.fs" />
         <Compile Include="WorkspaceExport/WorkspaceExportStreamingTests.fs" />
         <Compile Include="WorkspaceIndex/WorkspacePagingAndResetTests.fs" />
         <Compile Include="WorkspaceRpc/WorkspaceEndpointLimitTests.fs" />

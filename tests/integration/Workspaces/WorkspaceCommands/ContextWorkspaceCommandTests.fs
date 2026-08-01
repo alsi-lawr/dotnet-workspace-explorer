@@ -1486,11 +1486,13 @@ type ContextWorkspaceCommandTests() =
                 |> Seq.find (fun option ->
                     let kind = WorkspaceRpcScenario.field "kind" option
                     let displayName = WorkspaceRpcScenario.field "displayName" option
-                    let language = WorkspaceRpcScenario.field "language" option
+
+                    let language =
+                        RpcValue.optionalField "language" (WorkspaceRpcScenario.fields option)
 
                     kind = RpcValue.String "projectTemplate"
                     && displayName = RpcValue.String "Class Library"
-                    && language = RpcValue.String "C#")
+                    && language = Some(RpcValue.String "C#"))
 
             let projectArguments =
                 WorkspaceRpcScenario.map
