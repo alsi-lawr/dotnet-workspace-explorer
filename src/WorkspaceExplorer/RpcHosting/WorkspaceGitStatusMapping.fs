@@ -8,13 +8,17 @@ open Dotnet.WorkspaceExplorer.WorkspaceIndex
 
 [<RequireQualifiedAccess>]
 module internal WorkspaceGitStatusMapping =
-    let private stronger left right =
+    let private strongerLegacy left right =
         match left, right with
         | Added, _
         | _, Added -> Added
         | _ -> Changed
 
-    let mapDecorations workspacePath (nodes: WorkspaceGitNode array) changes =
+    let mapDecorations
+        workspacePath
+        (nodes: WorkspaceGitNode array)
+        (snapshot: WorkspaceGitPathSnapshot)
+        =
         try
             let comparison =
                 match
@@ -53,45 +57,84 @@ module internal WorkspaceGitStatusMapping =
                 |> Seq.map (fun node -> node.NodeId.Value, node.ParentNodeId |> Option.map _.Value)
                 |> dict
 
-            let decorations = Dictionary<string, GitDecorationState>(StringComparer.Ordinal)
+            let legacyDecorations =
+                Dictionary<string, GitDecorationState>(StringComparer.Ordinal)
 
-            let add nodeId state =
-                match decorations.TryGetValue nodeId with
-                | true, existing -> decorations[nodeId] <- stronger existing state
-                | _ -> decorations[nodeId] <- state
+            let decorations =
+                Dictionary<string, HashSet<GitStatusState>>(StringComparer.Ordinal)
 
-            for state, path in changes do
+            let addStates nodeId states =
+                let target =
+                    match decorations.TryGetValue nodeId with
+                    | true, existing -> existing
+                    | _ ->
+                        let created = HashSet<GitStatusState>()
+                        decorations.Add(nodeId, created)
+                        created
+
+                for state in states do
+                    target.Add state |> ignore
+
+            let addLegacy nodeId legacy =
+                match legacyDecorations.TryGetValue nodeId with
+                | true, existing -> legacyDecorations[nodeId] <- strongerLegacy existing legacy
+                | _ -> legacyDecorations[nodeId] <- legacy
+
+            for entry in snapshot.Entries do
                 for node in nodes do
                     let direct =
                         node.PhysicalPath
-                        |> Option.exists (fun candidate -> same candidate.Value path)
+                        |> Option.exists (fun candidate -> same candidate.Value entry.Path)
 
                     let contained =
                         node.ContainerPath
-                        |> Option.exists (fun candidate -> under candidate.Value path)
+                        |> Option.exists (fun candidate -> under candidate.Value entry.Path)
 
                     if direct || contained then
-                        add node.NodeId.Value state
+                        addStates node.NodeId.Value entry.States
+                        entry.LegacyState |> Option.iter (addLegacy node.NodeId.Value)
 
-            for KeyValue(nodeId, state) in decorations |> Seq.toArray do
+            for KeyValue(nodeId, states) in decorations |> Seq.toArray do
                 let mutable parent =
                     match parents.TryGetValue nodeId with
                     | true, value -> value
                     | _ -> None
 
                 while parent.IsSome do
-                    add parent.Value state
+                    addStates parent.Value states
 
                     parent <-
                         match parents.TryGetValue parent.Value with
                         | true, value -> value
                         | _ -> None
 
-            decorations
-            |> Seq.map (fun (KeyValue(nodeId, state)) -> nodeId, state)
-            |> Seq.sortBy fst
-            |> Seq.toArray
-            |> Ok
+            for KeyValue(nodeId, legacy) in legacyDecorations |> Seq.toArray do
+                let mutable parent =
+                    match parents.TryGetValue nodeId with
+                    | true, value -> value
+                    | _ -> None
+
+                while parent.IsSome do
+                    addLegacy parent.Value legacy
+
+                    parent <-
+                        match parents.TryGetValue parent.Value with
+                        | true, value -> value
+                        | _ -> None
+
+            Ok
+                { Available = true
+                  LegacyDecorations =
+                    legacyDecorations
+                    |> Seq.map (fun (KeyValue(nodeId, state)) -> nodeId, state)
+                    |> Seq.sortBy fst
+                    |> Seq.toArray
+                  Decorations =
+                    decorations
+                    |> Seq.map (fun (KeyValue(nodeId, states)) ->
+                        nodeId, GitStatusStates.normalize states)
+                    |> Seq.sortBy fst
+                    |> Seq.toArray }
         with
         | :? ArgumentException
         | :? NotSupportedException

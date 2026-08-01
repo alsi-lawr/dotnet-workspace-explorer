@@ -13,114 +13,163 @@ type internal WorkspaceGitStatus(workspacePath: string) =
 
     let outputLimit = 4 * 1024 * 1024
 
-    member _.ReadAsync
-        (state: WorkspaceIndex, expectedRevision: int64, cancellationToken: CancellationToken)
-        =
+    let readPathSnapshotAsync cancellationToken =
+        task {
+            let solutionDirectory =
+                Path.GetDirectoryName workspacePath
+                |> Option.ofObj
+                |> Option.defaultValue (Directory.GetCurrentDirectory())
+
+            let! worktree =
+                WorkspaceGitProcess.runAsync
+                    "git"
+                    solutionDirectory
+                    [ "rev-parse"; "--show-toplevel" ]
+                    (16 * 1024)
+                    cancellationToken
+
+            match worktree with
+            | Error error -> return Error error
+            | Ok(exitCode, _, _) when exitCode <> 0 -> return Ok None
+            | Ok(_, output, _) ->
+                let root = output.TrimEnd('\r', '\n')
+
+                if String.IsNullOrEmpty root || not (Directory.Exists root) then
+                    return
+                        Error(
+                            RpcErrors.create
+                                "git_parse_failed"
+                                "Git returned an invalid worktree root."
+                                None
+                        )
+                else
+                    let! status =
+                        WorkspaceGitProcess.runAsync
+                            "git"
+                            root
+                            [ "status"
+                              "--porcelain=v1"
+                              "-z"
+                              "--untracked-files=all"
+                              "--ignored=matching"
+                              "--ignore-submodules=all"
+                              "--"
+                              "." ]
+                            outputLimit
+                            cancellationToken
+
+                    match status with
+                    | Error error -> return Error error
+                    | Ok(exitCode, _, error) when exitCode <> 0 ->
+                        return
+                            Error(
+                                RpcErrors.create
+                                    "git_status_failed"
+                                    (if String.IsNullOrWhiteSpace error then
+                                         "Git status failed."
+                                     else
+                                         "Git status failed safely.")
+                                    None
+                            )
+                    | Ok(_, output, _) ->
+                        return
+                            WorkspaceGitStatusParsing.parsePorcelain root output |> Result.map Some
+        }
+
+    let withGate operation (cancellationToken: CancellationToken) =
         task {
             do! gate.WaitAsync cancellationToken
 
             try
-                let! indexed = state.GitNodesAsync(expectedRevision, cancellationToken)
-
-                match indexed with
-                | Error error -> return Error error
-                | Ok(workspaceRevision, nodes) ->
-                    let solutionDirectory =
-                        Path.GetDirectoryName workspacePath
-                        |> Option.ofObj
-                        |> Option.defaultValue (Directory.GetCurrentDirectory())
-
-                    let! worktree =
-                        WorkspaceGitProcess.runAsync
-                            "git"
-                            solutionDirectory
-                            [ "rev-parse"; "--show-toplevel" ]
-                            (16 * 1024)
-                            cancellationToken
-
-                    let! snapshot =
-                        task {
-                            match worktree with
-                            | Error error -> return Error error
-                            | Ok(exitCode, _, _) when exitCode <> 0 ->
-                                return
-                                    Ok
-                                        { Available = false
-                                          Decorations = [||] }
-                            | Ok(_, output, _) ->
-                                let root = output.Trim()
-
-                                if
-                                    String.IsNullOrWhiteSpace root || not (Directory.Exists root)
-                                then
-                                    return
-                                        Error(
-                                            RpcErrors.create
-                                                "git_parse_failed"
-                                                "Git returned an invalid worktree root."
-                                                None
-                                        )
-                                else
-                                    let! status =
-                                        WorkspaceGitProcess.runAsync
-                                            "git"
-                                            root
-                                            [ "status"
-                                              "--porcelain=v1"
-                                              "-z"
-                                              "--untracked-files=all"
-                                              "--ignore-submodules=all"
-                                              "--"
-                                              "." ]
-                                            outputLimit
-                                            cancellationToken
-
-                                    match status with
-                                    | Error error -> return Error error
-                                    | Ok(exitCode, _, error) when exitCode <> 0 ->
-                                        return
-                                            Error(
-                                                RpcErrors.create
-                                                    "git_status_failed"
-                                                    (if String.IsNullOrWhiteSpace error then
-                                                         "Git status failed."
-                                                     else
-                                                         "Git status failed safely.")
-                                                    None
-                                            )
-                                    | Ok(_, output, _) ->
-                                        return
-                                            WorkspaceGitStatusParsing.parsePorcelain root output
-                                            |> Result.bind (fun changes ->
-                                                WorkspaceGitStatusMapping.mapDecorations
-                                                    workspacePath
-                                                    nodes
-                                                    changes
-                                                |> Result.map (fun decorations ->
-                                                    { Available = true
-                                                      Decorations = decorations }))
-                        }
-
-                    match snapshot with
-                    | Error error -> return Error error
-                    | Ok snapshot ->
-                        if previous <> Some snapshot then
-                            revision <- revision + 1L
-                            previous <- Some snapshot
-
-                        return
-                            Ok(
-                                WorkspaceRpcResponses.gitStatusResult
-                                    snapshot.Available
-                                    workspaceRevision
-                                    revision
-                                    (snapshot.Decorations
-                                     |> Seq.map (fun (nodeId, state) ->
-                                         nodeId,
-                                         match state with
-                                         | Added -> "added"
-                                         | Changed -> "changed"))
-                            )
+                return! operation cancellationToken
             finally
                 gate.Release() |> ignore
         }
+
+    member _.ReadPathSnapshotAsync(cancellationToken: CancellationToken) =
+        withGate readPathSnapshotAsync cancellationToken
+
+    member _.ReadAsync
+        (
+            state: WorkspaceIndex,
+            expectedRevision: int64,
+            responseVersion: GitStatusResponseVersion,
+            cancellationToken: CancellationToken
+        ) =
+        withGate
+            (fun cancellationToken ->
+                task {
+                    let! indexed = state.GitNodesAsync(expectedRevision, cancellationToken)
+
+                    match indexed with
+                    | Error error -> return Error error
+                    | Ok(workspaceRevision, nodes) ->
+                        let! acquired = readPathSnapshotAsync cancellationToken
+
+                        let snapshot =
+                            acquired
+                            |> Result.bind (function
+                                | None ->
+                                    Ok
+                                        { Available = false
+                                          LegacyDecorations = [||]
+                                          Decorations = [||] }
+                                | Some pathSnapshot ->
+                                    WorkspaceGitStatusMapping.mapDecorations
+                                        workspacePath
+                                        nodes
+                                        pathSnapshot)
+
+                        match snapshot with
+                        | Error error -> return Error error
+                        | Ok snapshot ->
+                            let changed =
+                                match previous with
+                                | None -> true
+                                | Some previousSnapshot ->
+                                    match responseVersion with
+                                    | Legacy ->
+                                        previousSnapshot.Available <> snapshot.Available
+                                        || previousSnapshot.LegacyDecorations
+                                           <> snapshot.LegacyDecorations
+                                    | Version2 -> previousSnapshot <> snapshot
+
+                            if changed then
+                                revision <- revision + 1L
+
+                            previous <- Some snapshot
+
+                            return
+                                Ok(
+                                    match responseVersion with
+                                    | Legacy ->
+                                        WorkspaceRpcResponses.gitStatusResult
+                                            snapshot.Available
+                                            workspaceRevision
+                                            revision
+                                            (snapshot.LegacyDecorations
+                                             |> Seq.map (fun (nodeId, state) ->
+                                                 nodeId,
+                                                 match state with
+                                                 | Added -> "added"
+                                                 | Changed -> "changed"))
+                                    | Version2 ->
+                                        WorkspaceRpcResponses.gitStatusV2Result
+                                            snapshot.Available
+                                            workspaceRevision
+                                            revision
+                                            (snapshot.Decorations
+                                             |> Seq.map (fun (nodeId, states) ->
+                                                 nodeId,
+                                                 states
+                                                 |> Seq.map (function
+                                                     | Staged -> "staged"
+                                                     | Unstaged -> "unstaged"
+                                                     | Renamed -> "renamed"
+                                                     | Deleted -> "deleted"
+                                                     | Unmerged -> "unmerged"
+                                                     | Untracked -> "untracked"
+                                                     | Ignored -> "ignored")))
+                                )
+                })
+            cancellationToken

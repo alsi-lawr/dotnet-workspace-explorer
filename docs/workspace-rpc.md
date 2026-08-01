@@ -120,9 +120,11 @@ preview request with only `confirmationToken` added. Synchronous execution retur
 
 ## Git status
 
-A client must negotiate `workspace.git.status` before calling `workspace/git/status`. The request is
-exactly `{ expectedRevision }`; absent negotiation returns `unsupported_capability`, and a stale
-workspace revision returns `workspace_conflict`. The exact result is:
+A client must negotiate either `workspace.git.status` or `workspace.git.status.v2` before calling
+`workspace/git/status`. The request is exactly `{ expectedRevision }`; absent negotiation returns
+`unsupported_capability`, and a stale workspace revision returns `workspace_conflict`.
+
+A client that negotiates only legacy `workspace.git.status` receives exactly:
 
 ```text
 {
@@ -135,15 +137,38 @@ workspace revision returns `workspace_conflict`. The exact result is:
 
 `state` is only `added` or `changed`. Added and untracked paths use `added`; all other working-tree
 changes use `changed`, with `added` taking precedence. Decorations are unique, deterministic, and
-aggregate to visible semantic ancestors. `statusRevision` is monotonic within one live session. It
-advances only when normalized availability or decorations change and is reused for an identical
-snapshot.
+aggregate to visible semantic ancestors.
+
+A client that negotiates `workspace.git.status.v2` receives exactly:
+
+```text
+{
+  available,
+  workspaceRevision,
+  statusRevision,
+  decorations: [{ nodeId, states }]
+}
+```
+
+Every `states` value is a non-empty array containing distinct values in this fixed order:
+`staged`, `unstaged`, `renamed`, `deleted`, `unmerged`, `untracked`, then `ignored`. A path can
+carry more than one state, and semantic containers receive the ordered union of their visible or
+repository-known descendants. A path that no longer exists can decorate an existing semantic
+ancestor but never creates a semantic node. If a client negotiates both Git capabilities, the v2
+shape takes precedence.
+
+For both shapes, `statusRevision` is monotonic within one live session. It advances only when the
+negotiated normalized availability or decoration projection changes and is reused for an identical
+snapshot. Legacy-only revisioning therefore ignores ignored-only path changes that remain exclusive
+to v2. Status reads do not change the workspace revision, semantic tree, selection identity, or
+mutation state.
 
 The server inspects only the active solution's containing Git worktree through bounded
-`git status --porcelain=v1 -z`. A target outside Git returns `available=false` and no decorations.
-Git launch, output-bound, parse, and mapping failures are structured errors. Status inspection never
-changes workspace revision, emits a workspace delta/reset, mutates files, scans nested
-repositories, or starts a poller.
+`git status --porcelain=v1 -z --untracked-files=all --ignored=matching`. NUL-delimited paths retain
+spaces, and rename/copy pairs are validated before mapping. A target outside Git returns
+`available=false` and no decorations. Git launch, output-bound, parse, and mapping failures are
+structured errors. Status inspection never changes workspace revision, emits a workspace
+delta/reset, mutates files, scans nested repositories, or starts a poller.
 
 ## Notifications
 

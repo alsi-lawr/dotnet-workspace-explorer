@@ -123,6 +123,7 @@ type WorkspaceRpcInitializationTests() =
                   "workspace.addExisting.selector"
                   "workspace.file.resolve"
                   "workspace.git.status"
+                  "workspace.git.status.v2"
                   "unknown.claim"
                   "workspace.operations.cancel" ]
                 (Some(
@@ -168,6 +169,7 @@ type WorkspaceRpcInitializationTests() =
               "workspace.create.options"
               "workspace.file.resolve"
               "workspace.git.status"
+              "workspace.git.status.v2"
               "workspace.operations.cancel"
               "workspace.root" ]
 
