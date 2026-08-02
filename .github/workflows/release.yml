@@ -1,0 +1,22 @@
+name: publish to NuGet
+
+on:
+  push:
+    tags:
+      - v*
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: publish Dotnet.WorkspaceExplorer
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: alsi-lawr/package-release-workflows/actions/deploy-nuget@main
+        with:
+          project: src/WorkspaceExplorer/Dotnet.WorkspaceExplorer.fsproj
+          user: alsi-lawr
+          dotnet-version: 10.0.300
