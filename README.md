@@ -10,9 +10,18 @@
 
 **A .NET solution explorer for the command line and editors.**
 
-[![Status: experimental](https://img.shields.io/badge/status-experimental-f59e0b)](#development)
-[![Runtime: .NET 10](https://img.shields.io/badge/runtime-.NET_10-512bd4?logo=dotnet&logoColor=white)](#development)
-[![License: MIT](https://img.shields.io/badge/license-MIT-22c55e)](https://github.com/alsi-lawr/dotnet-workspace-explorer/blob/master/LICENSE)
+<a
+  href="https://github.com/alsi-lawr/dotnet-workspace-explorer/blob/master/CONTRIBUTING.md">
+  <img src="https://img.shields.io/badge/status-experimental-f59e0b" alt="Status: experimental">
+</a>
+<a href="https://github.com/alsi-lawr/dotnet-workspace-explorer/blob/master/global.json">
+  <img
+    src="https://img.shields.io/badge/runtime-.NET_10-512bd4?logo=dotnet&logoColor=white"
+    alt="Runtime: .NET 10">
+</a>
+<a href="https://github.com/alsi-lawr/dotnet-workspace-explorer/blob/master/LICENSE">
+  <img src="https://img.shields.io/badge/license-MIT-22c55e" alt="License: MIT">
+</a>
 
 </div>
 
@@ -139,23 +148,19 @@ The Neovim integration is available from
 [`dotnet-workspace-explorer.nvim`](https://github.com/alsi-lawr/dotnet-workspace-explorer.nvim).
 Protocol details are in:
 
-- [CLI commands](https://github.com/alsi-lawr/dotnet-workspace-explorer/blob/master/docs/commands.md)
-- [Workspace RPC](https://github.com/alsi-lawr/dotnet-workspace-explorer/blob/master/docs/workspace-rpc.md)
+- [CLI commands][commands]
+- [Workspace RPC][rpc]
 
-## Development
+## Contributing
 
-The repository uses .NET 10:
-
-```console
-dotnet tool restore
-dotnet restore Dotnet.WorkspaceExplorer.slnx
-dotnet build Dotnet.WorkspaceExplorer.slnx --configuration Release --no-restore
-```
-
-Performance results and methods are under
-[docs/benchmarking](https://github.com/alsi-lawr/dotnet-workspace-explorer/tree/master/docs/benchmarking).
+See
+[CONTRIBUTING.md][contributing].
 
 ## License
 
 MIT. See
 [LICENSE](https://github.com/alsi-lawr/dotnet-workspace-explorer/blob/master/LICENSE).
+
+[commands]: https://github.com/alsi-lawr/dotnet-workspace-explorer/blob/master/docs/commands.md
+[contributing]: https://github.com/alsi-lawr/dotnet-workspace-explorer/blob/master/CONTRIBUTING.md
+[rpc]: https://github.com/alsi-lawr/dotnet-workspace-explorer/blob/master/docs/workspace-rpc.md
