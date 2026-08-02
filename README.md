@@ -22,7 +22,7 @@ C#, F#, and Visual Basic projects. Solution filters (`.slnf`) are available as r
 ## Install
 
 ```console
-dotnet tool install --global Dotnet.WorkspaceExplorer
+dotnet tool install --global ALSI.WorkspaceExplorer
 ```
 
 Run it as either `dotnet-we` or `dotnet we`:

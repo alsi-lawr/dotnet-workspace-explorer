@@ -6,7 +6,7 @@
         <PackAsTool>true</PackAsTool>
         <ToolCommandName>dotnet-we</ToolCommandName>
         <PackageOutputPath>../../build</PackageOutputPath>
-        <PackageId>Dotnet.WorkspaceExplorer</PackageId>
+        <PackageId>ALSI.WorkspaceExplorer</PackageId>
         <Title>dotnet-workspace-explorer</Title>
         <Description>Explore and edit .NET solutions from the command line or an editor.</Description>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
