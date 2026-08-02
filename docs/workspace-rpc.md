@@ -1,6 +1,6 @@
 # `dotnet-workspace-explorer/workspace` v1.0
 
-Start the public endpoint with `dotnet-workspace-explorer workspace <target> --pipe`. Export evaluation
+Start the public endpoint with `dotnet-we workspace <target> --pipe`. Export evaluation
 defaults to three workers; a client may select a process-local positive bound with
 `--pipe --export-workers <positive-integer>`. This startup option does not add an initialization or
 RPC field. The stream is a sequence of framed MessagePack-RPC values. A client sends `initialize`

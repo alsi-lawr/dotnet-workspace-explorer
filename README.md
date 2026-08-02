@@ -1,78 +1,150 @@
 <div align="center">
 
-<img src="assets/dotnet-workspace-explorer.svg" width="128" height="128" alt="dotnet-workspace-explorer logo">
+<img
+  src="assets/dotnet-workspace-explorer.svg"
+  width="128"
+  height="128"
+  alt="dotnet-workspace-explorer logo">
 
 # dotnet-workspace-explorer
 
-**Solution operations beyond the standard .NET CLI.**
+**A .NET solution explorer for the command line and editors.**
 
 [![Status: experimental](https://img.shields.io/badge/status-experimental-f59e0b)](#development)
 [![Runtime: .NET 10](https://img.shields.io/badge/runtime-.NET_10-512bd4?logo=dotnet&logoColor=white)](#development)
+[![License: MIT](https://img.shields.io/badge/license-MIT-22c55e)](https://github.com/alsi-lawr/dotnet-workspace-explorer/blob/master/LICENSE)
 
 </div>
 
-`dotnet-workspace-explorer` is an experimental .NET tool for solution and project operations that complement
-the standard `dotnet` CLI. It selects and verifies workspace targets, supports `.sln` and `.slnx`
-solutions, treats `.slnf` filters as read-only views, and delegates ordinary lifecycle commands to
-`dotnet`. Its workspace operations apply across C#, F#, and Visual Basic projects rather than being
-tied to one .NET language.
+Workspace Explorer reads and edits .NET solutions. It works with `.sln` and `.slnx` files across
+C#, F#, and Visual Basic projects. Solution filters (`.slnf`) are available as read-only views.
 
 ## Install
 
-Install the package from a NuGet source:
-
 ```console
 dotnet tool install --global Dotnet.WorkspaceExplorer
-dotnet-workspace-explorer --json solution ./Demo.slnx list
 ```
 
-The executable name is `dotnet-workspace-explorer`. Where the .NET tool muxer discovers the installed tool, `dotnet workspace-explorer` is an equivalent convenience form; scripts and examples should use `dotnet-workspace-explorer` directly.
+Run it as either `dotnet-we` or `dotnet we`:
+
+```console
+dotnet-we solution ./Demo.slnx list
+dotnet we solution ./Demo.slnx list
+```
 
 ## Use
 
-Pass a solution or project target where the command requires one:
+Add a project:
 
 ```console
-# Add a project to an XML solution and receive a machine-readable result.
-dotnet-workspace-explorer --json solution ./Demo.slnx add ./src/Demo/Demo.csproj
-
-# Inspect a solution, including a classic .sln.
-dotnet-workspace-explorer solution ./Demo.sln list
-
-# A solution filter is a read-only target.
-dotnet-workspace-explorer solution ./Demo.slnf list
-
-# Select a target, then delegate one ordinary lifecycle command to dotnet.
-dotnet-workspace-explorer build ./Demo.sln --configuration Release
+dotnet-we solution ./Demo.slnx add ./src/Demo.Core/Demo.Core.csproj
 ```
 
-`--json` writes one JSON envelope with `schemaVersion`, `commandId`, `success`, optional `revision`, result output, diagnostics, and an optional external exit code. Failed operations use the same envelope and return a non-zero exit code; diagnostic codes include `invalid_input`, `unsupported_capability`, `ambiguous_target`, `workspace_conflict`, `external_tool_failed`, and `partial_recovery_required`.
-
-Mutating commands are verified against the selected target. For pipe mutations, a confirmation
-token and expected revision are required before execution. The tool makes narrowly scoped in-process
-compensation attempts when a mutation fails, but does not promise durable recovery.
-
-## Pipe clients
-
-For editor and automation clients, start the framed MessagePack-RPC endpoint with:
+List the projects in a solution or read-only solution filter:
 
 ```console
-dotnet-workspace-explorer workspace ./Demo.slnx --pipe
-
-# Optional process-local export concurrency; the default is 3.
-dotnet-workspace-explorer workspace ./Demo.slnx --pipe --export-workers 4
+dotnet-we solution ./Demo.sln list
+dotnet-we solution ./Demo.slnf list
 ```
 
-The public profile is `dotnet-workspace-explorer/workspace` v1.0. It is initialized before other requests and supports workspace discovery, command preview/execution, operation progress, and orderly shutdown. See the repository-only protocol reference:
+Run normal .NET commands against a selected workspace:
 
-- [CLI grammar and compatibility](https://github.com/alsi-lawr/dotnet-workspace-explorer/blob/master/docs/commands.md)
-- [MessagePack-RPC workspace profile](https://github.com/alsi-lawr/dotnet-workspace-explorer/blob/master/docs/workspace-rpc.md)
+```console
+dotnet-we build ./Demo.slnx --configuration Release
+dotnet-we test ./Demo.slnx
+```
 
-Those references are intentionally not packaged: this README is the package's complete installation and representative-use guide.
+Workspace Explorer checks changes before it writes them. Editor clients preview changes first and
+send the expected workspace revision when they apply them.
+
+## JSON output
+
+Add `--json` when another program needs the result:
+
+```console
+dotnet-we --json solution ./Demo.slnx list
+```
+
+A successful command returns JSON like this:
+
+```json
+{
+  "commandId": "solution",
+  "diagnostics": [],
+  "externalExitCode": 0,
+  "result": {
+    "childArguments": [
+      "solution",
+      "./Demo.slnx",
+      "list"
+    ],
+    "standardError": "",
+    "standardOutput": "Project(s)\n----------\nsrc/Demo.Core/Demo.Core.csproj\n",
+    "summary": "dotnet command completed"
+  },
+  "revision": 0,
+  "schemaVersion": 1,
+  "success": true
+}
+```
+
+Errors use the same shape and include diagnostics:
+
+```json
+{
+  "commandId": "solution",
+  "diagnostics": [
+    {
+      "artifactPath": null,
+      "code": "external_tool_failed",
+      "correlationId": "1b724f33-3943-48fd-85cc-cdc3e02a26c6",
+      "location": null,
+      "retryable": true,
+      "safeMessage": "The dotnet command failed.",
+      "severity": "Error"
+    }
+  ],
+  "externalExitCode": 1,
+  "result": {
+    "childArguments": [
+      "solution",
+      "./Missing.slnx",
+      "list"
+    ],
+    "standardError": "Could not find solution or directory `./Missing.slnx`.\n",
+    "standardOutput": "",
+    "summary": null
+  },
+  "revision": null,
+  "schemaVersion": 1,
+  "success": false
+}
+```
+
+## Editor integration
+
+Editors can start the MessagePack-RPC server for a workspace:
+
+```console
+dotnet-we workspace ./Demo.slnx --pipe
+```
+
+Project export uses three workers by default. Set a different capacity when needed:
+
+```console
+dotnet-we workspace ./Demo.slnx --pipe --export-workers 4
+```
+
+The Neovim integration is available from
+[`dotnet-workspace-explorer.nvim`](https://github.com/alsi-lawr/dotnet-workspace-explorer.nvim).
+Protocol details are in:
+
+- [CLI commands](https://github.com/alsi-lawr/dotnet-workspace-explorer/blob/master/docs/commands.md)
+- [Workspace RPC](https://github.com/alsi-lawr/dotnet-workspace-explorer/blob/master/docs/workspace-rpc.md)
 
 ## Development
 
-The repository targets .NET 10. Restore the repository tools, build, and run the native test apphosts from their project outputs:
+The repository uses .NET 10:
 
 ```console
 dotnet tool restore
@@ -80,9 +152,10 @@ dotnet restore Dotnet.WorkspaceExplorer.slnx
 dotnet build Dotnet.WorkspaceExplorer.slnx --configuration Release --no-restore
 ```
 
-Pull-request continuous integration runs restore, Debug and Release builds, configured formatting,
-and the ordinary native test apphosts. Additional concern-specific commands are intentionally
-manual:
+Performance results and methods are under
+[docs/benchmarking](https://github.com/alsi-lawr/dotnet-workspace-explorer/tree/master/docs/benchmarking).
 
-- [release package smoke](release/README.md)
-- [performance benchmarks](benchmarks/README.md)
+## License
+
+MIT. See
+[LICENSE](https://github.com/alsi-lawr/dotnet-workspace-explorer/blob/master/LICENSE).

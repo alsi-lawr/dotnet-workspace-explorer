@@ -4,10 +4,19 @@
         <AssemblyName>Dotnet.WorkspaceExplorer</AssemblyName>
         <RootNamespace>Dotnet.WorkspaceExplorer</RootNamespace>
         <PackAsTool>true</PackAsTool>
-        <ToolCommandName>dotnet-workspace-explorer</ToolCommandName>
+        <ToolCommandName>dotnet-we</ToolCommandName>
         <PackageOutputPath>../../build</PackageOutputPath>
-        <Description>Workspace exploration and editing commands for the .NET CLI.</Description>
+        <PackageId>Dotnet.WorkspaceExplorer</PackageId>
+        <Title>dotnet-workspace-explorer</Title>
+        <Description>Explore and edit .NET solutions from the command line or an editor.</Description>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <PackageProjectUrl>https://github.com/alsi-lawr/dotnet-workspace-explorer</PackageProjectUrl>
+        <RepositoryUrl>https://github.com/alsi-lawr/dotnet-workspace-explorer.git</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <PackageTags>dotnet;solution;workspace;explorer;cli;tool</PackageTags>
         <PackageReadmeFile>README.md</PackageReadmeFile>
+        <IncludeSymbols>true</IncludeSymbols>
+        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     </PropertyGroup>
 
     <ItemGroup>
@@ -57,5 +66,6 @@
     </ItemGroup>
     <ItemGroup>
         <None Include="../../README.md" Pack="true" PackagePath="/" />
+        <None Include="../../LICENSE" Pack="true" PackagePath="/" />
     </ItemGroup>
 </Project>

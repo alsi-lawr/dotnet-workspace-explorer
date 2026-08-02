@@ -1,6 +1,7 @@
 # CLI grammar and compatibility
 
-`dotnet-workspace-explorer` is an executable compatibility layer for selected `dotnet` command families. It selects targets and verifies operations where it owns an additional safety boundary; it does not reimplement the .NET SDK.
+`dotnet-we` adds solution and workspace commands to the .NET CLI. It selects targets and checks
+changes before handing ordinary SDK commands to `dotnet`.
 
 ## Grammar
 
@@ -46,7 +47,8 @@ create a named directory at the solution root and are added to the nearest logic
 Delete composes project or solution membership changes with native trash where the selected
 artifact is physical. Template creation is asynchronous; its operation completion is authoritative.
 
-`restore`, `build`, `run`, and `test` select a workspace or project where appropriate, then invoke one ordinary `dotnet` child. The installed SDK owns option validation and all command semantics; `dotnet-workspace-explorer` does not interpret or model lifecycle/test output.
+`restore`, `build`, `run`, and `test` select a workspace or project where appropriate, then invoke
+one ordinary `dotnet` child. The installed SDK owns its options and output.
 
 Launch profiles stored in `.slnLaunch` are configuration data. The tool can list, set, and remove that data; it never executes `.slnLaunch`.
 
