@@ -31,7 +31,10 @@ module internal WorkspaceGitStatusMapping =
                 | _ -> StringComparison.Ordinal
 
             let same left right =
-                String.Equals(Path.GetFullPath left, Path.GetFullPath right, comparison)
+                let comparable path =
+                    Path.GetFullPath path |> WorkspaceGitPaths.withoutTrailingDirectorySeparators
+
+                String.Equals(comparable left, comparable right, comparison)
 
             let under directory path =
                 let relative = Path.GetRelativePath(directory, path)

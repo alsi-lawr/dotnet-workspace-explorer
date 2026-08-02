@@ -45,6 +45,9 @@ type internal AddExistingSelector
 
     let pathIdentity (path: string) = ArtifactFiles.identity path
 
+    let gitPathIdentity path =
+        pathIdentity path |> WorkspaceGitPaths.withoutTrailingDirectorySeparators
+
     let extension (path: string) =
         Path.GetExtension path |> Option.ofObj |> Option.defaultValue String.Empty
 
@@ -158,7 +161,7 @@ type internal AddExistingSelector
         | Some snapshot ->
             snapshot.Entries
             |> Seq.collect (fun entry ->
-                let exact = pathIdentity path = pathIdentity entry.Path
+                let exact = gitPathIdentity path = gitPathIdentity entry.Path
 
                 if exact then
                     entry.States

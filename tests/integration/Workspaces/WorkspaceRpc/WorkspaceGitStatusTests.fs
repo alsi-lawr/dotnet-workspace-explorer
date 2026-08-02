@@ -8,6 +8,7 @@ open System
 open System.Threading
 open Dotnet.WorkspaceExplorer
 open Dotnet.WorkspaceExplorer.Rpc
+open Dotnet.WorkspaceExplorer.Solutions
 open Dotnet.WorkspaceExplorer.WorkspaceIndex
 open Dotnet.WorkspaceExplorer.Workspaces
 open FsUnit.Xunit
@@ -247,6 +248,146 @@ type WorkspaceGitStatusTests() =
             | Ok snapshot -> failwithf "An invalid Git path unexpectedly mapped: %A" snapshot
         finally
             Directory.Delete(root, true)
+
+    [<Fact>]
+    member _.``real Git ignored directory output with a trailing separator decorates only the exact semantic and Add Existing directory rows``
+        ()
+        =
+        WorkspaceGitStatusScenario.withRepository (fun directory solution project ->
+            let ignoredDirectory = Path.Combine(directory, "ignored")
+            File.WriteAllText(Path.Combine(directory, ".gitignore"), "ignored/\n")
+            WorkspaceGitStatusScenario.runGit directory [ "add"; ".gitignore" ]
+            WorkspaceGitStatusScenario.runGit directory [ "commit"; "--quiet"; "-m"; "ignore" ]
+            Directory.CreateDirectory ignoredDirectory |> ignore
+            File.WriteAllText(Path.Combine(ignoredDirectory, "Generated.cs"), "ignored")
+
+            let pathSnapshot =
+                let status = WorkspaceGitStatus solution
+
+                match status.ReadPathSnapshotAsync(CancellationToken.None).Result with
+                | Ok(Some snapshot) -> snapshot
+                | Ok None -> failwith "The real Git repository was reported as unavailable."
+                | Error error ->
+                    failwithf "Real Git status acquisition failed: %s: %s" error.Code error.Message
+
+            let ignoredEntry =
+                pathSnapshot.Entries
+                |> Array.find (fun entry ->
+                    entry.States = [| GitStatusState.Ignored |]
+                    && Path.GetFileName(Path.TrimEndingDirectorySeparator entry.Path) = "ignored")
+
+            Path.EndsInDirectorySeparator ignoredEntry.Path |> should equal true
+
+            let node id parent physical container =
+                { NodeId = WorkspaceNodeId.Parse id
+                  ParentNodeId = parent |> Option.map WorkspaceNodeId.Parse
+                  PhysicalPath = physical |> Option.map WorkspaceArtifactPath.Create
+                  ContainerPath = container |> Option.map WorkspaceArtifactPath.Create }
+
+            let nodes =
+                [| node "workspace" None None (Some directory)
+                   node "project" (Some "workspace") (Some project) (Some directory)
+                   node "ignored-folder" (Some "project") None (Some ignoredDirectory) |]
+
+            match WorkspaceGitStatusMapping.mapDecorations solution nodes pathSnapshot with
+            | Error error ->
+                failwithf "Trailing-separator Git mapping failed: %s: %s" error.Code error.Message
+            | Ok snapshot ->
+                snapshot.Decorations
+                |> should equal [| "ignored-folder", [| GitStatusState.Ignored |] |]
+
+            let mixedSnapshot =
+                { pathSnapshot with
+                    Entries =
+                        [| { ignoredEntry with
+                               States = [| GitStatusState.Untracked; GitStatusState.Ignored |] } |] }
+
+            match WorkspaceGitStatusMapping.mapDecorations solution nodes mixedSnapshot with
+            | Error error ->
+                failwithf
+                    "Mixed trailing-separator mapping failed: %s: %s"
+                    error.Code
+                    error.Message
+            | Ok snapshot ->
+                snapshot.Decorations
+                |> should
+                    equal
+                    [| "ignored-folder", [| GitStatusState.Untracked; GitStatusState.Ignored |]
+                       "project", [| GitStatusState.Untracked |]
+                       "workspace", [| GitStatusState.Untracked |] |]
+
+            let workspace =
+                match SolutionWorkspaceReader.OpenAsync(solution).Result with
+                | Success value -> value
+                | Failure failure -> failwithf "The test workspace did not open: %A" failure
+
+            let state = WorkspaceIndex.CreateProduction(solution, workspace, 1)
+
+            try
+                let rootNode =
+                    WorkspaceNode.Create(
+                        workspace.Descriptor,
+                        WorkspaceNodeKind.Workspace,
+                        WorkspaceNodeIdentity.Create "root",
+                        "Demo",
+                        WorkspaceCapabilityProfile.Full
+                    )
+
+                let target: WorkspaceSemanticContext =
+                    { Node = rootNode
+                      ProjectId = None
+                      ProjectPath = None
+                      PhysicalPath = None
+                      PhysicalDirectory = None
+                      LogicalFolderId = None
+                      LogicalFolderPath = None }
+
+                use selector =
+                    new AddExistingSelector(
+                        (fun () -> 4096),
+                        TimeProvider.System,
+                        fun _ -> System.Threading.Tasks.Task.FromResult(Ok(Some pathSnapshot))
+                    )
+
+                let started =
+                    match
+                        selector
+                            .StartAsync(
+                                workspace,
+                                state,
+                                target,
+                                "add-existing",
+                                state.Revision,
+                                Some 4096,
+                                true,
+                                CancellationToken.None
+                            )
+                            .Result
+                    with
+                    | Ok value -> value
+                    | Error error ->
+                        failwithf
+                            "Trailing-separator selector start failed: %s: %s"
+                            error.Code
+                            error.Message
+
+                WorkspaceRpcScenario.field "root" started
+                |> WorkspaceRpcScenario.field "gitStates"
+                |> RpcValue.requireArray "gitStates"
+                |> should be Empty
+
+                let ignoredDirectoryEntry =
+                    WorkspaceRpcScenario.field "entries" started
+                    |> RpcValue.requireArray "entries"
+                    |> Seq.find (fun entry ->
+                        WorkspaceRpcScenario.field "displayName" entry = RpcValue.String "ignored")
+
+                WorkspaceRpcScenario.field "gitStates" ignoredDirectoryEntry
+                |> RpcValue.requireArray "gitStates"
+                |> Seq.toArray
+                |> should equal [| RpcValue.String "ignored" |]
+            finally
+                state.DisposeAsync().GetAwaiter().GetResult())
 
     [<Fact>]
     member _.``Git mapping follows the workspace filesystem case-sensitivity contract``() =
