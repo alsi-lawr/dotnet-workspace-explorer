@@ -10,7 +10,7 @@ open Xunit
 [<Collection("Project evaluation scenarios")>]
 type SdkSelectionTests() =
     [<Fact>]
-    member _.``public workspace refresh recovers project evaluation after global.json SDK selection invalidation``
+    member _.``global.json SDK invalidation resets the public workspace and refresh recovers project evaluation``
         ()
         =
         let directory = Test.temporaryDirectory "global-json"
@@ -27,17 +27,14 @@ type SdkSelectionTests() =
                 Test.writeGlobalJson directory "99.0.100"
                 Test.send app 100u "workspace/refresh" RpcValue.emptyMap
 
-                let unavailable, observedRevision =
-                    Test.requireSuccessAfterWorkspaceNotifications 100u hydratedRevision app
-
-                (Test.field "reset" unavailable) |> should equal (RpcValue.Boolean true)
+                let unavailable, reset, observedRevision =
+                    Test.requireSuccessAndWorkspaceReset 100u hydratedRevision app
 
                 let unavailableRevision =
                     Test.field "revision" unavailable |> RpcValue.requireInteger "revision"
 
-                (unavailableRevision > observedRevision) |> should equal true
-
-                let reset = Test.readMatchingWorkspaceReset unavailableRevision app
+                (unavailableRevision) |> should equal (observedRevision)
+                (unavailableRevision > hydratedRevision) |> should equal true
 
                 (Test.values "diagnostics" reset)
                 |> Seq.exists (fun diagnostic ->

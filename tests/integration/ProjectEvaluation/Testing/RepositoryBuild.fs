@@ -272,14 +272,35 @@ module internal Test =
 
         result.Value, revision
 
-    let readMatchingWorkspaceReset expectedRevision child =
-        match readFrame child with
-        | Notification("workspace/reset", parameters) ->
-            (field "revision" parameters |> RpcValue.requireInteger "revision")
-            |> should equal (expectedRevision)
+    let requireSuccessAndWorkspaceReset id expectedRevision child =
+        let mutable revision = expectedRevision
+        let mutable result = None
+        let mutable reset = None
 
-            parameters
-        | frame -> failwithf "Expected matching workspace reset, got %A" frame
+        while result.IsNone || reset.IsNone do
+            match readFrame child with
+            | Notification("workspace/delta", parameters) ->
+                let baseRevision =
+                    field "baseRevision" parameters |> RpcValue.requireInteger "baseRevision"
+
+                let nextRevision =
+                    field "newRevision" parameters |> RpcValue.requireInteger "newRevision"
+
+                (baseRevision) |> should equal (revision)
+                (nextRevision > baseRevision) |> should equal true
+                revision <- nextRevision
+            | Notification("workspace/reset", parameters) ->
+                let nextRevision = field "revision" parameters |> RpcValue.requireInteger "revision"
+                (nextRevision > revision) |> should equal true
+                revision <- nextRevision
+                reset <- Some parameters
+            | Response(actual, error, value) when actual = id ->
+                match error with
+                | None -> result <- Some value
+                | Some failure -> failwithf "%s: %s" failure.Code failure.Message
+            | frame -> failwithf "Expected workspace reset or response %d, got %A" id frame
+
+        result.Value, reset.Value, revision
 
     let workerInitializeVersion major minor frameLimit =
         RpcValue.map
