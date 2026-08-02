@@ -40,14 +40,14 @@ instrumentation materially slowed the processes.
 
 | Operation | Baseline | Candidate min | Candidate median | Candidate max | Baseline/median |
 |---|---:|---:|---:|---:|---:|
-| Start client and initialize | 281.1 ms | 285.9 ms | 296.4 ms | 303.5 ms | 0.95× |
-| Expand workspace root | 57.7 ms | 197.7 ms | 201.6 ms | 213.3 ms | 0.29× |
-| Hydrate BlokeBot.Commands | 2,593.7 ms | 450.2 ms | 459.9 ms | 474.5 ms | 5.64× |
-| Hydrate BlokeBot.Core | 4,538.9 ms | 458.1 ms | 475.1 ms | 625.7 ms | 9.55× |
-| Hydrate BlokeBot.Eventing | 4,452.8 ms | 503.7 ms | 552.0 ms | 721.3 ms | 8.07× |
+| Start client and initialize | 281.1 ms | 285.9 ms | 296.4 ms | 303.5 ms | 0.95x |
+| Expand workspace root | 57.7 ms | 197.7 ms | 201.6 ms | 213.3 ms | 0.29x |
+| Hydrate BlokeBot.Commands | 2,593.7 ms | 450.2 ms | 459.9 ms | 474.5 ms | 5.64x |
+| Hydrate BlokeBot.Core | 4,538.9 ms | 458.1 ms | 475.1 ms | 625.7 ms | 9.55x |
+| Hydrate BlokeBot.Eventing | 4,452.8 ms | 503.7 ms | 552.0 ms | 721.3 ms | 8.07x |
 
 All fifteen candidate project expansions completed below one second. The three-project median sum
-fell from 11.585 seconds in the baseline diagnostic trial to 1.487 seconds, a directional 7.79×
+fell from 11.585 seconds in the baseline diagnostic trial to 1.487 seconds, a directional 7.79x
 improvement.
 
 ## Analysis

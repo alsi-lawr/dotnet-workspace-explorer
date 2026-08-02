@@ -29,7 +29,7 @@ conservative relative to a purpose-built non-retaining worker path.
 
 The probe sampled recursive client-plus-descendant `VmRSS` from Linux `/proc` every 10 ms. It
 disposed and reaped every worker and removed the generated corpus before accepting a result.
-“Worker phase” includes evaluation, response decoding, and immediate invalidation. “Total” also
+"Worker phase" includes evaluation, response decoding, and immediate invalidation. "Total" also
 includes worker shutdown. Both exclude workspace projection, export chunk construction/encoding,
 and public emission.
 
@@ -37,13 +37,13 @@ and public emission.
 
 | Capacity | Worker phase | Total | Speedup | Peak RSS bytes | Peak RSS | Additive export estimate |
 |---:|---:|---:|---:|---:|---:|---:|
-| 1 | 63.598 s | 63.661 s | 1.00× | 651,567,104 | 0.607 GiB | 81.531 s |
-| 2 | 35.652 s | 35.743 s | 1.78× | 825,925,632 | 0.769 GiB | 53.584 s |
-| 3 | 26.442 s | 26.570 s | 2.41× | 1,011,937,280 | 0.942 GiB | 44.375 s |
-| 4 | 21.824 s | 21.955 s | 2.91× | 1,221,623,808 | 1.138 GiB | 39.756 s |
-| 5 | 19.695 s | 19.839 s | 3.23× | 1,417,363,456 | 1.320 GiB | 37.627 s |
-| 6 | 18.415 s | 18.583 s | 3.45× | 1,628,061,696 | 1.516 GiB | 36.348 s |
-| 8 | 18.038 s | 18.240 s | 3.53× | 1,950,707,712 | 1.817 GiB | 35.971 s |
+| 1 | 63.598 s | 63.661 s | 1.00x | 651,567,104 | 0.607 GiB | 81.531 s |
+| 2 | 35.652 s | 35.743 s | 1.78x | 825,925,632 | 0.769 GiB | 53.584 s |
+| 3 | 26.442 s | 26.570 s | 2.41x | 1,011,937,280 | 0.942 GiB | 44.375 s |
+| 4 | 21.824 s | 21.955 s | 2.91x | 1,221,623,808 | 1.138 GiB | 39.756 s |
+| 5 | 19.695 s | 19.839 s | 3.23x | 1,417,363,456 | 1.320 GiB | 37.627 s |
+| 6 | 18.415 s | 18.583 s | 3.45x | 1,628,061,696 | 1.516 GiB | 36.348 s |
+| 8 | 18.038 s | 18.240 s | 3.53x | 1,950,707,712 | 1.817 GiB | 35.971 s |
 
 Capacity 7 was not measured. The additive estimate adds 17.932456 seconds of other work from the
 existing complete-export attribution. It does not model overlap or CPU contention between worker
@@ -69,7 +69,7 @@ other work remains additive and unchanged.
 
 ## Analysis
 
-Capacity 3 provides the strongest first default in this matrix: 2.41× worker-phase speedup for
+Capacity 3 provides the strongest first default in this matrix: 2.41x worker-phase speedup for
 approximately 55% more measured peak RSS than capacity 1, while remaining below 1 GiB. Capacity 4
 continues to improve time, but scaling then saturates sharply: capacity 5 saves 2.129 seconds over
 capacity 4, capacity 6 saves 1.280 seconds over capacity 5 while crossing 1.5 GiB, and capacity 8
