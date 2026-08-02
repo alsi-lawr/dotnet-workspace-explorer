@@ -1,6 +1,7 @@
 namespace Dotnet.WorkspaceExplorer
 
 open System
+open System.Collections.Generic
 open System.Collections.Immutable
 open System.IO
 open System.Threading
@@ -71,11 +72,18 @@ module internal AddExistingMutation =
         | ".vbproj" -> true
         | _ -> false
 
+    let private effectTarget (resolved: AddExistingResolvedEntry) =
+        if not resolved.Recursive then
+            resolved.Entry.DisplayName
+        else
+            Array.append resolved.DirectorySegments [| resolved.Entry.DisplayName |]
+            |> String.concat "/"
+
     let private projectPlanAsync
         (workspace: SolutionWorkspace)
         (state: WorkspaceIndex)
         (target: WorkspaceSemanticContext)
-        (entries: AddExistingEntry array)
+        (entries: AddExistingResolvedEntry array)
         cancellationToken
         =
         task {
@@ -98,7 +106,9 @@ module internal AddExistingMutation =
                     let mutable changed = false
                     let mutable error = None
 
-                    for entry in entries do
+                    for resolved in entries do
+                        let entry = resolved.Entry
+
                         if projectExtension entry.Path then
                             error <- Some "Project files cannot be added as project items."
                         else
@@ -160,7 +170,7 @@ module internal AddExistingMutation =
     let private solutionPlanAsync
         (workspace: SolutionWorkspace)
         (target: WorkspaceSemanticContext)
-        (entries: AddExistingEntry array)
+        (entries: AddExistingResolvedEntry array)
         cancellationToken
         =
         task {
@@ -179,16 +189,16 @@ module internal AddExistingMutation =
                     |> Option.ofObj
                     |> Option.defaultValue (Directory.GetCurrentDirectory())
 
-                let folder =
+                let targetFolder =
                     match target.Node.Kind, target.LogicalFolderPath with
                     | WorkspaceNodeKind.Workspace, _ -> Some None
                     | WorkspaceNodeKind.SolutionFolder, Some path ->
                         model.FindFolder path |> Option.ofObj |> Option.map Some
                     | _ -> None
 
-                match folder with
+                match targetFolder with
                 | None -> return Error(RpcErrors.invalidParams "The solution folder was not found.")
-                | Some folder ->
+                | Some targetFolder ->
                     let comparison =
                         match
                             FileSystemCaseSensitivityDetector.DetectFromExistingPath solutionPath
@@ -198,10 +208,43 @@ module internal AddExistingMutation =
 
                     let mutable error = None
                     let effects = ResizeArray<WorkspaceCommandEffect>()
+                    let createdFolders = HashSet<string>(StringComparer.Ordinal)
 
-                    for entry in entries do
+                    let baseSegments =
+                        target.LogicalFolderPath
+                        |> Option.map (fun path ->
+                            path.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries))
+                        |> Option.defaultValue [||]
+
+                    let logicalFolderPath (segments: string array) =
+                        $"/{String.Join('/', segments)}/"
+
+                    let destinationFolder (resolved: AddExistingResolvedEntry) =
+                        match target.Node.Kind with
+                        | WorkspaceNodeKind.Workspace -> None
+                        | _ when resolved.DirectorySegments.Length = 0 -> targetFolder
+                        | _ ->
+                            let segments = Array.append baseSegments resolved.DirectorySegments
+
+                            for count = baseSegments.Length + 1 to segments.Length do
+                                let path = segments |> Array.take count |> logicalFolderPath
+
+                                if model.FindFolder path |> isNull then
+                                    model.AddFolder path |> ignore
+
+                                    if createdFolders.Add path then
+                                        effects.Add
+                                            { Operation = "addToSolution"
+                                              Target = path
+                                              Recursive = true }
+
+                            model.FindFolder(logicalFolderPath segments) |> Option.ofObj
+
+                    for resolved in entries do
                         if error.IsNone then
+                            let entry = resolved.Entry
                             let relative = Path.GetRelativePath(solutionDirectory, entry.Path)
+                            let folder = destinationFolder resolved
 
                             if projectExtension entry.Path then
                                 if
@@ -216,8 +259,8 @@ module internal AddExistingMutation =
 
                                     effects.Add
                                         { Operation = "addToSolution"
-                                          Target = entry.DisplayName
-                                          Recursive = false }
+                                          Target = effectTarget resolved
+                                          Recursive = resolved.Recursive }
                             else
                                 match folder with
                                 | None ->
@@ -242,8 +285,8 @@ module internal AddExistingMutation =
 
                                         effects.Add
                                             { Operation = "addToSolution"
-                                              Target = entry.DisplayName
-                                              Recursive = false }
+                                              Target = effectTarget resolved
+                                              Recursive = resolved.Recursive }
 
                     match error with
                     | Some message -> return Error(RpcErrors.invalidParams message)
@@ -282,14 +325,18 @@ module internal AddExistingMutation =
                     )
                 with
                 | Error error -> return Error error
-                | Ok(session, entries) ->
+                | Ok(session, selection) ->
                     let! planned =
                         match target.Node.Kind with
                         | WorkspaceNodeKind.Workspace
                         | WorkspaceNodeKind.SolutionFolder ->
                             task {
                                 match!
-                                    solutionPlanAsync workspace target entries cancellationToken
+                                    solutionPlanAsync
+                                        workspace
+                                        target
+                                        selection.Entries
+                                        cancellationToken
                                 with
                                 | Error error -> return Error error
                                 | Ok(actions, paths, effects) -> return Ok(actions, paths, effects)
@@ -302,17 +349,17 @@ module internal AddExistingMutation =
                                         workspace
                                         state
                                         target
-                                        entries
+                                        selection.Entries
                                         cancellationToken
                                 with
                                 | Error error -> return Error error
                                 | Ok(actions, paths) ->
                                     let effects =
-                                        entries
-                                        |> Array.map (fun entry ->
+                                        selection.Entries
+                                        |> Array.map (fun resolved ->
                                             { Operation = "addToProject"
-                                              Target = entry.DisplayName
-                                              Recursive = false })
+                                              Target = effectTarget resolved
+                                              Recursive = resolved.Recursive })
 
                                     return Ok(actions, paths, effects)
                             }
@@ -325,7 +372,11 @@ module internal AddExistingMutation =
                         planned
                         |> Result.map (fun (actions, mutationPaths, effects) ->
                             let allTargets =
-                                Seq.append mutationPaths (entries |> Seq.map _.Path)
+                                seq {
+                                    yield! mutationPaths
+                                    yield! selection.Sources |> Seq.map _.Path
+                                    yield! selection.Entries |> Seq.map _.Entry.Path
+                                }
                                 |> Seq.distinct
                                 |> Seq.map WorkspaceArtifactPath.Create
                                 |> ImmutableArray.CreateRange
@@ -350,7 +401,8 @@ module internal AddExistingMutation =
                                     |> Seq.toArray
                                 )
                               CommandRequest = None
-                              Summary = $"Add {entries.Length} existing workspace item(s)"
+                              Summary =
+                                $"Add {selection.Entries.Length} existing workspace item(s)"
                               Effects = effects
                               TemplateExecution = None })
             | _ -> return Error(RpcErrors.invalidParams "selectorId and entryIds are required.")

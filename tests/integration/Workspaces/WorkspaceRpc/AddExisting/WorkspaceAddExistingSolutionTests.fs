@@ -603,3 +603,191 @@ type WorkspaceAddExistingSolutionTests() =
 
                 File.ReadAllText(Path.Combine(directory, "Directory.Build.props"))
                 |> should equal "<Project />")
+
+    [<Fact>]
+    member _.``a negotiated whole-directory selection recursively adds only project files at the solution root``
+        ()
+        =
+        WorkspaceAddExistingScenario.withPreparedWorkspaceCapabilities
+            "add-existing-root-directory"
+            ".slnx"
+            (fun directory _ ->
+                let import = Path.Combine(directory, "Import")
+                Directory.CreateDirectory(Path.Combine(import, "Nested")) |> ignore
+                WorkspaceRpcScenario.writeProject (Path.Combine(import, "Alpha.csproj"))
+                WorkspaceRpcScenario.writeProject (Path.Combine(import, "Nested", "Beta.fsproj"))
+                File.WriteAllText(Path.Combine(import, "notes.txt"), "not a root project"))
+            [ "workspace.addExisting.selector"; "workspace.addExisting.directories.v1" ]
+            (fun directory solution child ->
+                let root = WorkspaceAddExistingScenario.root child
+                let rootId = WorkspaceAddExistingScenario.nodeId root
+                let revision = WorkspaceAddExistingScenario.revision root
+                let started = WorkspaceAddExistingScenario.startSelector child 3u rootId revision
+
+                let selectorId =
+                    WorkspaceRpcScenario.field "selectorId" started
+                    |> RpcValue.requireString "selectorId"
+
+                let selectorRootId =
+                    WorkspaceRpcScenario.field "root" started
+                    |> WorkspaceRpcScenario.field "entryId"
+                    |> RpcValue.requireString "entryId"
+
+                let import =
+                    WorkspaceAddExistingScenario.allEntries
+                        child
+                        5u
+                        selectorId
+                        selectorRootId
+                        started
+                    |> Seq.find (fun entry ->
+                        WorkspaceRpcScenario.field "displayName" entry = RpcValue.String "Import")
+
+                WorkspaceRpcScenario.field "selectable" import
+                |> should equal (RpcValue.Boolean true)
+
+                let request =
+                    WorkspaceAddExistingScenario.previewRequest
+                        rootId
+                        revision
+                        selectorId
+                        [ WorkspaceAddExistingScenario.entryId import ]
+
+                let preview =
+                    WorkspaceAddExistingScenario.successful
+                        child
+                        20u
+                        "workspace/commands/preview"
+                        request
+
+                WorkspaceRpcScenario.field "summary" preview
+                |> should equal (RpcValue.String "Add 2 existing workspace item(s)")
+
+                let execute =
+                    match request with
+                    | RpcValue.Map fields ->
+                        fields.Add(
+                            "confirmationToken",
+                            WorkspaceRpcScenario.field "confirmationToken" preview
+                        )
+                        |> RpcValue.Map
+                    | _ -> failwith "The recursive solution request must be a map."
+
+                WorkspaceAddExistingScenario.execute child 21u execute |> ignore
+
+                match WorkspaceRpcScenario.readFrame child with
+                | Notification("workspace/delta", _)
+                | Notification("workspace/reset", _) -> ()
+                | frame -> failwithf "Expected a recursive solution mutation, got %A" frame
+
+                let reopened = WorkspaceCommandScenario.openSolution solution
+
+                reopened.SolutionProjects
+                |> Seq.map (fun project ->
+                    Path.GetFullPath(project.FilePath, directory) |> Path.GetFileName)
+                |> Set.ofSeq
+                |> should equal (Set.ofList [ "Alpha.csproj"; "Beta.fsproj" ]))
+
+    [<Fact>]
+    member _.``a negotiated whole-directory selection mirrors physical directories beneath a Solution Folder``
+        ()
+        =
+        WorkspaceAddExistingScenario.withPreparedWorkspaceCapabilities
+            "add-existing-solution-folder-directory"
+            ".slnx"
+            (fun directory model ->
+                model.AddFolder "/Solution Items/" |> ignore
+                let import = Path.Combine(directory, "Import")
+                Directory.CreateDirectory(Path.Combine(import, "Nested")) |> ignore
+                File.WriteAllText(Path.Combine(import, "README.md"), "solution item")
+                WorkspaceRpcScenario.writeProject (Path.Combine(import, "Nested", "Alpha.csproj")))
+            [ "workspace.addExisting.selector"; "workspace.addExisting.directories.v1" ]
+            (fun _ solution child ->
+                let root = WorkspaceAddExistingScenario.root child
+                let revision = WorkspaceAddExistingScenario.revision root
+                let rootId = WorkspaceAddExistingScenario.nodeId root
+
+                let folder =
+                    WorkspaceAddExistingScenario.children child 3u rootId
+                    |> WorkspaceRpcScenario.field "nodes"
+                    |> RpcValue.requireArray "nodes"
+                    |> Seq.find (fun node ->
+                        WorkspaceRpcScenario.field "kind" node = RpcValue.String "solutionFolder")
+
+                let folderId = WorkspaceAddExistingScenario.nodeId folder
+                let started = WorkspaceAddExistingScenario.startSelector child 4u folderId revision
+
+                let selectorId =
+                    WorkspaceRpcScenario.field "selectorId" started
+                    |> RpcValue.requireString "selectorId"
+
+                let selectorRootId =
+                    WorkspaceRpcScenario.field "root" started
+                    |> WorkspaceRpcScenario.field "entryId"
+                    |> RpcValue.requireString "entryId"
+
+                let import =
+                    WorkspaceAddExistingScenario.allEntries
+                        child
+                        6u
+                        selectorId
+                        selectorRootId
+                        started
+                    |> Seq.find (fun entry ->
+                        WorkspaceRpcScenario.field "displayName" entry = RpcValue.String "Import")
+
+                let request =
+                    WorkspaceAddExistingScenario.previewRequest
+                        folderId
+                        revision
+                        selectorId
+                        [ WorkspaceAddExistingScenario.entryId import ]
+
+                let preview =
+                    WorkspaceAddExistingScenario.successful
+                        child
+                        20u
+                        "workspace/commands/preview"
+                        request
+
+                let execute =
+                    match request with
+                    | RpcValue.Map fields ->
+                        fields.Add(
+                            "confirmationToken",
+                            WorkspaceRpcScenario.field "confirmationToken" preview
+                        )
+                        |> RpcValue.Map
+                    | _ -> failwith "The recursive Solution Folder request must be a map."
+
+                WorkspaceAddExistingScenario.execute child 21u execute |> ignore
+
+                match WorkspaceRpcScenario.readFrame child with
+                | Notification("workspace/delta", _)
+                | Notification("workspace/reset", _) -> ()
+                | frame -> failwithf "Expected a recursive Solution Folder mutation, got %A" frame
+
+                let reopened =
+                    match SolutionWorkspaceReader.OpenAsync(solution).Result with
+                    | Success workspace -> workspace
+                    | Failure failure -> failwithf "The edited solution did not reopen: %A" failure
+
+                reopened.Contents.Folders
+                |> Seq.map _.Path
+                |> Set.ofSeq
+                |> should
+                    equal
+                    (Set.ofList
+                        [ "/Solution Items/"
+                          "/Solution Items/Import/"
+                          "/Solution Items/Import/Nested/" ])
+
+                reopened.Contents.Projects
+                |> Seq.exactlyOne
+                |> _.ParentFolderPath
+                |> should equal (Some "/Solution Items/Import/Nested/")
+
+                reopened.Contents.Items
+                |> Seq.exactlyOne
+                |> _.FolderPath
+                |> should equal (Some "/Solution Items/Import/"))

@@ -82,6 +82,7 @@ type internal AddExistingSelector
         for entry in entries do
             writer.Write entry.DisplayName
             writer.Write entry.IsDirectory
+            writer.Write entry.IsLink
             writer.Write entry.Selectable
             writer.Write entry.Expandable
             writer.Write(entry.IconHint |> Option.defaultValue String.Empty)
@@ -135,8 +136,14 @@ type internal AddExistingSelector
         |> max 1
 
     let selectionAvailability (session: AddExistingSession) path isDirectory isLink =
-        if isDirectory || isLink then
+        if isLink then
             false, AddExistingAvailability.Ineligible
+        elif isDirectory then
+            session.DirectorySelectionVersion1,
+            if session.DirectorySelectionVersion1 then
+                AddExistingAvailability.Available
+            else
+                AddExistingAvailability.Ineligible
         elif session.RegisteredPaths.Contains(pathIdentity path) then
             false, AddExistingAvailability.AlreadyPresent
         else
@@ -188,6 +195,7 @@ type internal AddExistingSelector
           ParentPath = canonical
           DisplayName = Path.GetFileName full |> Option.ofObj |> Option.defaultValue full
           IsDirectory = directory
+          IsLink = link
           Selectable = selectable
           Availability = availability
           GitStates = gitStates session full directory
@@ -321,6 +329,7 @@ type internal AddExistingSelector
             expectedRevision: int64,
             requestedPageSize: int option,
             presentationVersion2: bool,
+            directorySelectionVersion1: bool,
             cancellationToken: CancellationToken
         ) =
         task {
@@ -372,6 +381,7 @@ type internal AddExistingSelector
                                   DisplayName =
                                     AddExistingSelectorPaths.rootDisplayName canonicalRoot
                                   IsDirectory = true
+                                  IsLink = false
                                   Selectable = false
                                   Availability = AddExistingAvailability.Ineligible
                                   GitStates = [||]
@@ -392,6 +402,7 @@ type internal AddExistingSelector
                                   Continuations = Dictionary(StringComparer.Ordinal)
                                   RegisteredPaths = registered
                                   PresentationVersion2 = presentationVersion2
+                                  DirectorySelectionVersion1 = directorySelectionVersion1
                                   GitSnapshot = gitSnapshot }
 
                             let rootEntry =
@@ -437,6 +448,7 @@ type internal AddExistingSelector
             selectionId: string,
             expectedRevision: int64,
             requestedPageSize: int option,
+            presentationVersion2: bool,
             cancellationToken: CancellationToken
         ) =
         this.StartAsync(
@@ -446,6 +458,29 @@ type internal AddExistingSelector
             selectionId,
             expectedRevision,
             requestedPageSize,
+            presentationVersion2,
+            false,
+            cancellationToken
+        )
+
+    member this.StartAsync
+        (
+            workspace: SolutionWorkspace,
+            state: WorkspaceIndex,
+            target: WorkspaceSemanticContext,
+            selectionId: string,
+            expectedRevision: int64,
+            requestedPageSize: int option,
+            cancellationToken: CancellationToken
+        ) =
+        this.StartAsync(
+            workspace,
+            state,
+            target,
+            selectionId,
+            expectedRevision,
+            requestedPageSize,
+            false,
             false,
             cancellationToken
         )
@@ -520,7 +555,7 @@ type internal AddExistingSelector
                 invalid "Add Existing requires between 1 and 256 entries."
             | Ok session ->
                 let unique = HashSet<string>(StringComparer.Ordinal)
-                let selected = ResizeArray<AddExistingEntry>()
+                let requested = ResizeArray<AddExistingEntry>()
                 let mutable error = None
 
                 for id in entryIds do
@@ -529,33 +564,172 @@ type internal AddExistingSelector
                             error <- Some "Entry IDs must be unique non-empty values."
                         else
                             match session.Entries.TryGetValue id with
-                            | true, entry when entry.Selectable && not entry.IsDirectory ->
-                                selected.Add entry
-                            | _ -> error <- Some "An entry is unknown or not selectable."
+                            | true, entry when
+                                entry.Selectable
+                                && (not entry.IsDirectory || session.DirectorySelectionVersion1)
+                                ->
+                                requested.Add entry
+                            | _ ->
+                                error <-
+                                    Some
+                                        "The selected entry is unavailable in this Add Existing context."
 
-                let identities = HashSet<string>(StringComparer.Ordinal)
+                let requestedIdentities = HashSet<string>(StringComparer.Ordinal)
 
-                for entry in selected do
-                    if not (identities.Add(pathIdentity entry.Path)) then
+                for entry in requested do
+                    if not (requestedIdentities.Add(pathIdentity entry.Path)) then
                         error <- Some "Selected entries collide under filesystem identity rules."
 
-                    match
-                        session.Snapshots.TryGetValue entry.ParentPath,
-                        enumerate session entry.ParentPath,
-                        entry.Fingerprint
-                        |> Option.bind (fun _ ->
-                            ArtifactFiles.fingerprint entry.Path |> Result.toOption)
-                    with
-                    | (true, expected), Ok actual, Some fingerprint when
-                        expected.Fingerprint = actual.Fingerprint
-                        && entry.Fingerprint = Some fingerprint
-                        ->
-                        ()
-                    | _ -> error <- Some "A selected source or directory changed."
+                let selected = ResizeArray<AddExistingEntry>()
+
+                let strictDescendant (ancestor: AddExistingEntry) (candidate: AddExistingEntry) =
+                    pathIdentity ancestor.Path <> pathIdentity candidate.Path
+                    && ArtifactFiles.isUnder ancestor.Path candidate.Path
+
+                for entry in requested do
+                    if error.IsNone then
+                        for index = selected.Count - 1 downto 0 do
+                            let previous = selected[index]
+
+                            if
+                                (entry.IsDirectory && strictDescendant entry previous)
+                                || (previous.IsDirectory && strictDescendant previous entry)
+                            then
+                                selected.RemoveAt index
+
+                        selected.Add entry
+
+                let resolved = ResizeArray<AddExistingResolvedEntry>()
+                let resolvedIdentities = HashSet<string>(StringComparer.Ordinal)
+                let traversedDirectories = Dictionary<string, string>(StringComparer.Ordinal)
+
+                let directorySegments (source: AddExistingEntry) (entry: AddExistingEntry) =
+                    let directory =
+                        Path.GetDirectoryName entry.Path
+                        |> Option.ofObj
+                        |> Option.defaultValue source.Path
+
+                    let relative = Path.GetRelativePath(source.ParentPath, directory)
+
+                    if relative = "." then
+                        [||]
+                    else
+                        relative.Split(
+                            [| Path.DirectorySeparatorChar; Path.AltDirectorySeparatorChar |],
+                            StringSplitOptions.RemoveEmptyEntries
+                        )
+
+                let addResolved (source: AddExistingEntry) recursive (entry: AddExistingEntry) =
+                    if not (resolvedIdentities.Add(pathIdentity entry.Path)) then
+                        error <- Some "Recursive selections resolve to the same workspace item."
+                    elif resolved.Count = 256 then
+                        error <-
+                            Some
+                                "The selected directories contain more than 256 eligible items; choose a smaller directory."
+                    else
+                        resolved.Add
+                            { Entry = entry
+                              DirectorySegments =
+                                if recursive then directorySegments source entry else [||]
+                              Recursive = recursive }
+
+                let expandDirectory (source: AddExistingEntry) =
+                    let discovered = ResizeArray<AddExistingEntry>()
+
+                    let rec walk (directory: string) =
+                        if error.IsNone then
+                            match enumerate session directory with
+                            | Error failure -> error <- Some failure.Message
+                            | Ok snapshot ->
+                                traversedDirectories[pathIdentity directory] <- directory
+
+                                for entry in snapshot.Entries do
+                                    if error.IsNone then
+                                        if entry.IsLink then
+                                            error <-
+                                                Some
+                                                    $"The selected directory contains a symbolic link: {entry.DisplayName}."
+                                        elif entry.IsDirectory then
+                                            walk entry.Path
+                                        elif
+                                            entry.Selectable
+                                            && entry.Availability = AddExistingAvailability.Available
+                                        then
+                                            discovered.Add entry
+
+                                            if resolved.Count + discovered.Count > 256 then
+                                                error <-
+                                                    Some
+                                                        "The selected directories contain more than 256 eligible items; choose a smaller directory."
+
+                    walk source.Path
+
+                    if error.IsNone && discovered.Count = 0 then
+                        error <-
+                            Some
+                                $"The selected directory '{source.DisplayName}' contains no items eligible for this target."
+
+                    if error.IsNone then
+                        discovered
+                        |> Seq.sortWith (fun (left: AddExistingEntry) (right: AddExistingEntry) ->
+                            StringComparer.Ordinal.Compare(
+                                Path.GetRelativePath(source.Path, left.Path),
+                                Path.GetRelativePath(source.Path, right.Path)
+                            ))
+                        |> Seq.iter (addResolved source true)
+
+                for source in selected do
+                    if error.IsNone then
+                        match
+                            session.Snapshots.TryGetValue source.ParentPath,
+                            enumerate session source.ParentPath
+                        with
+                        | (true, expected), Ok actual when
+                            expected.Fingerprint = actual.Fingerprint
+                            ->
+                            if source.IsDirectory then
+                                expandDirectory source
+                            else
+                                match
+                                    source.Fingerprint,
+                                    ArtifactFiles.fingerprint source.Path |> Result.toOption
+                                with
+                                | Some expectedFingerprint, Some actualFingerprint when
+                                    expectedFingerprint = actualFingerprint
+                                    ->
+                                    addResolved source false source
+                                | _ -> error <- Some "A selected source file changed."
+                        | _ -> error <- Some "A selected source or directory changed."
+
+                for directory in traversedDirectories.Values do
+                    if error.IsNone then
+                        match session.Snapshots.TryGetValue directory with
+                        | true, expected ->
+                            match enumerate session directory with
+                            | Ok actual when actual.Fingerprint = expected.Fingerprint -> ()
+                            | _ -> error <- Some "A selected directory changed during traversal."
+                        | _ -> error <- Some "A selected directory snapshot is unavailable."
+
+                for item in resolved do
+                    if error.IsNone then
+                        match
+                            item.Entry.Fingerprint,
+                            ArtifactFiles.fingerprint item.Entry.Path |> Result.toOption
+                        with
+                        | Some expectedFingerprint, Some actualFingerprint when
+                            expectedFingerprint = actualFingerprint
+                            ->
+                            ()
+                        | _ -> error <- Some "A recursively selected source file changed."
 
                 match error with
                 | Some message -> invalid message
-                | None -> Ok(session, selected.ToArray()))
+                | None ->
+                    Ok(
+                        session,
+                        { Sources = selected.ToArray()
+                          Entries = resolved.ToArray() }
+                    ))
 
     interface IDisposable with
         member this.Dispose() = this.Invalidate()

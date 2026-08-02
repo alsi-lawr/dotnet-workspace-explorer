@@ -150,20 +150,30 @@ bounded Git path snapshot when the selector starts and reuses it for the complet
 session. A non-Git workspace or safe Git acquisition failure produces empty arrays without
 preventing selector browsing or Add Existing.
 
-Availability does not change selector eligibility. A selectable file is `available`, a registered
-file is `alreadyPresent`, and directories, symbolic links, unsupported target types, and other
-ineligible files are `ineligible`. Every completely materialized sibling snapshot sorts
+Availability does not change selector eligibility. A selectable entry is `available`, a registered
+file is `alreadyPresent`, and symbolic links, unsupported target types, and other ineligible
+entries are `ineligible`. Without `workspace.addExisting.directories.v1`, directories remain
+ineligible navigation entries. Every completely materialized sibling snapshot sorts
 directories before files, then uses ordinal display-name order and ordinal full-path order as a
 deterministic internal tie-breaker before fingerprinting and paging. Nested directories remain
 lazy.
 
+Negotiating `workspace.addExisting.directories.v1` makes non-symbolic directories selectable while
+leaving the selector shape unchanged. A selected directory resolves recursively in target context:
+workspace roots add only C#, F#, and Visual Basic projects; Solution Folders mirror the selected
+physical hierarchy as nested logical Solution Folders containing eligible projects and solution
+items; projects and Project Folders add eligible project items while retaining their relative
+paths. Recursive F# `Compile` items append in ordinal relative-path order. Entry order is
+latest-wins for directory/descendant overlap.
+
 Entry IDs, selector IDs, and continuation tokens are opaque. Responses never expose physical
 paths. The selector enforces one active session, a ten-minute expiry, root containment, no-follow
-symbolic-link handling, bounded pages, and at most 256 unique selected files. The
+symbolic-link handling, bounded pages, and at most 256 resulting additions. Recursive selection
+rejects a tree containing a symbolic link or more than 256 eligible descendants. The
 `workspace.addExisting` command accepts exactly `{ selectorId, entryIds }` through the ordinary
-preview and execute envelope. Execute revalidates the selected fingerprints and applies the full
-membership batch atomically without copying, moving, deleting, overwriting, or editing selected
-files.
+preview and execute envelope. Preview lists every resulting addition. Execute revalidates every
+selected directory snapshot and source fingerprint, then applies the full membership batch
+atomically without copying, moving, deleting, overwriting, or editing selected files.
 
 ## Contextual Rename, Move, and Copy
 

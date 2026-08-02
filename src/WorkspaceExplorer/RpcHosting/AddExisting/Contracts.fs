@@ -17,6 +17,7 @@ type internal AddExistingEntry =
       ParentPath: string
       DisplayName: string
       IsDirectory: bool
+      IsLink: bool
       Selectable: bool
       Availability: AddExistingAvailability
       GitStates: GitStatusState array
@@ -47,7 +48,17 @@ type internal AddExistingSession =
       Continuations: Dictionary<string, AddExistingContinuation>
       RegisteredPaths: HashSet<string>
       PresentationVersion2: bool
+      DirectorySelectionVersion1: bool
       GitSnapshot: WorkspaceGitPathSnapshot option }
+
+type internal AddExistingResolvedEntry =
+    { Entry: AddExistingEntry
+      DirectorySegments: string array
+      Recursive: bool }
+
+type internal AddExistingResolvedSelection =
+    { Sources: AddExistingEntry array
+      Entries: AddExistingResolvedEntry array }
 
 [<RequireQualifiedAccess>]
 module private AddExistingFormatting =

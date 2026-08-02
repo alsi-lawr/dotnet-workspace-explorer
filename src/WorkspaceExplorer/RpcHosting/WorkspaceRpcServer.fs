@@ -52,6 +52,7 @@ module internal WorkspaceRpcServer =
                 let mutable gitStatusV2Negotiated = false
                 let mutable addExistingNegotiated = false
                 let mutable addExistingPresentationV2Negotiated = false
+                let mutable addExistingDirectoriesV1Negotiated = false
                 use publicationGate = new SemaphoreSlim(1, 1)
 
                 let gitStatus = WorkspaceGitStatus(workspace.SolutionPath.Value)
@@ -148,6 +149,9 @@ module internal WorkspaceRpcServer =
                                 request.Capabilities.Contains
                                     "workspace.addExisting.presentation.v2"
 
+                            addExistingDirectoriesV1Negotiated <-
+                                request.Capabilities.Contains "workspace.addExisting.directories.v1"
+
                             return
                                 Ok(
                                     WorkspaceRpcResponses.initializeResult
@@ -241,6 +245,7 @@ module internal WorkspaceRpcServer =
                                                                     expectedRevision,
                                                                     pageSize,
                                                                     addExistingPresentationV2Negotiated,
+                                                                    addExistingDirectoriesV1Negotiated,
                                                                     requestCancellationToken
                                                                 )
 

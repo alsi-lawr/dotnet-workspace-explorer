@@ -613,7 +613,7 @@ type WorkspaceAddExistingPresentationTests() =
                         [| WorkspaceAddExistingScenario.entryId available |]
                     )
                 with
-                | Ok(_, selected) -> selected.Length |> should equal 1
+                | Ok(_, selected) -> selected.Entries.Length |> should equal 1
                 | Error error ->
                     failwithf
                         "Git fallback prevented source resolution: %s: %s"

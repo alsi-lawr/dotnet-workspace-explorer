@@ -535,3 +535,124 @@ type WorkspaceAddExistingSafetyTests() =
             |> Option.iter (fun path ->
                 if Directory.Exists path then
                     Directory.Delete(path, true))
+
+    [<Fact>]
+    member _.``recursive directory selection enforces its result bound rejects nested links and revalidates every source before execution``
+        ()
+        =
+        WorkspaceAddExistingScenario.withPreparedWorkspaceCapabilities
+            "add-existing-recursive-safety"
+            ".slnx"
+            (fun directory _ ->
+                let bulk = Path.Combine(directory, "Bulk")
+                Directory.CreateDirectory bulk |> ignore
+
+                for index in 0..256 do
+                    WorkspaceRpcScenario.writeProject (
+                        Path.Combine(bulk, $"Project{index:D3}.csproj")
+                    )
+
+                let linked = Path.Combine(directory, "LinkedSources")
+                Directory.CreateDirectory linked |> ignore
+                let shared = Path.Combine(directory, "Shared.csproj")
+                WorkspaceRpcScenario.writeProject shared
+                File.CreateSymbolicLink(Path.Combine(linked, "Linked.csproj"), shared) |> ignore
+
+                let atomic = Path.Combine(directory, "Atomic")
+                Directory.CreateDirectory atomic |> ignore
+                WorkspaceRpcScenario.writeProject (Path.Combine(atomic, "Alpha.csproj"))
+                WorkspaceRpcScenario.writeProject (Path.Combine(atomic, "Beta.csproj")))
+            [ "workspace.addExisting.selector"; "workspace.addExisting.directories.v1" ]
+            (fun directory solution child ->
+                let root = WorkspaceAddExistingScenario.root child
+                let rootId = WorkspaceAddExistingScenario.nodeId root
+                let revision = WorkspaceAddExistingScenario.revision root
+                let started = WorkspaceAddExistingScenario.startSelector child 3u rootId revision
+
+                let selectorId =
+                    WorkspaceRpcScenario.field "selectorId" started
+                    |> RpcValue.requireString "selectorId"
+
+                let selectorRootId =
+                    WorkspaceRpcScenario.field "root" started
+                    |> WorkspaceRpcScenario.field "entryId"
+                    |> RpcValue.requireString "entryId"
+
+                let entries =
+                    WorkspaceAddExistingScenario.allEntries
+                        child
+                        5u
+                        selectorId
+                        selectorRootId
+                        started
+
+                let entryId name =
+                    entries
+                    |> Seq.find (fun entry ->
+                        WorkspaceRpcScenario.field "displayName" entry = RpcValue.String name)
+                    |> WorkspaceAddExistingScenario.entryId
+
+                let rejected requestId name expectedMessage =
+                    let error, _ =
+                        WorkspaceAddExistingScenario.call
+                            child
+                            requestId
+                            "workspace/commands/preview"
+                            (WorkspaceAddExistingScenario.previewRequest
+                                rootId
+                                revision
+                                selectorId
+                                [ entryId name ])
+
+                    error |> Option.map _.Code |> should equal (Some "invalid_params")
+
+                    error
+                    |> Option.map _.Message
+                    |> Option.defaultValue String.Empty
+                    |> should haveSubstring expectedMessage
+
+                rejected 20u "Bulk" "more than 256 eligible items"
+                rejected 21u "LinkedSources" "contains a symbolic link"
+
+                let atomicRequest =
+                    WorkspaceAddExistingScenario.previewRequest
+                        rootId
+                        revision
+                        selectorId
+                        [ entryId "Atomic" ]
+
+                let atomicPreview =
+                    WorkspaceAddExistingScenario.successful
+                        child
+                        22u
+                        "workspace/commands/preview"
+                        atomicRequest
+
+                File.AppendAllText(
+                    Path.Combine(directory, "Atomic", "Alpha.csproj"),
+                    Environment.NewLine
+                )
+
+                let execute =
+                    match atomicRequest with
+                    | RpcValue.Map fields ->
+                        fields.Add(
+                            "confirmationToken",
+                            WorkspaceRpcScenario.field "confirmationToken" atomicPreview
+                        )
+                        |> RpcValue.Map
+                    | _ -> failwith "The recursive safety request must be a map."
+
+                let executionError, _ =
+                    WorkspaceAddExistingScenario.call
+                        child
+                        23u
+                        "workspace/commands/execute"
+                        execute
+
+                executionError |> Option.map _.Code |> should equal (Some "invalid_params")
+
+                WorkspaceCommandScenario.openSolution solution
+                |> _.SolutionProjects
+                |> Seq.isEmpty
+                |> should equal true)

@@ -1,5 +1,6 @@
 namespace Dotnet.WorkspaceExplorer.Workspaces.IntegrationTests
 
+open System
 open System.IO
 open Dotnet.WorkspaceExplorer.Rpc
 open FsUnit.Xunit
@@ -191,3 +192,163 @@ type WorkspaceAddExistingProjectTests() =
                          "RootLoose.cs")
 
                 projectDocument |> should not' (haveSubstring "ProjectReference"))
+
+    [<Fact>]
+    member _.``a negotiated FSharp directory selection appends Compile items in relative-path order and normalizes overlaps by latest selection``
+        ()
+        =
+        WorkspaceAddExistingScenario.withPreparedWorkspaceCapabilities
+            "add-existing-fsharp-directory"
+            ".slnx"
+            (fun directory model ->
+                model.AddProject("Demo.fsproj", "Demo", null) |> ignore
+
+                File.WriteAllText(
+                    Path.Combine(directory, "Demo.fsproj"),
+                    """
+                    <Project Sdk="Microsoft.NET.Sdk">
+                      <PropertyGroup>
+                        <TargetFramework>net10.0</TargetFramework>
+                        <EnableDefaultItems>false</EnableDefaultItems>
+                      </PropertyGroup>
+                    </Project>
+                    """
+                )
+
+                let features = Path.Combine(directory, "Features")
+                Directory.CreateDirectory(Path.Combine(features, "Nested")) |> ignore
+                File.WriteAllText(Path.Combine(features, "Zeta.fs"), "module Zeta")
+                File.WriteAllText(Path.Combine(features, "Alpha.fs"), "module Alpha")
+                File.WriteAllText(Path.Combine(features, "Nested", "Beta.fs"), "module Beta"))
+            [ "workspace.addExisting.selector"; "workspace.addExisting.directories.v1" ]
+            (fun directory _ child ->
+                let root = WorkspaceAddExistingScenario.root child
+                let rootId = WorkspaceAddExistingScenario.nodeId root
+
+                let project =
+                    WorkspaceAddExistingScenario.children child 3u rootId
+                    |> WorkspaceRpcScenario.field "nodes"
+                    |> RpcValue.requireArray "nodes"
+                    |> Seq.find (fun node ->
+                        WorkspaceRpcScenario.field "kind" node = RpcValue.String "project")
+
+                let projectId = WorkspaceAddExistingScenario.nodeId project
+                let projectChildren = WorkspaceAddExistingScenario.children child 4u projectId
+
+                match WorkspaceRpcScenario.readFrame child with
+                | Notification("workspace/delta", _) -> ()
+                | frame -> failwithf "Expected a project hydration notification, got %A" frame
+
+                let revision =
+                    WorkspaceRpcScenario.field "revision" projectChildren
+                    |> RpcValue.requireInteger "revision"
+
+                let started =
+                    WorkspaceAddExistingScenario.startSelector child 5u projectId revision
+
+                let selectorId =
+                    WorkspaceRpcScenario.field "selectorId" started
+                    |> RpcValue.requireString "selectorId"
+
+                let selectorRootId =
+                    WorkspaceRpcScenario.field "root" started
+                    |> WorkspaceRpcScenario.field "entryId"
+                    |> RpcValue.requireString "entryId"
+
+                let features =
+                    WorkspaceAddExistingScenario.allEntries
+                        child
+                        7u
+                        selectorId
+                        selectorRootId
+                        started
+                    |> Seq.find (fun entry ->
+                        WorkspaceRpcScenario.field "displayName" entry = RpcValue.String
+                            "Features")
+
+                let featuresId = WorkspaceAddExistingScenario.entryId features
+
+                let featurePage =
+                    WorkspaceAddExistingScenario.successful
+                        child
+                        10u
+                        "workspace/addExisting/children"
+                        (WorkspaceRpcScenario.map
+                            [ "selectorId", RpcValue.String selectorId
+                              "parentEntryId", RpcValue.String featuresId
+                              "pageSize", RpcValue.Integer 4096L ])
+
+                let alphaId =
+                    WorkspaceAddExistingScenario.allEntries
+                        child
+                        11u
+                        selectorId
+                        featuresId
+                        featurePage
+                    |> Seq.find (fun entry ->
+                        WorkspaceRpcScenario.field "displayName" entry = RpcValue.String
+                            "Alpha.fs")
+                    |> WorkspaceAddExistingScenario.entryId
+
+                let directoryWins =
+                    WorkspaceAddExistingScenario.previewRequest
+                        projectId
+                        revision
+                        selectorId
+                        [ alphaId; featuresId ]
+
+                let directoryPreview =
+                    WorkspaceAddExistingScenario.successful
+                        child
+                        20u
+                        "workspace/commands/preview"
+                        directoryWins
+
+                WorkspaceRpcScenario.field "summary" directoryPreview
+                |> should equal (RpcValue.String "Add 3 existing workspace item(s)")
+
+                let descendantWins =
+                    WorkspaceAddExistingScenario.previewRequest
+                        projectId
+                        revision
+                        selectorId
+                        [ featuresId; alphaId ]
+
+                let descendantPreview =
+                    WorkspaceAddExistingScenario.successful
+                        child
+                        21u
+                        "workspace/commands/preview"
+                        descendantWins
+
+                WorkspaceRpcScenario.field "summary" descendantPreview
+                |> should equal (RpcValue.String "Add 1 existing workspace item(s)")
+
+                let execute =
+                    match directoryWins with
+                    | RpcValue.Map fields ->
+                        fields.Add(
+                            "confirmationToken",
+                            WorkspaceRpcScenario.field "confirmationToken" directoryPreview
+                        )
+                        |> RpcValue.Map
+                    | _ -> failwith "The recursive FSharp request must be a map."
+
+                WorkspaceAddExistingScenario.execute child 22u execute |> ignore
+
+                match WorkspaceRpcScenario.readFrame child with
+                | Notification("workspace/delta", _)
+                | Notification("workspace/reset", _) -> ()
+                | frame -> failwithf "Expected a recursive project mutation, got %A" frame
+
+                let projectDocument = File.ReadAllText(Path.Combine(directory, "Demo.fsproj"))
+                let alpha = projectDocument.IndexOf("Features/Alpha.fs", StringComparison.Ordinal)
+
+                let beta =
+                    projectDocument.IndexOf("Features/Nested/Beta.fs", StringComparison.Ordinal)
+
+                let zeta = projectDocument.IndexOf("Features/Zeta.fs", StringComparison.Ordinal)
+
+                alpha |> should be (greaterThanOrEqualTo 0)
+                beta |> should be (greaterThan alpha)
+                zeta |> should be (greaterThan beta))
