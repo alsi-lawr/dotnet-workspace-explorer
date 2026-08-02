@@ -121,6 +121,7 @@ type WorkspaceRpcInitializationTests() =
                 [ "workspace.root"
                   "workspace.create.options"
                   "workspace.addExisting.selector"
+                  "workspace.addExisting.presentation.v2"
                   "workspace.file.resolve"
                   "workspace.git.status"
                   "workspace.git.status.v2"
@@ -165,7 +166,8 @@ type WorkspaceRpcInitializationTests() =
         negotiated
         |> should
             equal
-            [ "workspace.addExisting.selector"
+            [ "workspace.addExisting.presentation.v2"
+              "workspace.addExisting.selector"
               "workspace.create.options"
               "workspace.file.resolve"
               "workspace.git.status"

@@ -51,10 +51,17 @@ module internal WorkspaceRpcServer =
                 let mutable gitStatusNegotiated = false
                 let mutable gitStatusV2Negotiated = false
                 let mutable addExistingNegotiated = false
+                let mutable addExistingPresentationV2Negotiated = false
                 use publicationGate = new SemaphoreSlim(1, 1)
 
+                let gitStatus = WorkspaceGitStatus(workspace.SolutionPath.Value)
+
                 use addExistingSelector =
-                    new AddExistingSelector((fun () -> maximumPageSize), TimeProvider.System)
+                    new AddExistingSelector(
+                        (fun () -> maximumPageSize),
+                        TimeProvider.System,
+                        gitStatus.ReadPathSnapshotAsync
+                    )
 
                 let watcher =
                     WorkspaceIndexWatcher(
@@ -94,7 +101,7 @@ module internal WorkspaceRpcServer =
 
                 let workspaceRequestContext =
                     { State = state
-                      GitStatus = WorkspaceGitStatus(workspace.SolutionPath.Value)
+                      GitStatus = gitStatus
                       GitStatusResponseVersion =
                         fun () ->
                             if gitStatusV2Negotiated then Some Version2
@@ -136,6 +143,10 @@ module internal WorkspaceRpcServer =
 
                             addExistingNegotiated <-
                                 request.Capabilities.Contains "workspace.addExisting.selector"
+
+                            addExistingPresentationV2Negotiated <-
+                                request.Capabilities.Contains
+                                    "workspace.addExisting.presentation.v2"
 
                             return
                                 Ok(
@@ -229,6 +240,7 @@ module internal WorkspaceRpcServer =
                                                                     selectionId,
                                                                     expectedRevision,
                                                                     pageSize,
+                                                                    addExistingPresentationV2Negotiated,
                                                                     requestCancellationToken
                                                                 )
 

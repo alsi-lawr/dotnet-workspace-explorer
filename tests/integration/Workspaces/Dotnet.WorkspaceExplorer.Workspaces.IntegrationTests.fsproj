@@ -29,6 +29,7 @@
         <Compile Include="WorkspaceRpc/WorkspaceFileResolutionTests.fs" />
         <Compile Include="WorkspaceRpc/WorkspaceGitStatusTests.fs" />
         <Compile Include="WorkspaceRpc/AddExisting/WorkspaceAddExistingScenario.fs" />
+        <Compile Include="WorkspaceRpc/AddExisting/WorkspaceAddExistingPresentationTests.fs" />
         <Compile Include="WorkspaceRpc/AddExisting/WorkspaceAddExistingSolutionTests.fs" />
         <Compile Include="WorkspaceRpc/AddExisting/WorkspaceAddExistingProjectTests.fs" />
         <Compile Include="WorkspaceRpc/AddExisting/WorkspaceAddExistingSafetyTests.fs" />

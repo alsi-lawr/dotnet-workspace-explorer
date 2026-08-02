@@ -209,7 +209,9 @@ type WorkspaceAddExistingSafetyTests() =
                 Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``selector pages are ordinal bounded snapshots and nested directories remain lazy``() =
+    member _.``selector pages are directory-first ordinal bounded snapshots and nested directories remain lazy``
+        ()
+        =
         WorkspaceAddExistingScenario.withPreparedWorkspace
             "add-existing-ordinal-snapshot"
             ".slnx"
@@ -284,12 +286,26 @@ type WorkspaceAddExistingSafetyTests() =
                         |> RpcValue.requireString "displayName")
                     |> Seq.toArray
 
-                let ordinal =
-                    displayNames
-                    |> Array.sortWith (fun left right ->
-                        StringComparer.Ordinal.Compare(left, right))
+                let expectedOrder =
+                    entries
+                    |> Seq.map (fun entry ->
+                        WorkspaceRpcScenario.field "kind" entry = RpcValue.String "directory",
+                        WorkspaceRpcScenario.field "displayName" entry
+                        |> RpcValue.requireString "displayName")
+                    |> Seq.sortWith (fun (leftDirectory, leftName) (rightDirectory, rightName) ->
+                        let kind =
+                            compare
+                                (if leftDirectory then 0 else 1)
+                                (if rightDirectory then 0 else 1)
 
-                displayNames |> should equal ordinal
+                        if kind <> 0 then
+                            kind
+                        else
+                            StringComparer.Ordinal.Compare(leftName, rightName))
+                    |> Seq.map snd
+                    |> Seq.toArray
+
+                displayNames |> should equal expectedOrder
 
                 for expected in [ "Alpha.csproj"; "Lazy"; "beta.csproj"; "zeta.csproj" ] do
                     displayNames |> should contain expected

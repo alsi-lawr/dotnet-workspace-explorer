@@ -21,12 +21,15 @@ The v1.0 allowlist is exactly:
 6. `workspace/export/start`
 7. `workspace/refresh`
 8. `workspace/create/options`
-9. `workspace/commands/list`
-10. `workspace/commands/describe`
-11. `workspace/commands/preview`
-12. `workspace/commands/execute`
-13. `workspace/operations/cancel`
-14. `shutdown`
+9. `workspace/addExisting/start`
+10. `workspace/addExisting/children`
+11. `workspace/addExisting/close`
+12. `workspace/commands/list`
+13. `workspace/commands/describe`
+14. `workspace/commands/preview`
+15. `workspace/commands/execute`
+16. `workspace/operations/cancel`
+17. `shutdown`
 
 `workspace/root` returns exactly one `workspace` node named from the opened workspace.
 `workspace/children` pages a parent by node ID, page size, and continuation token. The semantic
@@ -69,9 +72,9 @@ already-completed work can be undone. `shutdown` accepts an orderly session shut
 Clients that negotiate `workspace.create.options` may send `workspace/create/options` with exactly
 `{ targetNodeId, expectedRevision }`. The response is exactly `{ revision, options }`. Each option
 contains `selectionId`, `kind`, `displayName`, `description`, optional `language`, and `execution`.
-The fixed kinds are `empty`, `itemTemplate`, and `projectTemplate`; execution is `transaction` or
-`operation`. Selection IDs are opaque, catalog-bound values and must not be cached across catalog
-changes.
+The fixed kinds are `empty`, `itemTemplate`, `projectTemplate`, `solutionFolder`, and `addExisting`;
+execution is `transaction`, `operation`, or `selector`. Selection IDs are opaque, catalog-bound
+values and must not be cached across catalog changes.
 
 The `workspace.create` command accepts exactly text arguments `selectionId` and `name`.
 `workspace.delete` accepts no arguments. Both use the ordinary command list, describe, preview, and
@@ -93,6 +96,74 @@ Every command preview contains exactly `confirmationToken`, `expiresAtUtc`, `sum
 `removeFromSolution`. Empty creation and deletion complete synchronously. Item and project
 templates return `{ operationId, revision }`; `workspace/operations/completed` is their definitive
 outcome.
+
+## Add Existing
+
+A client must negotiate `workspace.addExisting.selector` to receive the `addExisting` creation
+option or call the three selector methods. Start accepts exactly
+`{ targetNodeId, selectionId, expectedRevision, pageSize? }`. Its exact result is:
+
+```text
+{
+  revision,
+  selectorId,
+  expiresAtUtc,
+  maxSelectionCount,
+  root: entry,
+  entries: [entry],
+  nextToken?
+}
+```
+
+Children accepts exactly `{ selectorId, parentEntryId, pageSize?, continuationToken? }` and returns
+exactly `{ revision, selectorId, parentEntryId, entries, nextToken? }`. Close accepts exactly
+`{ selectorId }` and returns exactly `{ closed: true }`.
+
+Without `workspace.addExisting.presentation.v2`, every root and entry retains this exact legacy
+shape:
+
+```text
+{
+  entryId,
+  displayName,
+  kind,
+  expandable,
+  selectable,
+  iconHint?
+}
+```
+
+Negotiating `workspace.addExisting.presentation.v2` separately adds exactly two required fields to
+every root and entry:
+
+```text
+{
+  availability: available | alreadyPresent | ineligible,
+  gitStates: [staged | unstaged | renamed | deleted | unmerged | untracked | ignored]
+}
+```
+
+`gitStates` contains distinct values in that fixed order. Files receive their direct path state.
+Directories receive the ordered union of repository-known descendant states, including missing
+deleted descendants; no missing path creates a selector row. The server captures at most one
+bounded Git path snapshot when the selector starts and reuses it for the complete ten-minute
+session. A non-Git workspace or safe Git acquisition failure produces empty arrays without
+preventing selector browsing or Add Existing.
+
+Availability does not change selector eligibility. A selectable file is `available`, a registered
+file is `alreadyPresent`, and directories, symbolic links, unsupported target types, and other
+ineligible files are `ineligible`. Every completely materialized sibling snapshot sorts
+directories before files, then uses ordinal display-name order and ordinal full-path order as a
+deterministic internal tie-breaker before fingerprinting and paging. Nested directories remain
+lazy.
+
+Entry IDs, selector IDs, and continuation tokens are opaque. Responses never expose physical
+paths. The selector enforces one active session, a ten-minute expiry, root containment, no-follow
+symbolic-link handling, bounded pages, and at most 256 unique selected files. The
+`workspace.addExisting` command accepts exactly `{ selectorId, entryIds }` through the ordinary
+preview and execute envelope. Execute revalidates the selected fingerprints and applies the full
+membership batch atomically without copying, moving, deleting, overwriting, or editing selected
+files.
 
 ## Contextual Rename, Move, and Copy
 

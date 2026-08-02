@@ -23,7 +23,14 @@ module internal AddExistingSelectorPaths =
         else
             name
 
-type internal AddExistingSelector(maximumPageSize: unit -> int, clock: TimeProvider) =
+type internal AddExistingSelector
+    (
+        maximumPageSize: unit -> int,
+        clock: TimeProvider,
+        readGitPathSnapshotAsync:
+            CancellationToken
+                -> System.Threading.Tasks.Task<Result<WorkspaceGitPathSnapshot option, RpcError>>
+    ) =
     let gate = obj ()
     let mutable current: AddExistingSession option = None
 
@@ -65,7 +72,7 @@ type internal AddExistingSelector(maximumPageSize: unit -> int, clock: TimeProvi
             |> Option.filter (String.IsNullOrWhiteSpace >> not)
             |> Option.map _.ToLowerInvariant()
 
-    let snapshotFingerprint (entries: AddExistingEntry array) =
+    let snapshotFingerprint presentationVersion2 (entries: AddExistingEntry array) =
         use stream = new MemoryStream()
         use writer = new BinaryWriter(stream, Encoding.UTF8, true)
 
@@ -76,6 +83,28 @@ type internal AddExistingSelector(maximumPageSize: unit -> int, clock: TimeProvi
             writer.Write entry.Expandable
             writer.Write(entry.IconHint |> Option.defaultValue String.Empty)
             writer.Write(entry.Fingerprint |> Option.defaultValue String.Empty)
+
+            if presentationVersion2 then
+                writer.Write(
+                    match entry.Availability with
+                    | AddExistingAvailability.Available -> "available"
+                    | AddExistingAvailability.AlreadyPresent -> "alreadyPresent"
+                    | AddExistingAvailability.Ineligible -> "ineligible"
+                )
+
+                writer.Write entry.GitStates.Length
+
+                for state in entry.GitStates do
+                    writer.Write(
+                        match state with
+                        | GitStatusState.Staged -> "staged"
+                        | GitStatusState.Unstaged -> "unstaged"
+                        | GitStatusState.Renamed -> "renamed"
+                        | GitStatusState.Deleted -> "deleted"
+                        | GitStatusState.Unmerged -> "unmerged"
+                        | GitStatusState.Untracked -> "untracked"
+                        | GitStatusState.Ignored -> "ignored"
+                    )
 
         writer.Flush()
         SHA256.HashData(stream.ToArray()) |> Convert.ToHexString
@@ -102,22 +131,45 @@ type internal AddExistingSelector(maximumPageSize: unit -> int, clock: TimeProvi
         |> min (maximumPageSize ())
         |> max 1
 
-    let selectable (session: AddExistingSession) path isDirectory isLink =
-        if isDirectory || isLink || session.RegisteredPaths.Contains(pathIdentity path) then
-            false
+    let selectionAvailability (session: AddExistingSession) path isDirectory isLink =
+        if isDirectory || isLink then
+            false, AddExistingAvailability.Ineligible
+        elif session.RegisteredPaths.Contains(pathIdentity path) then
+            false, AddExistingAvailability.AlreadyPresent
         else
-            match session.Target.Node.Kind with
-            | WorkspaceNodeKind.Workspace -> projectExtension path
-            | WorkspaceNodeKind.SolutionFolder ->
-                projectExtension path || not (unsupportedSolutionFile path)
-            | WorkspaceNodeKind.Project
-            | WorkspaceNodeKind.ProjectFolder -> not (projectExtension path)
-            | _ -> false
+            let selectable =
+                match session.Target.Node.Kind with
+                | WorkspaceNodeKind.Workspace -> projectExtension path
+                | WorkspaceNodeKind.SolutionFolder ->
+                    projectExtension path || not (unsupportedSolutionFile path)
+                | WorkspaceNodeKind.Project
+                | WorkspaceNodeKind.ProjectFolder -> not (projectExtension path)
+                | _ -> false
+
+            selectable,
+            if selectable then
+                AddExistingAvailability.Available
+            else
+                AddExistingAvailability.Ineligible
+
+    let gitStates (session: AddExistingSession) path isDirectory =
+        match session.GitSnapshot with
+        | None -> [||]
+        | Some snapshot ->
+            snapshot.Entries
+            |> Seq.filter (fun entry ->
+                if isDirectory then
+                    ArtifactFiles.isUnder path entry.Path
+                else
+                    pathIdentity path = pathIdentity entry.Path)
+            |> Seq.collect _.States
+            |> GitStatusStates.normalize
 
     let createEntry (session: AddExistingSession) canonical path =
         let full = Path.GetFullPath path
         let link = ArtifactFiles.isLink full
         let directory = Directory.Exists full
+        let selectable, availability = selectionAvailability session full directory link
 
         let fingerprint =
             if directory || link then
@@ -130,7 +182,9 @@ type internal AddExistingSelector(maximumPageSize: unit -> int, clock: TimeProvi
           ParentPath = canonical
           DisplayName = Path.GetFileName full |> Option.ofObj |> Option.defaultValue full
           IsDirectory = directory
-          Selectable = selectable session full directory link
+          Selectable = selectable
+          Availability = availability
+          GitStates = gitStates session full directory
           Expandable = directory && not link
           IconHint = iconHint full directory
           Fingerprint = fingerprint }
@@ -148,10 +202,24 @@ type internal AddExistingSelector(maximumPageSize: unit -> int, clock: TimeProvi
                     Directory.EnumerateFileSystemEntries canonical
                     |> Seq.map (createEntry session canonical)
                     |> Seq.sortWith (fun left right ->
-                        StringComparer.Ordinal.Compare(left.DisplayName, right.DisplayName))
+                        let kind =
+                            compare
+                                (if left.IsDirectory then 0 else 1)
+                                (if right.IsDirectory then 0 else 1)
+
+                        if kind <> 0 then
+                            kind
+                        else
+                            let name =
+                                StringComparer.Ordinal.Compare(left.DisplayName, right.DisplayName)
+
+                            if name <> 0 then
+                                name
+                            else
+                                StringComparer.Ordinal.Compare(left.Path, right.Path))
                     |> Seq.toArray
 
-                let fingerprint = snapshotFingerprint entries
+                let fingerprint = snapshotFingerprint session.PresentationVersion2 entries
 
                 match session.Snapshots.TryGetValue canonical with
                 | true, previous when previous.Fingerprint <> fingerprint ->
@@ -246,6 +314,7 @@ type internal AddExistingSelector(maximumPageSize: unit -> int, clock: TimeProvi
             selectionId: string,
             expectedRevision: int64,
             requestedPageSize: int option,
+            presentationVersion2: bool,
             cancellationToken: CancellationToken
         ) =
         task {
@@ -278,10 +347,19 @@ type internal AddExistingSelector(maximumPageSize: unit -> int, clock: TimeProvi
                         match registered with
                         | Error error -> return Error error
                         | Ok registered ->
+                            let! acquiredGitSnapshot =
+                                if presentationVersion2 then
+                                    readGitPathSnapshotAsync cancellationToken
+                                else
+                                    System.Threading.Tasks.Task.FromResult(Ok None)
+
+                            let gitSnapshot =
+                                acquiredGitSnapshot |> Result.toOption |> Option.flatten
+
                             let selectorRevision = state.Revision
                             let selectorId = randomId ()
 
-                            let rootEntry =
+                            let provisionalRootEntry =
                                 { Id = randomId ()
                                   Path = canonicalRoot
                                   ParentPath = canonicalRoot
@@ -289,22 +367,34 @@ type internal AddExistingSelector(maximumPageSize: unit -> int, clock: TimeProvi
                                     AddExistingSelectorPaths.rootDisplayName canonicalRoot
                                   IsDirectory = true
                                   Selectable = false
+                                  Availability = AddExistingAvailability.Ineligible
+                                  GitStates = [||]
                                   Expandable = true
                                   IconHint = Some "folder"
                                   Fingerprint = None }
 
-                            let session =
+                            let provisionalSession =
                                 { Id = selectorId
                                   SelectionId = selectionId
                                   Revision = selectorRevision
                                   ExpiresAtUtc = clock.GetUtcNow().AddMinutes 10.0
                                   RootPath = canonicalRoot
-                                  RootEntry = rootEntry
+                                  RootEntry = provisionalRootEntry
                                   Target = target
                                   Entries = Dictionary(StringComparer.Ordinal)
                                   Snapshots = Dictionary(StringComparer.Ordinal)
                                   Continuations = Dictionary(StringComparer.Ordinal)
-                                  RegisteredPaths = registered }
+                                  RegisteredPaths = registered
+                                  PresentationVersion2 = presentationVersion2
+                                  GitSnapshot = gitSnapshot }
+
+                            let rootEntry =
+                                { provisionalRootEntry with
+                                    GitStates = gitStates provisionalSession canonicalRoot true }
+
+                            let session =
+                                { provisionalSession with
+                                    RootEntry = rootEntry }
 
                             session.Entries[rootEntry.Id] <- rootEntry
 
@@ -327,10 +417,32 @@ type internal AddExistingSelector(maximumPageSize: unit -> int, clock: TimeProvi
                                         selectorRevision
                                         selectorId
                                         session.ExpiresAtUtc
+                                        presentationVersion2
                                         rootEntry
                                         entries
                                         nextToken)
         }
+
+    member this.StartAsync
+        (
+            workspace: SolutionWorkspace,
+            state: WorkspaceIndex,
+            target: WorkspaceSemanticContext,
+            selectionId: string,
+            expectedRevision: int64,
+            requestedPageSize: int option,
+            cancellationToken: CancellationToken
+        ) =
+        this.StartAsync(
+            workspace,
+            state,
+            target,
+            selectionId,
+            expectedRevision,
+            requestedPageSize,
+            false,
+            cancellationToken
+        )
 
     member _.Children
         (
@@ -362,6 +474,7 @@ type internal AddExistingSelector(maximumPageSize: unit -> int, clock: TimeProvi
                             (Some continuation.Snapshot)
                         |> Result.map (fun (entries, nextToken) ->
                             AddExistingFormatting.page
+                                session.PresentationVersion2
                                 revision
                                 selectorId
                                 parentEntryId
@@ -373,6 +486,7 @@ type internal AddExistingSelector(maximumPageSize: unit -> int, clock: TimeProvi
                         pageFrom session parentEntryId parent.Path requestedPageSize 0 None
                         |> Result.map (fun (entries, nextToken) ->
                             AddExistingFormatting.page
+                                session.PresentationVersion2
                                 revision
                                 selectorId
                                 parentEntryId
@@ -439,3 +553,10 @@ type internal AddExistingSelector(maximumPageSize: unit -> int, clock: TimeProvi
 
     interface IDisposable with
         member this.Dispose() = this.Invalidate()
+
+    new(maximumPageSize, clock) =
+        new AddExistingSelector(
+            maximumPageSize,
+            clock,
+            fun _ -> System.Threading.Tasks.Task.FromResult(Ok None)
+        )

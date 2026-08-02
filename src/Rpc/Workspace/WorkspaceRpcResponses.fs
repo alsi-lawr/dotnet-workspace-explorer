@@ -24,6 +24,7 @@ module WorkspaceRpcResponses =
               "workspace.reset"
               "workspace.create.options"
               "workspace.addExisting.selector"
+              "workspace.addExisting.presentation.v2"
               "workspace.commands.list"
               "workspace.commands.describe"
               "workspace.commands.preview"

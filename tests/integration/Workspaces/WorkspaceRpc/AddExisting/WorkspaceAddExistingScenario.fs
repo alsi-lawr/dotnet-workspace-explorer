@@ -8,7 +8,7 @@ open Dotnet.WorkspaceExplorer.Rpc
 open Microsoft.VisualStudio.SolutionPersistence.Model
 
 module private WorkspaceAddExistingScenario =
-    let initialize pageSize addExisting =
+    let initializeWithCapabilities pageSize capabilities =
         WorkspaceRpcScenario.map
             [ "protocolVersion",
               WorkspaceRpcScenario.map
@@ -23,14 +23,21 @@ module private WorkspaceAddExistingScenario =
                   yield RpcValue.String "workspace.commands.preview"
                   yield RpcValue.String "workspace.commands.execute"
 
-                  if addExisting then
-                      yield RpcValue.String "workspace.addExisting.selector"
+                  yield! capabilities |> Seq.map RpcValue.String
               }
               |> RpcValue.array
               "limits",
               WorkspaceRpcScenario.map
                   [ "maxFrameBytes", RpcValue.Integer 1048576L
                     "maxPageSize", RpcValue.Integer(int64 pageSize) ] ]
+
+    let initialize pageSize addExisting =
+        initializeWithCapabilities
+            pageSize
+            (if addExisting then
+                 [ "workspace.addExisting.selector" ]
+             else
+                 [])
 
     let call child requestId methodName parameters =
         WorkspaceRpcScenario.send
@@ -203,11 +210,11 @@ module private WorkspaceAddExistingScenario =
         WorkspaceRpcScenario.field "revision" result
         |> RpcValue.requireInteger "revision"
 
-    let withPreparedWorkspaceCapability
+    let withPreparedWorkspaceCapabilities
         alias
         extension
         setup
-        addExisting
+        capabilities
         (action: string -> string -> Process -> unit)
         =
         let directory = WorkspaceRpcScenario.temporaryDirectory alias
@@ -233,7 +240,9 @@ module private WorkspaceAddExistingScenario =
                 use child = child
 
                 try
-                    successful child 1u "initialize" (initialize 2 addExisting) |> ignore
+                    successful child 1u "initialize" (initializeWithCapabilities 2 capabilities)
+                    |> ignore
+
                     action directory solution child
                     WorkspaceRpcScenario.shutdown child 99u
                 finally
@@ -241,6 +250,17 @@ module private WorkspaceAddExistingScenario =
         finally
             if Directory.Exists directory then
                 Directory.Delete(directory, true)
+
+    let withPreparedWorkspaceCapability alias extension setup addExisting action =
+        withPreparedWorkspaceCapabilities
+            alias
+            extension
+            setup
+            (if addExisting then
+                 [ "workspace.addExisting.selector" ]
+             else
+                 [])
+            action
 
     let withPreparedWorkspace alias extension setup action =
         withPreparedWorkspaceCapability alias extension setup true action
