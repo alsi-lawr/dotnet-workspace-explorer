@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - v*
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to retry
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -13,10 +19,14 @@ jobs:
   publish:
     name: publish Dotnet.WorkspaceExplorer
     runs-on: ubuntu-24.04
+    environment: release
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
       - uses: alsi-lawr/package-release-workflows/actions/deploy-nuget@main
         with:
           project: src/WorkspaceExplorer/Dotnet.WorkspaceExplorer.fsproj
           user: alsi-lawr
           dotnet-version: 10.0.300
+          tag: ${{ inputs.tag }}
