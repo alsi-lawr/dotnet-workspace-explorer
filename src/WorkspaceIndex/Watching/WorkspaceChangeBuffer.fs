@@ -15,7 +15,6 @@ type internal WorkspaceChangeDrain =
 type internal WorkspaceWatchHandoff =
     | Complete
     | Revalidate of ImmutableArray<WorkspaceArtifactPath>
-    | RevalidateWorkspace
     | Uncertain
 
 type internal WorkspaceChangeBuffer(capacity: int, comparer: StringComparer) =

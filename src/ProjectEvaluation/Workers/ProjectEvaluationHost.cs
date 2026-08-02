@@ -42,15 +42,18 @@ internal static class ProjectEvaluationHost
             return Task.FromResult(SdkLoadExitCode);
         }
 
-        return RunRegisteredAsync(cancellationToken);
+        return RunRegisteredAsync(sdkPath, cancellationToken);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static async Task<int> RunRegisteredAsync(CancellationToken cancellationToken)
+    private static async Task<int> RunRegisteredAsync(
+        string sdkPath,
+        CancellationToken cancellationToken
+    )
     {
         try
         {
-            return await ProjectEvaluationServer.RunAsync(cancellationToken);
+            return await ProjectEvaluationServer.RunAsync(sdkPath, cancellationToken);
         }
         catch (FileLoadException)
         {

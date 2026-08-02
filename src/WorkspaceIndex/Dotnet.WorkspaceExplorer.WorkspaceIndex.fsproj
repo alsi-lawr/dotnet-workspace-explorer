@@ -14,6 +14,7 @@
 
     <ItemGroup>
         <Compile Include="AssemblyInfo.fs" />
+        <Compile Include="Projection/ProjectInputClassification.fs" />
         <Compile Include="Projection/ExploredProjectProperties.fs" />
         <Compile Include="Projection/WorkspaceIndexModel.fs" />
         <Compile Include="Projection/Dependencies/DependencyDetails.fs" />

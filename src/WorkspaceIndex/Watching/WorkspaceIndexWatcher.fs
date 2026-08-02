@@ -46,8 +46,15 @@ type internal WorkspaceIndexWatcher
         hints.Lose()
         signal ()
 
-    let enqueue path =
-        if Volatile.Read(&callbacksEnabled) <> 0 && hints.Add path then
+    let enqueue (spec: WorkspaceWatch) path =
+        if
+            Volatile.Read(&callbacksEnabled) <> 0
+            && (not spec.IncludeSubdirectories
+                || not (
+                    WorkspaceWatchPlan.ignoresRecursiveHint state.PathComparer spec.Directory path
+                ))
+            && hints.Add path
+        then
             signal ()
 
     let dispose (value: (WorkspaceWatch * FileSystemWatcher) array) =
@@ -84,7 +91,7 @@ type internal WorkspaceIndexWatcher
 
     let samePath left right = state.PathComparer.Equals(left, right)
 
-    let covers (oldSpec: WorkspaceWatch) (newSpec: WorkspaceWatch) =
+    let coversFilter (oldSpec: WorkspaceWatch) (newSpec: WorkspaceWatch) (filter: string) =
         if oldSpec.IncludeSubdirectories && oldSpec.Filters |> Seq.exists ((=) "*") then
             pathIsBelow oldSpec.Directory newSpec.Directory
         elif
@@ -93,8 +100,10 @@ type internal WorkspaceIndexWatcher
         then
             false
         else
-            newSpec.Filters
-            |> Seq.forall (fun filter -> oldSpec.Filters |> Seq.exists ((=) filter))
+            oldSpec.Filters |> Seq.exists ((=) filter)
+
+    let covers (oldSpec: WorkspaceWatch) (newSpec: WorkspaceWatch) =
+        newSpec.Filters |> Seq.forall (coversFilter oldSpec newSpec)
 
     let uncoveredPaths
         (oldWatchers: (WorkspaceWatch * FileSystemWatcher) array)
@@ -102,36 +111,46 @@ type internal WorkspaceIndexWatcher
         =
         let uncovered =
             plan
-            |> Seq.filter (fun candidate ->
-                oldWatchers
-                |> Array.exists (fun (existing, _) -> covers existing candidate)
-                |> not)
+            |> Seq.choose (fun candidate ->
+                let filters =
+                    candidate.Filters
+                    |> Seq.filter (fun filter ->
+                        oldWatchers
+                        |> Array.exists (fun (existing, _) ->
+                            coversFilter existing candidate filter)
+                        |> not)
+                    |> ImmutableArray.CreateRange
+
+                if filters.IsEmpty then
+                    None
+                else
+                    Some { candidate with Filters = filters })
             |> Seq.toArray
 
-        if uncovered |> Array.exists (fun spec -> spec.IncludeSubdirectories) then
-            WorkspaceWatchHandoff.RevalidateWorkspace
-        else
-            let paths =
-                uncovered
-                |> Seq.collect (fun spec ->
+        let paths =
+            uncovered
+            |> Seq.collect (fun spec ->
+                if spec.IncludeSubdirectories then
+                    Seq.singleton (Some spec.Directory)
+                else
                     spec.Filters
                     |> Seq.map (fun filter ->
                         if filter.IndexOfAny [| '*'; '?' |] >= 0 then
                             None
                         else
                             Some(Path.Combine(spec.Directory, filter))))
-                |> Seq.toArray
+            |> Seq.toArray
 
-            if paths |> Array.exists Option.isNone then
-                WorkspaceWatchHandoff.Uncertain
-            elif paths.Length = 0 then
-                WorkspaceWatchHandoff.Complete
-            else
-                paths
-                |> Seq.choose id
-                |> Seq.map WorkspaceArtifactPath.Create
-                |> ImmutableArray.CreateRange
-                |> WorkspaceWatchHandoff.Revalidate
+        if paths |> Array.exists Option.isNone then
+            WorkspaceWatchHandoff.Uncertain
+        elif paths.Length = 0 then
+            WorkspaceWatchHandoff.Complete
+        else
+            paths
+            |> Seq.choose id
+            |> Seq.map WorkspaceArtifactPath.Create
+            |> ImmutableArray.CreateRange
+            |> WorkspaceWatchHandoff.Revalidate
 
     let createWatcher (spec: WorkspaceWatch) =
         let watcher = new FileSystemWatcher(spec.Directory)
@@ -147,13 +166,13 @@ type internal WorkspaceIndexWatcher
             ||| NotifyFilters.LastWrite
             ||| NotifyFilters.CreationTime
 
-        watcher.Changed.Add(fun args -> enqueue args.FullPath)
-        watcher.Created.Add(fun args -> enqueue args.FullPath)
-        watcher.Deleted.Add(fun args -> enqueue args.FullPath)
+        watcher.Changed.Add(fun args -> enqueue spec args.FullPath)
+        watcher.Created.Add(fun args -> enqueue spec args.FullPath)
+        watcher.Deleted.Add(fun args -> enqueue spec args.FullPath)
 
         watcher.Renamed.Add(fun args ->
             for path in WorkspaceWatchHints.renamePaths args.OldFullPath args.FullPath do
-                enqueue path)
+                enqueue spec path)
 
         watcher.Error.Add(fun _ ->
             if Volatile.Read(&callbacksEnabled) <> 0 then
@@ -280,6 +299,7 @@ type internal WorkspaceIndexWatcher
                 | WorkspaceWatchHandoff.Complete -> continueHandoff <- false
                 | WorkspaceWatchHandoff.Revalidate paths ->
                     let! outcome = state.InvalidateAsync(paths, cancellationToken)
+                    cancellationToken.ThrowIfCancellationRequested()
 
                     match outcome with
                     | WorkspaceProjectInvalidationResult.None -> continueHandoff <- false
@@ -292,30 +312,6 @@ type internal WorkspaceIndexWatcher
                         do! publish (WorkspaceProjectInvalidationResult.Reset reset)
                         continueHandoff <- false
                         active <- false
-                | WorkspaceWatchHandoff.RevalidateWorkspace ->
-                    let! refreshed = state.RefreshAsync(None, cancellationToken)
-
-                    match refreshed with
-                    | Error _ ->
-                        do! resetForUncertainty publish cancellationToken
-                        continueHandoff <- false
-                        active <- false
-                    | Ok result when result.Reset ->
-                        stopForReset ()
-
-                        match result.ResetEvent with
-                        | Some reset -> do! publish (WorkspaceProjectInvalidationResult.Reset reset)
-                        | None -> do! resetForUncertainty publish cancellationToken
-
-                        continueHandoff <- false
-                        active <- false
-                    | Ok result ->
-                        match result.Delta with
-                        | Some delta ->
-                            let! delivered = publishDeltaOrReset publish delta cancellationToken
-                            continueHandoff <- delivered
-                            active <- delivered
-                        | None -> continueHandoff <- false
                 | WorkspaceWatchHandoff.Uncertain ->
                     retainUncertainty ()
                     do! resetForUncertainty publish cancellationToken
@@ -337,12 +333,58 @@ type internal WorkspaceIndexWatcher
 
     member _.QueueActivationHandoff(handoff: WorkspaceWatchHandoff) =
         match handoff with
-        | WorkspaceWatchHandoff.Revalidate _
-        | WorkspaceWatchHandoff.RevalidateWorkspace ->
-            lock handoffGate (fun () -> queuedHandoff <- Some handoff)
+        | WorkspaceWatchHandoff.Revalidate paths ->
+            lock handoffGate (fun () ->
+                queuedHandoff <-
+                    match queuedHandoff with
+                    | Some(WorkspaceWatchHandoff.Revalidate current) ->
+                        Seq.append current paths
+                        |> Seq.distinctBy _.Value
+                        |> ImmutableArray.CreateRange
+                        |> WorkspaceWatchHandoff.Revalidate
+                        |> Some
+                    | _ -> Some handoff)
+
             signal ()
         | WorkspaceWatchHandoff.Complete
         | WorkspaceWatchHandoff.Uncertain -> ()
+
+    member _.GuardHydrationAsync
+        (projectPath: WorkspaceArtifactPath, cancellationToken: CancellationToken)
+        =
+        task {
+            do! rebuildGate.WaitAsync cancellationToken
+            let additions = ResizeArray<WorkspaceWatch * FileSystemWatcher>()
+
+            try
+                try
+                    for spec in WorkspaceWatchPlan.hydrationGuard projectPath do
+                        if
+                            watchers
+                            |> Array.exists (fun (existing, _) -> covers existing spec)
+                            |> not
+                        then
+                            additions.Add(spec, createWatcher spec)
+
+                    if additions.Count > 0 then
+                        lock lifecycleGate (fun () ->
+                            Volatile.Write(&callbacksEnabled, 1)
+
+                            for _, watcher in additions do
+                                watcher.EnableRaisingEvents <- true
+
+                            watchers <- Array.append watchers (additions.ToArray()))
+
+                    return true
+                with
+                | :? OperationCanceledException -> return raise (OperationCanceledException())
+                | _ ->
+                    dispose (additions.ToArray())
+                    retainUncertainty ()
+                    return false
+            finally
+                rebuildGate.Release() |> ignore
+        }
 
     member _.RebuildAndRevalidateAsync
         (

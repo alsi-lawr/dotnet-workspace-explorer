@@ -16,3 +16,8 @@ internal sealed record ProjectEvaluationBinding(
 internal sealed record ProjectInvalidationResult(
     ImmutableArray<WorkspaceArtifactPath> InvalidatedProjects
 );
+
+internal enum ProjectEvaluationReadiness
+{
+    Ready,
+}

@@ -11,6 +11,70 @@ open Xunit
 [<Collection("Project evaluation scenarios")>]
 type ProjectCapabilityTests() =
     [<Fact>]
+    member _.``evaluating an SDK project retains user declarations and explorer properties without exporting SDK plumbing``
+        ()
+        =
+        let directory = Test.temporaryDirectory "relevant-evaluation-snapshot"
+
+        try
+            let project = Path.Combine(directory, "Relevant.csproj")
+
+            File.WriteAllText(
+                project,
+                """
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ExplorerProperty>retained</ExplorerProperty>
+  </PropertyGroup>
+  <ItemGroup>
+    <ExplorerArtifact Include="feature.contract">
+      <ExplorerMetadata>retained</ExplorerMetadata>
+    </ExplorerArtifact>
+  </ItemGroup>
+</Project>
+"""
+            )
+
+            Test.withWorker directory (fun worker ->
+                let error, snapshot = Test.evaluate worker 2u project
+                (error.IsNone) |> should equal true
+
+                let dimension =
+                    Test.values "dimensions" snapshot
+                    |> Seq.find (fun value ->
+                        Test.field "targetFramework" value = RpcValue.String "net10.0")
+
+                let properties =
+                    Test.values "properties" dimension
+                    |> Seq.map (fun value ->
+                        Test.stringField "name" value, Test.stringField "value" value)
+                    |> Map.ofSeq
+
+                (properties["ExplorerProperty"]) |> should equal ("retained")
+                (properties.ContainsKey "AssemblyName") |> should equal true
+                (properties.ContainsKey "MSBuildToolsPath") |> should equal true
+                (properties.ContainsKey "NetCoreRoot") |> should equal true
+                (properties.ContainsKey "MSBuildBinPath") |> should equal false
+
+                let artifact =
+                    Test.values "items" dimension
+                    |> Seq.find (fun value ->
+                        Test.stringField "itemType" value = "ExplorerArtifact")
+
+                (Test.stringField "include" artifact) |> should equal ("feature.contract")
+
+                (Test.values "metadata" artifact)
+                |> Seq.exists (fun value ->
+                    Test.stringField "name" value = "ExplorerMetadata"
+                    && Test.stringField "value" value = "retained")
+                |> should equal true
+
+                3u)
+        finally
+            Directory.Delete(directory, true)
+
+    [<Fact>]
     member _.``evaluating explicit F# compile order preserves source ordinals despite lexical paths``
         ()
         =

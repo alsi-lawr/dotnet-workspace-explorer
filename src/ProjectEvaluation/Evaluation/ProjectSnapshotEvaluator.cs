@@ -13,12 +13,93 @@ internal sealed class ProjectSnapshotEvaluator : IDisposable
         ? StringComparer.OrdinalIgnoreCase
         : StringComparer.Ordinal;
 
+    private static readonly HashSet<string> RelevantPropertyNames = new(
+        [
+            "AssemblyName",
+            "AssemblyOriginatorKeyFile",
+            "BaseIntermediateOutputPath",
+            "BaseOutputPath",
+            "DefaultExcludesInProjectFolder",
+            "DefaultItemExcludes",
+            "DefaultItemExcludesInProjectFolder",
+            "DefaultWebContentItemExcludes",
+            "EnableDefaultCompileItems",
+            "EnableDefaultContentItems",
+            "EnableDefaultEmbeddedResourceItems",
+            "EnableDefaultItems",
+            "EnableDefaultNoneItems",
+            "IntermediateOutputPath",
+            "IsPackable",
+            "LangVersion",
+            "MSBuildToolsPath",
+            "NetCoreRoot",
+            "NuGetPackageRoot",
+            "OutputPath",
+            "OutputType",
+            "PackageId",
+            "PublishAot",
+            "PublishSingleFile",
+            "PublishTrimmed",
+            "RootNamespace",
+            "RuntimeIdentifier",
+            "RuntimeIdentifiers",
+            "SelfContained",
+            "SignAssembly",
+            "TargetFramework",
+            "TargetFrameworks",
+            "TreatWarningsAsErrors",
+            "UsingMicrosoftNETSdkRazor",
+            "UsingMicrosoftNETSdkWeb",
+            "UsingMicrosoftNETSdkWorker",
+            "Version",
+        ],
+        StringComparer.Ordinal
+    );
+    private static readonly HashSet<string> RelevantItemTypes = new(
+        [
+            "Analyzer",
+            "Compile",
+            "Content",
+            "EmbeddedResource",
+            "None",
+            "PackageReference",
+            "PackageVersion",
+            "ProjectReference",
+            "Reference",
+        ],
+        StringComparer.Ordinal
+    );
+    private static readonly HashSet<string> RelevantMetadataNames = new(
+        [
+            "Aliases",
+            "AutoGen",
+            "CopyToOutputDirectory",
+            "CopyToPublishDirectory",
+            "CustomToolNamespace",
+            "DependentUpon",
+            "EmbedInteropTypes",
+            "ExcludeAssets",
+            "Generator",
+            "IncludeAssets",
+            "LastGenOutput",
+            "Link",
+            "Private",
+            "PrivateAssets",
+            "ReferenceOutputAssembly",
+            "SpecificVersion",
+            "Visible",
+        ],
+        StringComparer.OrdinalIgnoreCase
+    );
+
     private readonly ProjectCollection collection = new();
     private readonly Dictionary<string, ProjectEvaluationCacheEntry> cache;
     private readonly LinkedList<string> recency = new();
+    private readonly string sdkDirectory;
 
-    internal ProjectSnapshotEvaluator()
+    internal ProjectSnapshotEvaluator(string sdkPath)
     {
+        sdkDirectory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(sdkPath));
         cache = new Dictionary<string, ProjectEvaluationCacheEntry>(PathComparer);
     }
 
@@ -157,7 +238,7 @@ internal sealed class ProjectSnapshotEvaluator : IDisposable
         );
     }
 
-    private static ProjectEvaluationSnapshot Materialize(
+    private ProjectEvaluationSnapshot Materialize(
         WorkspaceArtifactPath projectPath,
         ImmutableArray<Project> projects,
         ImmutableArray<EvaluatedTargetFramework> targetFrameworks
@@ -225,23 +306,24 @@ internal sealed class ProjectSnapshotEvaluator : IDisposable
         );
     }
 
-    private static ProjectEvaluationDimension MaterializeDimension(
+    private ProjectEvaluationDimension MaterializeDimension(
         WorkspaceArtifactPath projectPath,
         Project project,
         EvaluatedTargetFramework? targetFramework
     )
     {
         var properties = project
-            .AllEvaluatedProperties.Select(property => new EvaluatedProperty(
-                property.Name,
-                property.EvaluatedValue
-            ))
+            .AllEvaluatedProperties.Where(property =>
+                RelevantPropertyNames.Contains(property.Name) || IsNonSdkAuthored(property)
+            )
+            .Select(property => new EvaluatedProperty(property.Name, property.EvaluatedValue))
             .OrderBy(property => property.Name, StringComparer.Ordinal)
             .ToImmutableArray();
         var items = project
-            .AllEvaluatedItems.Select(
-                (item, ordinal) => MaterializeItem(projectPath.Value, item, ordinal)
+            .AllEvaluatedItems.Where(item =>
+                RelevantItemTypes.Contains(item.ItemType) || IsNonSdkAuthored(item)
             )
+            .Select((item, ordinal) => MaterializeItem(projectPath.Value, item, ordinal))
             .ToImmutableArray();
         var centralVersions = project
             .GetItems("PackageVersion")
@@ -313,23 +395,37 @@ internal sealed class ProjectSnapshotEvaluator : IDisposable
         };
     }
 
-    private static EvaluatedItem MaterializeItem(
-        string projectPath,
-        ProjectItem item,
-        int ordinal
-    ) =>
+    private EvaluatedItem MaterializeItem(string projectPath, ProjectItem item, int ordinal) =>
         new(
             item.ItemType,
             ItemInclude(item),
             Resolve(projectPath, ItemInclude(item)),
-            item.Metadata.Select(metadata => new EvaluatedMetadata(
-                    metadata.Name,
-                    MetadataValue(metadata)
-                ))
+            item.Metadata.Where(metadata =>
+                    RelevantMetadataNames.Contains(metadata.Name) || IsNonSdkAuthored(item)
+                )
+                .Select(metadata => new EvaluatedMetadata(metadata.Name, MetadataValue(metadata)))
                 .OrderBy(metadata => metadata.Name, StringComparer.Ordinal)
                 .ToImmutableArray(),
             ordinal
         );
+
+    private bool IsNonSdkAuthored(ProjectProperty property) =>
+        property.Xml is { } xml && !IsSdkPath(xml.ContainingProject.FullPath);
+
+    private bool IsNonSdkAuthored(ProjectItem item) =>
+        !IsSdkPath(item.Xml.ContainingProject.FullPath);
+
+    private bool IsSdkPath(string path)
+    {
+        var relative = Path.GetRelativePath(sdkDirectory, path);
+        return !Path.IsPathRooted(relative)
+            && relative != ".."
+            && !relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+            && !relative.StartsWith(
+                $"..{Path.AltDirectorySeparatorChar}",
+                StringComparison.Ordinal
+            );
+    }
 
     private static string ItemInclude(ProjectItem item)
     {

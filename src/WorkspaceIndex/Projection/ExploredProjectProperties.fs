@@ -66,9 +66,13 @@ module internal ExploredProjectProperties =
             |> Option.ofObj
             |> Option.defaultValue workspaceDirectory
 
+        let toolchainRoots = ProjectInputClassification.toolchainRoots snapshot
+
         snapshot.Imports
         |> Seq.filter (fun path ->
-            File.Exists path.Value && not (generated projectDirectory path.Value))
+            File.Exists path.Value
+            && not (ProjectInputClassification.isToolchainPath toolchainRoots path.Value)
+            && not (generated projectDirectory path.Value))
         |> Seq.distinct
         |> ImmutableArray.CreateRange
 

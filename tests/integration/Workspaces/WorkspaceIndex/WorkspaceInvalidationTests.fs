@@ -25,6 +25,12 @@ type WorkspaceInvalidationTests() =
         let directory =
             WorkspaceRpcScenario.temporaryDirectory "workspace-state-invalidation"
 
+        let externalDirectory =
+            WorkspaceRpcScenario.temporaryDirectory "workspace-state-external-import"
+
+        let toolchainDirectory =
+            WorkspaceRpcScenario.temporaryDirectory "workspace-state-toolchain-import"
+
         try
             let solution = Path.Combine(directory, "Demo.slnx")
             let filter = Path.Combine(directory, "Demo.slnf")
@@ -33,6 +39,11 @@ type WorkspaceInvalidationTests() =
             let freshImport = Path.Combine(directory, "Fresh.props")
             let freshWatch = Path.Combine(directory, "Fresh.targets")
             let freshGlob = Path.Combine(directory, "FreshItems")
+            let externalImport = Path.Combine(externalDirectory, "External.props")
+            let externalItem = Path.Combine(externalDirectory, "Linked.cs")
+            let toolchainImport = Path.Combine(toolchainDirectory, "Sdk.props")
+            let toolchainItem = Path.Combine(toolchainDirectory, "Analyzer.dll")
+            let toolchainGlob = Path.Combine(toolchainDirectory, "Generated")
             let model = SolutionModel()
             model.AddProject("Demo.csproj", "Demo", null) |> ignore
             WorkspaceRpcScenario.save solution model
@@ -46,7 +57,12 @@ type WorkspaceInvalidationTests() =
             File.WriteAllText(oldImport, "<Project />")
             File.WriteAllText(freshImport, "<Project />")
             File.WriteAllText(freshWatch, "<Project />")
+            File.WriteAllText(externalImport, "<Project />")
+            File.WriteAllText(externalItem, "class Linked {}")
+            File.WriteAllText(toolchainImport, "<Project />")
+            File.WriteAllText(toolchainItem, String.Empty)
             Directory.CreateDirectory freshGlob |> ignore
+            Directory.CreateDirectory toolchainGlob |> ignore
 
             let workspace =
                 match SolutionWorkspaceReader.OpenAsync(filter).Result with
@@ -59,20 +75,26 @@ type WorkspaceInvalidationTests() =
             let snapshot visible imports watchInputs globRoots =
                 let relativePath = $"Items/N0001-{visible}.cs"
 
-                let item =
+                let item itemType includePath resolvedPath ordinal =
                     EvaluatedItem(
-                        "Compile",
-                        relativePath,
-                        WorkspaceArtifactPath.Create(Path.Combine(directory, relativePath)),
+                        itemType,
+                        includePath,
+                        WorkspaceArtifactPath.Create resolvedPath,
                         ImmutableArray<EvaluatedMetadata>.Empty,
-                        0
+                        ordinal
                     )
 
                 let dimension =
                     ProjectEvaluationDimension(
                         Nullable(),
-                        ImmutableArray<EvaluatedProperty>.Empty,
-                        ImmutableArray.Create item,
+                        ImmutableArray.Create(
+                            EvaluatedProperty("MSBuildToolsPath", toolchainDirectory)
+                        ),
+                        ImmutableArray.Create(
+                            item "Compile" relativePath (Path.Combine(directory, relativePath)) 0,
+                            item "Compile" externalItem externalItem 1,
+                            item "Analyzer" toolchainItem toolchainItem 2
+                        ),
                         ImmutableArray<EvaluatedReference>.Empty,
                         ImmutableArray<EvaluatedReference>.Empty,
                         ImmutableArray<EvaluatedPackage>.Empty,
@@ -176,7 +198,12 @@ type WorkspaceInvalidationTests() =
                             && node.Name = "N0001-true.cs")
                     | Error error -> failwithf "Could not page project folder: %A" error
 
-            evaluated <- snapshot "false" [ freshImport ] [ freshWatch ] [ freshGlob ]
+            evaluated <-
+                snapshot
+                    "false"
+                    [ freshImport; externalImport; toolchainImport ]
+                    [ freshWatch ]
+                    [ freshGlob; toolchainGlob ]
 
             let changed =
                 state
@@ -229,6 +256,10 @@ type WorkspaceInvalidationTests() =
             (watchesExact freshImport) |> should equal true
             (watchesExact freshWatch) |> should equal true
             (watchesExact oldImport) |> should equal false
+            (watchesExact externalImport) |> should equal true
+            (watchesExact externalItem) |> should equal true
+            (watchesExact toolchainImport) |> should equal false
+            (watchesExact toolchainItem) |> should equal false
 
             (watchPlan)
             |> Seq.exists (fun spec ->
@@ -236,6 +267,13 @@ type WorkspaceInvalidationTests() =
                 && spec.Directory = freshGlob
                 && spec.IncludeSubdirectories)
             |> should equal true
+
+            (watchPlan)
+            |> Seq.exists (fun spec ->
+                spec.Kind = WorkspaceWatchKind.RecursiveGlob
+                && spec.Directory = toolchainGlob
+                && spec.IncludeSubdirectories)
+            |> should equal false
 
             for solutionPath in [ filter; solution ] do
                 let reopened =
@@ -275,6 +313,12 @@ type WorkspaceInvalidationTests() =
         finally
             if Directory.Exists directory then
                 Directory.Delete(directory, true)
+
+            if Directory.Exists externalDirectory then
+                Directory.Delete(externalDirectory, true)
+
+            if Directory.Exists toolchainDirectory then
+                Directory.Delete(toolchainDirectory, true)
 
     [<Fact>]
     member _.``a transient shared-import failure restages every materialized project before recovery``

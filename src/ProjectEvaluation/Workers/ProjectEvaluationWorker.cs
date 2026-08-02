@@ -54,6 +54,86 @@ internal sealed class ProjectEvaluationWorker : IAsyncDisposable
             cancellationToken
         );
 
+    internal async Task<WorkspaceOutcome<ProjectEvaluationReadiness>> WarmAsync(
+        CancellationToken cancellationToken
+    )
+    {
+        try
+        {
+            await gate.WaitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            return ProjectEvaluationOutcomes.Cancelled<ProjectEvaluationReadiness>(
+                "The MSBuild evaluator warmup was cancelled."
+            );
+        }
+
+        try
+        {
+            if (closed)
+            {
+                return ProjectEvaluationOutcomes.WorkerClosed<ProjectEvaluationReadiness>();
+            }
+
+            if (disabled)
+            {
+                return ProjectEvaluationOutcomes.ExternalToolFailed<ProjectEvaluationReadiness>(
+                    "project-evaluation-host",
+                    -1,
+                    ProjectEvaluationDiagnosticCodes.WorkerDisabled,
+                    "The MSBuild evaluator is disabled until refresh."
+                );
+            }
+
+            for (var attemptNumber = 0; attemptNumber < 2; attemptNumber++)
+            {
+                var attempt = await TryEnsureStartedAsync(cancellationToken);
+
+                switch (attempt)
+                {
+                    case EvaluationWorkerAttempt.Started:
+                        return ProjectEvaluationOutcomes.Success(ProjectEvaluationReadiness.Ready);
+                    case EvaluationWorkerAttempt.Cancelled:
+                        await KillActiveAsync();
+                        return ProjectEvaluationOutcomes.Cancelled<ProjectEvaluationReadiness>(
+                            "The MSBuild evaluator warmup was cancelled."
+                        );
+                    case EvaluationWorkerAttempt.StartupFailed startup:
+                        await KillActiveAsync();
+                        return StartupFailure<ProjectEvaluationReadiness>(startup);
+                    case EvaluationWorkerAttempt.TransportFailed when attemptNumber == 0:
+                        await KillActiveAsync();
+                        break;
+                    case EvaluationWorkerAttempt.TransportFailed:
+                        disabled = true;
+                        await KillActiveAsync();
+                        return ProjectEvaluationOutcomes.ExternalToolFailed<ProjectEvaluationReadiness>(
+                            "project-evaluation-host",
+                            -1,
+                            ProjectEvaluationDiagnosticCodes.WorkerCrashed,
+                            "The MSBuild evaluator stopped unexpectedly after one restart.",
+                            true
+                        );
+                    default:
+                        return ProjectEvaluationOutcomes.Internal<ProjectEvaluationReadiness>(
+                            ProjectEvaluationDiagnosticCodes.WorkerCrashed,
+                            "The MSBuild evaluator warmup did not complete safely."
+                        );
+                }
+            }
+
+            return ProjectEvaluationOutcomes.Internal<ProjectEvaluationReadiness>(
+                ProjectEvaluationDiagnosticCodes.WorkerCrashed,
+                "The MSBuild evaluator warmup did not complete safely."
+            );
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         await gate.WaitAsync();

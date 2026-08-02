@@ -1167,8 +1167,25 @@ type internal WorkspaceIndex
               NeedsRebase = false }
         )
 
-    static member CreateProduction(target, workspace, exportCapacity) =
+    static member CreateProduction
+        (target: string, workspace: SolutionWorkspace, exportCapacity: int)
+        =
+        if exportCapacity <= 0 then
+            invalidArg (nameof exportCapacity) "Export capacity must be positive."
+
         let evaluator = new ProjectEvaluator()
+        let warmupCancellation = new CancellationTokenSource()
+
+        let warmup = evaluator.WarmAsync(workspace.SolutionPath, warmupCancellation.Token)
+
+        let disposeEvaluator () : Task =
+            task {
+                warmupCancellation.Cancel()
+                let! _ = warmup
+                warmupCancellation.Dispose()
+                do! evaluator.DisposeAsync().AsTask()
+            }
+            :> Task
 
         let services =
             { OpenAsync =
@@ -1200,10 +1217,7 @@ type internal WorkspaceIndex
                             | Failure failure -> Failure failure
                     }
               RefreshAsync = evaluator.RefreshAsync
-              DisposeAsync = fun () -> evaluator.DisposeAsync().AsTask() }
-
-        if exportCapacity <= 0 then
-            invalidArg (nameof exportCapacity) "Export capacity must be positive."
+              DisposeAsync = disposeEvaluator }
 
         WorkspaceIndex.Create(
             target,

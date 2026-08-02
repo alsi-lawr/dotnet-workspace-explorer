@@ -24,6 +24,30 @@ public sealed class ProjectEvaluator : IAsyncDisposable
         this.launchSettings = launchSettings;
     }
 
+    internal Task<WorkspaceOutcome<ProjectEvaluationReadiness>> WarmAsync(
+        WorkspaceArtifactPath workspacePath,
+        CancellationToken cancellationToken = default
+    ) =>
+        RunLockedAsync(
+            cancellationToken,
+            async () =>
+            {
+                var prepared = await PrepareAsync(workspacePath, cancellationToken);
+                if (
+                    !ProjectEvaluationOutcomes.TrySuccess(
+                        prepared,
+                        out var session,
+                        out var failure
+                    )
+                )
+                {
+                    return ProjectEvaluationOutcomes.Failure<ProjectEvaluationReadiness>(failure!);
+                }
+
+                return await session!.Worker.WarmAsync(cancellationToken);
+            }
+        );
+
     public Task<WorkspaceOutcome<ProjectEvaluationSnapshot>> EvaluateAsync(
         WorkspaceArtifactPath projectPath,
         WorkspaceArtifactPath workspacePath,
@@ -33,39 +57,19 @@ public sealed class ProjectEvaluator : IAsyncDisposable
             cancellationToken,
             async () =>
             {
-                var canonicalWorkspace = WorkspaceArtifactPath.Create(workspacePath.Value);
-                if (!bindings.TryGetValue(canonicalWorkspace.Value, out var binding))
-                {
-                    var discovery = await DotnetSdkResolver.DiscoverAsync(
-                        canonicalWorkspace,
-                        launchSettings.DotnetExecutable,
-                        cancellationToken
-                    );
-                    if (
-                        !ProjectEvaluationOutcomes.TrySuccess(
-                            discovery,
-                            out var selection,
-                            out var failure
-                        )
+                var prepared = await PrepareAsync(workspacePath, cancellationToken);
+                if (
+                    !ProjectEvaluationOutcomes.TrySuccess(
+                        prepared,
+                        out var session,
+                        out var failure
                     )
-                    {
-                        return ProjectEvaluationOutcomes.Failure<ProjectEvaluationSnapshot>(
-                            failure!
-                        );
-                    }
-
-                    binding = new ProjectEvaluationBinding(canonicalWorkspace, selection!);
-                    bindings.Add(canonicalWorkspace.Value, binding);
-                }
-
-                var sdkKey = binding.SdkSelection.SdkPath.Value;
-                if (!workers.TryGetValue(sdkKey, out var worker))
+                )
                 {
-                    worker = new ProjectEvaluationWorker(launchSettings, binding.SdkSelection);
-                    workers.Add(sdkKey, worker);
+                    return ProjectEvaluationOutcomes.Failure<ProjectEvaluationSnapshot>(failure!);
                 }
 
-                var outcome = await worker.EvaluateAsync(
+                var outcome = await session!.Worker.EvaluateAsync(
                     WorkspaceArtifactPath.Create(projectPath.Value),
                     cancellationToken
                 );
@@ -75,7 +79,7 @@ public sealed class ProjectEvaluator : IAsyncDisposable
                     return outcome;
                 }
 
-                var watchInputs = binding.SdkSelection.GlobalJsonPath is { } globalJson
+                var watchInputs = session.Binding.SdkSelection.GlobalJsonPath is { } globalJson
                     ? snapshot!
                         .WatchInputs.Append(globalJson)
                         .DistinctBy(path => path.Value, PathComparer)
@@ -252,6 +256,40 @@ public sealed class ProjectEvaluator : IAsyncDisposable
         }
     }
 
+    private async Task<WorkspaceOutcome<ProjectEvaluationSession>> PrepareAsync(
+        WorkspaceArtifactPath workspacePath,
+        CancellationToken cancellationToken
+    )
+    {
+        var canonicalWorkspace = WorkspaceArtifactPath.Create(workspacePath.Value);
+        if (!bindings.TryGetValue(canonicalWorkspace.Value, out var binding))
+        {
+            var discovery = await DotnetSdkResolver.DiscoverAsync(
+                canonicalWorkspace,
+                launchSettings.DotnetExecutable,
+                cancellationToken
+            );
+            if (
+                !ProjectEvaluationOutcomes.TrySuccess(discovery, out var selection, out var failure)
+            )
+            {
+                return ProjectEvaluationOutcomes.Failure<ProjectEvaluationSession>(failure!);
+            }
+
+            binding = new ProjectEvaluationBinding(canonicalWorkspace, selection!);
+            bindings.Add(canonicalWorkspace.Value, binding);
+        }
+
+        var sdkKey = binding.SdkSelection.SdkPath.Value;
+        if (!workers.TryGetValue(sdkKey, out var worker))
+        {
+            worker = new ProjectEvaluationWorker(launchSettings, binding.SdkSelection);
+            workers.Add(sdkKey, worker);
+        }
+
+        return ProjectEvaluationOutcomes.Success(new ProjectEvaluationSession(binding, worker));
+    }
+
     private static bool IsApplicableGlobalJsonChange(
         ProjectEvaluationBinding binding,
         string changedPath
@@ -303,4 +341,9 @@ public sealed class ProjectEvaluator : IAsyncDisposable
                 )
             );
     }
+
+    private sealed record ProjectEvaluationSession(
+        ProjectEvaluationBinding Binding,
+        ProjectEvaluationWorker Worker
+    );
 }

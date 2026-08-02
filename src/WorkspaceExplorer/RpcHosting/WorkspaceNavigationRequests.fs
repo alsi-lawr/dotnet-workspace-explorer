@@ -25,11 +25,24 @@ module internal WorkspaceNavigationRequests =
 
             match handoff with
             | WorkspaceWatchHandoff.Complete -> return true
-            | WorkspaceWatchHandoff.Revalidate _
-            | WorkspaceWatchHandoff.RevalidateWorkspace ->
+            | WorkspaceWatchHandoff.Revalidate _ ->
                 context.Watcher.QueueActivationHandoff handoff
                 return true
             | WorkspaceWatchHandoff.Uncertain -> return false
+        }
+
+    let private guardHydration (context: WorkspaceRpcContext) parentNodeId cancellationToken =
+        task {
+            let! resolved =
+                context.State.SemanticContextAsync(parentNodeId, None, cancellationToken)
+
+            match resolved with
+            | Ok(_, target) when target.Node.Kind = WorkspaceNodeKind.Project ->
+                match target.ProjectPath with
+                | Some projectPath ->
+                    return! context.Watcher.GuardHydrationAsync(projectPath, cancellationToken)
+                | None -> return true
+            | _ -> return true
         }
 
     let rebuildWatcher (context: WorkspaceRpcContext) cancellationToken =
@@ -96,55 +109,60 @@ module internal WorkspaceNavigationRequests =
             if not active then
                 return Error RpcErrors.internalError
             else
-                let! page =
-                    context.State.ChildrenAsync(
-                        parentNodeId,
-                        pageSize,
-                        context.MaximumPageSize(),
-                        continuation,
-                        cancellationToken
-                    )
+                let! guarded = guardHydration context parentNodeId cancellationToken
 
-                match page with
-                | Error rpcError -> return Error rpcError
-                | Ok result ->
-                    let! stateNotifications, reset =
-                        match
-                            result.Delta |> Option.map WorkspaceRpcNotifications.workspaceDelta
-                        with
-                        | Some notification when
-                            (MessagePackRpcCodec.encodeFrame notification).Length > context
-                                .MaximumFrameBytes()
-                            ->
-                            task {
-                                let! reset = resetForFramePressure context.State cancellationToken
-                                return [ WorkspaceRpcNotifications.workspaceReset reset ], true
-                            }
-                        | Some notification -> Task.FromResult([ notification ], false)
-                        | None -> Task.FromResult([], false)
+                if not guarded then
+                    return Error RpcErrors.internalError
+                else
+                    let! page =
+                        context.State.ChildrenAsync(
+                            parentNodeId,
+                            pageSize,
+                            context.MaximumPageSize(),
+                            continuation,
+                            cancellationToken
+                        )
 
-                    if reset then
-                        context.Watcher.Pause()
+                    match page with
+                    | Error rpcError -> return Error rpcError
+                    | Ok result ->
+                        let! stateNotifications, reset =
+                            match
+                                result.Delta |> Option.map WorkspaceRpcNotifications.workspaceDelta
+                            with
+                            | Some notification when
+                                (MessagePackRpcCodec.encodeFrame notification).Length > context
+                                    .MaximumFrameBytes()
+                                ->
+                                task {
+                                    let! reset =
+                                        resetForFramePressure context.State cancellationToken
 
-                    let! handoffNotifications =
+                                    return [ WorkspaceRpcNotifications.workspaceReset reset ], true
+                                }
+                            | Some notification -> Task.FromResult([ notification ], false)
+                            | None -> Task.FromResult([], false)
+
                         if reset then
-                            Task.FromResult []
-                        else
-                            rebuildWatcher context cancellationToken
+                            context.Watcher.Pause()
 
-                    return
-                        Ok
-                            { Result =
-                                WorkspaceRpcResponses.childrenResult
-                                    context.State.Descriptor
-                                    result.Revision
-                                    result.ParentWorkspaceNodeId
-                                    result.Nodes
-                                    result.NextToken
-                              Notifications = stateNotifications @ handoffNotifications
-                              BackgroundWork = if reset then None else context.StartWatcher true
-                              AfterResponse = None
-                              StopAfterResponse = false }
+                        if not reset then
+                            let! _ = prepareWatcher context cancellationToken
+                            ()
+
+                        return
+                            Ok
+                                { Result =
+                                    WorkspaceRpcResponses.childrenResult
+                                        context.State.Descriptor
+                                        result.Revision
+                                        result.ParentWorkspaceNodeId
+                                        result.Nodes
+                                        result.NextToken
+                                  Notifications = stateNotifications
+                                  BackgroundWork = if reset then None else context.StartWatcher true
+                                  AfterResponse = None
+                                  StopAfterResponse = false }
         }
 
     let private dispatchRefresh context expectedRevision cancellationToken =

@@ -12,6 +12,44 @@ open Xunit
 [<Collection("Project evaluation scenarios")>]
 type EvaluationWorkerIsolationTests() =
     [<Fact>]
+    member _.``prewarming a workspace SDK session keeps the evaluator ready for its first project evaluation``
+        ()
+        =
+        let directory = Test.temporaryDirectory "prewarmed-session"
+
+        try
+            let project = Test.simpleProject directory "Prewarmed" ".csproj"
+            let solution = Test.writeSolution directory [ project ]
+            let workspacePath = WorkspaceArtifactPath.Create solution
+            let settings = EvaluationWorkerLaunch(Test.executable, null, "dotnet")
+            let evaluator = new ProjectEvaluator(settings)
+
+            try
+                for warmup in
+                    [ evaluator.WarmAsync(workspacePath, CancellationToken.None).Result
+                      evaluator.WarmAsync(workspacePath, CancellationToken.None).Result ] do
+                    match warmup with
+                    | Success readiness ->
+                        (readiness) |> should equal (ProjectEvaluationReadiness.Ready)
+                    | Failure failure -> failwithf "Evaluator prewarm failed: %A" failure
+
+                match
+                    evaluator
+                        .EvaluateAsync(
+                            WorkspaceArtifactPath.Create project,
+                            workspacePath,
+                            CancellationToken.None
+                        )
+                        .Result
+                with
+                | Success snapshot -> (snapshot.ProjectPath.Value) |> should equal (project)
+                | Failure failure -> failwithf "Prewarmed evaluation failed: %A" failure
+            finally
+                evaluator.DisposeAsync().AsTask().GetAwaiter().GetResult()
+        finally
+            Directory.Delete(directory, true)
+
+    [<Fact>]
     member _.``export-session evaluation observes project changes after invalidation before worker reuse``
         ()
         =

@@ -5,10 +5,10 @@ namespace Dotnet.WorkspaceExplorer.ProjectEvaluation;
 
 internal static class ProjectEvaluationServer
 {
-    internal static async Task<int> RunAsync(CancellationToken cancellationToken)
+    internal static async Task<int> RunAsync(string sdkPath, CancellationToken cancellationToken)
     {
         var frameLimit = MessagePackRpcCodec.secureLimits.MaximumValueBytes;
-        using var evaluator = new ProjectSnapshotEvaluator();
+        using var evaluator = new ProjectSnapshotEvaluator(sdkPath);
         return await RpcHost.RunAsync(
             ProjectEvaluationRpc.Profile,
             Console.OpenStandardInput(),
