@@ -34,8 +34,36 @@
           fantomas_7_0_5
           csharpier_1_3_0
         ];
+      workspaceExplorer = pkgs:
+        pkgs.buildDotnetGlobalTool {
+          pname = "dotnet-workspace-explorer";
+          version = "0.1.0";
+          nugetName = "ALSI.WorkspaceExplorer";
+          nugetHash = "sha256-kldK7e4NxqXl5KgzGdJ3KTHShxF09Y7DO09gLVxrNkw=";
+          executables = "dotnet-we";
+          dotnet-sdk = pkgs.dotnet-sdk_10;
+
+          meta = {
+            description = "Explore and edit .NET solutions from the command line or an editor";
+            homepage = "https://github.com/alsi-lawr/dotnet-workspace-explorer";
+            license = pkgs.lib.licenses.mit;
+            mainProgram = "dotnet-we";
+          };
+        };
     in
     {
+      packages = forAllSystems (
+        system:
+        let
+          pkgs = import nixpkgs { inherit system; };
+          package = workspaceExplorer pkgs;
+        in
+        {
+          default = package;
+          dotnet-workspace-explorer = package;
+        }
+      );
+
       devShells = forAllSystems (
         system:
         let
@@ -58,6 +86,8 @@
           pkgs = import nixpkgs { inherit system; };
         in
         {
+          dotnet-workspace-explorer = workspaceExplorer pkgs;
+
           formatting-tools = pkgs.runCommand "dotnet-workspace-explorer-formatting-tools" {
             nativeBuildInputs = formattingTools pkgs;
           } ''

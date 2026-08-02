@@ -34,6 +34,12 @@ C#, F#, and Visual Basic projects. Solution filters (`.slnf`) are available as r
 dotnet tool install --global ALSI.WorkspaceExplorer
 ```
 
+Or install it directly from this flake:
+
+```console
+nix profile install github:alsi-lawr/dotnet-workspace-explorer
+```
+
 Run it as either `dotnet-we` or `dotnet we`:
 
 ```console
