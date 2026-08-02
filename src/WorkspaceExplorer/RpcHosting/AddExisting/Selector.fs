@@ -157,12 +157,15 @@ type internal AddExistingSelector
         | None -> [||]
         | Some snapshot ->
             snapshot.Entries
-            |> Seq.filter (fun entry ->
-                if isDirectory then
-                    ArtifactFiles.isUnder path entry.Path
+            |> Seq.collect (fun entry ->
+                let exact = pathIdentity path = pathIdentity entry.Path
+
+                if exact then
+                    entry.States
+                elif isDirectory && ArtifactFiles.isUnder path entry.Path then
+                    entry.States |> Array.filter ((<>) GitStatusState.Ignored)
                 else
-                    pathIdentity path = pathIdentity entry.Path)
-            |> Seq.collect _.States
+                    [||])
             |> GitStatusStates.normalize
 
     let createEntry (session: AddExistingSession) canonical path =

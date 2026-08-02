@@ -64,15 +64,15 @@ module internal WorkspaceGitStatusMapping =
                 Dictionary<string, HashSet<GitStatusState>>(StringComparer.Ordinal)
 
             let addStates nodeId states =
-                let target =
-                    match decorations.TryGetValue nodeId with
-                    | true, existing -> existing
-                    | _ ->
-                        let created = HashSet<GitStatusState>()
-                        decorations.Add(nodeId, created)
-                        created
-
                 for state in states do
+                    let target =
+                        match decorations.TryGetValue nodeId with
+                        | true, existing -> existing
+                        | _ ->
+                            let created = HashSet<GitStatusState>()
+                            decorations.Add(nodeId, created)
+                            created
+
                     target.Add state |> ignore
 
             let addLegacy nodeId legacy =
@@ -86,13 +86,26 @@ module internal WorkspaceGitStatusMapping =
                         node.PhysicalPath
                         |> Option.exists (fun candidate -> same candidate.Value entry.Path)
 
+                    let exactContainer =
+                        node.ContainerPath
+                        |> Option.exists (fun candidate -> same candidate.Value entry.Path)
+
                     let contained =
                         node.ContainerPath
                         |> Option.exists (fun candidate -> under candidate.Value entry.Path)
 
                     if direct || contained then
-                        addStates node.NodeId.Value entry.States
+                        entry.States
+                        |> Seq.filter ((<>) GitStatusState.Ignored)
+                        |> addStates node.NodeId.Value
+
                         entry.LegacyState |> Option.iter (addLegacy node.NodeId.Value)
+
+                    if
+                        (direct || exactContainer)
+                        && (entry.States |> Array.contains GitStatusState.Ignored)
+                    then
+                        addStates node.NodeId.Value [ GitStatusState.Ignored ]
 
             for KeyValue(nodeId, states) in decorations |> Seq.toArray do
                 let mutable parent =
@@ -101,7 +114,7 @@ module internal WorkspaceGitStatusMapping =
                     | _ -> None
 
                 while parent.IsSome do
-                    addStates parent.Value states
+                    states |> Seq.filter ((<>) GitStatusState.Ignored) |> addStates parent.Value
 
                     parent <-
                         match parents.TryGetValue parent.Value with

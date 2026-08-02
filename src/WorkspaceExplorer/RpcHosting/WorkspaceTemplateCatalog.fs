@@ -507,6 +507,13 @@ module internal WorkspaceTemplateCatalog =
                             WorkspaceCreateKind.AddExisting)
                         catalog
                     |> Option.get
+                    |> fun entry ->
+                        if context.Node.Kind = WorkspaceNodeKind.Workspace then
+                            { entry with
+                                DisplayName = "Add Existing Projects"
+                                Description = "Add existing C#, F#, and Visual Basic projects" }
+                        else
+                            entry
 
             if hasProject then
                 yield

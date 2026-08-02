@@ -126,6 +126,17 @@ module private WorkspaceAddExistingPresentationScenario =
         |> Array.find (fun entry ->
             WorkspaceRpcScenario.field "displayName" entry = RpcValue.String name)
 
+    let projectTemplate fingerprint language =
+        { SelectionId = $"project-{language}"
+          Kind = WorkspaceCreateKind.ProjectTemplate
+          DisplayName = $"{language} project"
+          Description = $"Create a {language} project"
+          Language = Some language
+          Execution = WorkspaceCreateExecution.Operation
+          Identity = $"test.{language}"
+          ShortName = $"test-{language}"
+          Fingerprint = fingerprint }
+
 [<Collection("Workspace scenarios")>]
 type WorkspaceAddExistingPresentationTests() =
     [<Theory>]
@@ -217,7 +228,123 @@ type WorkspaceAddExistingPresentationTests() =
                     [ "displayName"; "entryId"; "expandable"; "iconHint"; "kind"; "selectable" ])
 
     [<Fact>]
-    member _.``a presentation v2 selector exposes stable availability and ordered direct and descendant Git state while globally paging directories first``
+    member _.``workspace-root Add Existing copy preserves its opaque selection templates and Solution Folder while accepting only CSharp FSharp and VisualBasic projects``
+        ()
+        =
+        WorkspaceAddExistingPresentationScenario.withWorkspace
+            "add-existing-root-option-copy"
+            (fun directory _ ->
+                for name in [ "Alpha.csproj"; "Beta.fsproj"; "Gamma.vbproj" ] do
+                    WorkspaceRpcScenario.writeProject (Path.Combine(directory, name))
+
+                File.WriteAllText(Path.Combine(directory, "README.txt"), "not a project"))
+            (fun _ workspace state target ->
+                let fingerprint = "root-option-copy"
+
+                let catalog =
+                    { Fingerprint = fingerprint
+                      EmptySelectionId = "empty"
+                      Entries =
+                        [| WorkspaceAddExistingPresentationScenario.projectTemplate
+                               fingerprint
+                               "C#"
+                           WorkspaceAddExistingPresentationScenario.projectTemplate
+                               fingerprint
+                               "F#"
+                           WorkspaceAddExistingPresentationScenario.projectTemplate
+                               fingerprint
+                               "VB" |] }
+
+                let rootOptions = WorkspaceTemplateCatalog.options target true catalog
+
+                let rootAddExisting =
+                    rootOptions
+                    |> Array.find (fun option -> option.Kind = WorkspaceCreateKind.AddExisting)
+
+                rootAddExisting.DisplayName |> should equal "Add Existing Projects"
+
+                rootAddExisting.Description
+                |> should equal "Add existing C#, F#, and Visual Basic projects"
+
+                rootOptions
+                |> Array.filter (fun option -> option.Kind = WorkspaceCreateKind.ProjectTemplate)
+                |> Array.choose _.Language
+                |> should equal [| "C#"; "F#"; "VB" |]
+
+                rootOptions
+                |> Array.exists (fun option -> option.Kind = WorkspaceCreateKind.SolutionFolder)
+                |> should equal true
+
+                let genericAddExisting =
+                    WorkspaceTemplateCatalog.find rootAddExisting.SelectionId catalog
+                    |> Option.defaultWith (fun () ->
+                        failwith "The root Add Existing option lost its catalog selection.")
+
+                WorkspaceTemplateCatalog.binding rootAddExisting
+                |> should equal (WorkspaceTemplateCatalog.binding genericAddExisting)
+
+                let solutionFolderNode =
+                    WorkspaceNode.Create(
+                        workspace.Descriptor,
+                        WorkspaceNodeKind.SolutionFolder,
+                        WorkspaceNodeIdentity.Create "solution-folder",
+                        "Solution Items",
+                        WorkspaceCapabilityProfile.Full
+                    )
+
+                let solutionFolderContext =
+                    { target with
+                        Node = solutionFolderNode }
+
+                let solutionFolderAddExisting =
+                    WorkspaceTemplateCatalog.options solutionFolderContext true catalog
+                    |> Array.find (fun option -> option.Kind = WorkspaceCreateKind.AddExisting)
+
+                solutionFolderAddExisting |> should equal genericAddExisting
+
+                use selector = new AddExistingSelector((fun () -> 4096), TimeProvider.System)
+
+                let started =
+                    match
+                        selector
+                            .StartAsync(
+                                workspace,
+                                state,
+                                target,
+                                rootAddExisting.SelectionId,
+                                state.Revision,
+                                Some 4096,
+                                CancellationToken.None
+                            )
+                            .Result
+                    with
+                    | Ok value -> value
+                    | Error error ->
+                        failwithf
+                            "Workspace-root selector start failed: %s: %s"
+                            error.Code
+                            error.Message
+
+                let entries =
+                    WorkspaceAddExistingPresentationScenario.collectRootPages
+                        selector
+                        state.Revision
+                        started
+
+                entries
+                |> Array.filter (fun entry ->
+                    WorkspaceRpcScenario.field "selectable" entry = RpcValue.Boolean true)
+                |> Array.map (fun entry ->
+                    WorkspaceRpcScenario.field "displayName" entry
+                    |> RpcValue.requireString "displayName")
+                |> should equal [| "Alpha.csproj"; "Beta.fsproj"; "Gamma.vbproj" |]
+
+                WorkspaceAddExistingPresentationScenario.entryNamed "README.txt" entries
+                |> WorkspaceRpcScenario.field "selectable"
+                |> should equal (RpcValue.Boolean false))
+
+    [<Fact>]
+    member _.``a presentation v2 selector aggregates non-ignored descendants while projecting ignored only to exact entries``
         ()
         =
         WorkspaceAddExistingPresentationScenario.withWorkspace
@@ -246,6 +373,7 @@ type WorkspaceAddExistingPresentationTests() =
                 let available = Path.Combine(directory, "Available.csproj")
                 let existing = Path.Combine(directory, "Existing.csproj")
                 let firstDirectory = Path.Combine(directory, "A-Directory")
+                let lastDirectory = Path.Combine(directory, "Z-Directory")
                 let nested = Path.Combine(firstDirectory, "Nested.csproj")
                 let deleted = Path.Combine(firstDirectory, "Deleted.csproj")
                 let mutable snapshotReads = 0
@@ -270,9 +398,14 @@ type WorkspaceAddExistingPresentationTests() =
                                        { Path = nested
                                          States = [| GitStatusState.Ignored |]
                                          LegacyState = None }
+                                       { Path = lastDirectory
+                                         States = [| GitStatusState.Ignored |]
+                                         LegacyState = None }
                                        { Path = deleted
                                          States =
-                                           [| GitStatusState.Deleted; GitStatusState.Unstaged |]
+                                           [| GitStatusState.Deleted
+                                              GitStatusState.Unstaged
+                                              GitStatusState.Unmerged |]
                                          LegacyState = Some GitDecorationState.Changed } |] }
                         )
                     )
@@ -317,7 +450,7 @@ type WorkspaceAddExistingPresentationTests() =
                 WorkspaceAddExistingPresentationScenario.fieldStrings "gitStates" root
                 |> should
                     equal
-                    [| "staged"; "unstaged"; "renamed"; "deleted"; "untracked"; "ignored" |]
+                    [| "staged"; "unstaged"; "renamed"; "deleted"; "unmerged"; "untracked" |]
 
                 let allEntries =
                     WorkspaceAddExistingPresentationScenario.collectRootPages
@@ -381,7 +514,11 @@ type WorkspaceAddExistingPresentationTests() =
                 WorkspaceAddExistingPresentationScenario.fieldStrings
                     "gitStates"
                     firstDirectoryEntry
-                |> should equal [| "unstaged"; "deleted"; "ignored" |]
+                |> should equal [| "unstaged"; "deleted"; "unmerged" |]
+
+                WorkspaceAddExistingPresentationScenario.entryNamed "Z-Directory" allEntries
+                |> WorkspaceAddExistingPresentationScenario.fieldStrings "gitStates"
+                |> should equal [| "ignored" |]
 
                 let nestedPage =
                     match

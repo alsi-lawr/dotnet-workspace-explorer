@@ -196,6 +196,12 @@ type WorkspaceAddExistingSolutionTests() =
 
                 let selection = WorkspaceAddExistingScenario.option "addExisting" options
 
+                WorkspaceRpcScenario.field "displayName" selection
+                |> should equal (RpcValue.String "Add Existing Projects")
+
+                WorkspaceRpcScenario.field "description" selection
+                |> should equal (RpcValue.String "Add existing C#, F#, and Visual Basic projects")
+
                 let started =
                     WorkspaceAddExistingScenario.successful
                         child

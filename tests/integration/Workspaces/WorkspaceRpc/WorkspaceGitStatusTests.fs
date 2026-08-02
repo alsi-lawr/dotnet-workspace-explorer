@@ -121,7 +121,7 @@ type WorkspaceGitStatusTests() =
             failwithf "Git execution did not reach its bounded exit result: %s" error.Code
 
     [<Fact>]
-    member _.``Git mapping preserves ordered state unions through every semantic ancestor without synthesizing missing nodes``
+    member _.``Git mapping projects all six non-ignored states through ancestors while ignored remains exact-path only``
         ()
         =
         let root = WorkspaceRpcScenario.temporaryDirectory "git-mapping"
@@ -131,9 +131,15 @@ type WorkspaceGitStatusTests() =
             let folderDirectory = Path.Combine(projectDirectory, "Feature")
             let changedFile = Path.Combine(folderDirectory, "Changed.cs")
             let addedFile = Path.Combine(folderDirectory, "Added.cs")
+            let ignoredDirectory = Path.Combine(projectDirectory, "obj")
+            let ignoredFile = Path.Combine(ignoredDirectory, "Generated.cs")
+            let ignoredDescendant = Path.Combine(ignoredDirectory, "nested", "Output.dll")
             Directory.CreateDirectory folderDirectory |> ignore
+            Directory.CreateDirectory(Path.GetDirectoryName ignoredDescendant) |> ignore
             File.WriteAllText(changedFile, "changed")
             File.WriteAllText(addedFile, "added")
+            File.WriteAllText(ignoredFile, "ignored")
+            File.WriteAllText(ignoredDescendant, "ignored descendant")
 
             let node id parent physical container =
                 { NodeId = WorkspaceNodeId.Parse id
@@ -145,7 +151,9 @@ type WorkspaceGitStatusTests() =
                 [| node "workspace" None None (Some root)
                    node "project" (Some "workspace") None (Some projectDirectory)
                    node "folder" (Some "project") None (Some folderDirectory)
-                   node "file" (Some "folder") (Some changedFile) None |]
+                   node "file" (Some "folder") (Some changedFile) None
+                   node "ignored-folder" (Some "project") None (Some ignoredDirectory)
+                   node "ignored-file" (Some "ignored-folder") (Some ignoredFile) None |]
 
             match
                 WorkspaceGitStatusMapping.mapDecorations
@@ -154,13 +162,13 @@ type WorkspaceGitStatusTests() =
                     { RepositoryRoot = root
                       Entries =
                         [| { Path = changedFile
-                             States = [| Unstaged |]
+                             States = [| Unstaged; Renamed |]
                              LegacyState = Some GitDecorationState.Changed }
                            { Path = addedFile
                              States = [| Staged; Untracked |]
                              LegacyState = Some GitDecorationState.Added }
                            { Path = Path.Combine(folderDirectory, "Deleted.cs")
-                             States = [| Deleted |]
+                             States = [| Deleted; Unmerged |]
                              LegacyState = Some GitDecorationState.Changed } |] }
             with
             | Error error -> failwithf "Valid Git paths did not map: %s" error.Code
@@ -176,22 +184,54 @@ type WorkspaceGitStatusTests() =
                 snapshot.Decorations
                 |> should
                     equal
-                    [| "file", [| GitStatusState.Unstaged |]
+                    [| "file", [| GitStatusState.Unstaged; GitStatusState.Renamed |]
                        "folder",
                        [| GitStatusState.Staged
                           GitStatusState.Unstaged
+                          GitStatusState.Renamed
                           GitStatusState.Deleted
+                          GitStatusState.Unmerged
                           GitStatusState.Untracked |]
                        "project",
                        [| GitStatusState.Staged
                           GitStatusState.Unstaged
+                          GitStatusState.Renamed
                           GitStatusState.Deleted
+                          GitStatusState.Unmerged
                           GitStatusState.Untracked |]
                        "workspace",
                        [| GitStatusState.Staged
                           GitStatusState.Unstaged
+                          GitStatusState.Renamed
                           GitStatusState.Deleted
+                          GitStatusState.Unmerged
                           GitStatusState.Untracked |] |]
+
+            match
+                WorkspaceGitStatusMapping.mapDecorations
+                    root
+                    nodes
+                    { RepositoryRoot = root
+                      Entries =
+                        [| { Path = ignoredDirectory
+                             States = [| Ignored |]
+                             LegacyState = None }
+                           { Path = ignoredFile
+                             States = [| Ignored |]
+                             LegacyState = None }
+                           { Path = ignoredDescendant
+                             States = [| Ignored |]
+                             LegacyState = None } |] }
+            with
+            | Error error -> failwithf "Valid ignored Git paths did not map: %s" error.Code
+            | Ok snapshot ->
+                snapshot.LegacyDecorations |> should equal [||]
+
+                snapshot.Decorations
+                |> should
+                    equal
+                    [| "ignored-file", [| GitStatusState.Ignored |]
+                       "ignored-folder", [| GitStatusState.Ignored |] |]
 
             match
                 WorkspaceGitStatusMapping.mapDecorations
@@ -661,7 +701,7 @@ type WorkspaceGitStatusTests() =
                 WorkspaceRpcScenario.disposeProcess child)
 
     [<Fact>]
-    member _.``V2-only and dual-capability clients receive exact ordered state arrays with V2 precedence``
+    member _.``V2-only and dual-capability clients receive ordered non-ignored ancestor states with V2 precedence``
         ()
         =
         WorkspaceGitStatusScenario.withRepository (fun directory solution project ->
@@ -679,8 +719,7 @@ type WorkspaceGitStatusTests() =
             let expectedStates =
                 [ RpcValue.String "staged"
                   RpcValue.String "unstaged"
-                  RpcValue.String "untracked"
-                  RpcValue.String "ignored" ]
+                  RpcValue.String "untracked" ]
 
             for name, capabilities in
                 [ "git-status-v2-only", [ "workspace.git.status.v2" ]
@@ -736,11 +775,19 @@ type WorkspaceGitStatusTests() =
 
                     decorations
                     |> Seq.exists (fun decoration ->
-                        WorkspaceRpcScenario.field "states" decoration
-                        |> RpcValue.requireArray "states"
-                        |> Seq.toList
-                        |> (=) expectedStates)
+                        let states =
+                            WorkspaceRpcScenario.field "states" decoration
+                            |> RpcValue.requireArray "states"
+                            |> Seq.toList
+
+                        states = expectedStates)
                     |> should equal true
+
+                    decorations
+                    |> Seq.collect (fun decoration ->
+                        WorkspaceRpcScenario.field "states" decoration
+                        |> RpcValue.requireArray "states")
+                    |> should not' (contain (RpcValue.String "ignored"))
 
                     let repeatedError, repeated = WorkspaceGitStatusScenario.request child 3u 0L
 
