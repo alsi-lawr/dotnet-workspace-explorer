@@ -14,7 +14,10 @@
         <RepositoryUrl>https://github.com/alsi-lawr/dotnet-workspace-explorer.git</RepositoryUrl>
         <RepositoryType>git</RepositoryType>
         <PackageTags>dotnet;solution;workspace;explorer;cli;tool</PackageTags>
-        <PackageReadmeFile>nuget-readme.md</PackageReadmeFile>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+        <PackageReadmeSource>$(MSBuildProjectDirectory)/../../README.md</PackageReadmeSource>
+        <PackageReadmeOutput>$(MSBuildProjectExtensionsPath)package/README.md</PackageReadmeOutput>
+        <PackageReadmeGenerator>$(MSBuildProjectDirectory)/../../scripts/PackageReadme.fsx</PackageReadmeGenerator>
         <IncludeSymbols>true</IncludeSymbols>
         <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     </PropertyGroup>
@@ -66,7 +69,16 @@
         <Compile Include="Program.fs" />
     </ItemGroup>
     <ItemGroup>
-        <None Include="../../docs/nuget-readme.md" Pack="true" PackagePath="/" />
+        <None Include="$(PackageReadmeOutput)" Pack="true" PackagePath="/" />
         <None Include="../../LICENSE" Pack="true" PackagePath="/" />
     </ItemGroup>
+    <Target
+        Name="GeneratePackageReadme"
+        BeforeTargets="GenerateNuspec"
+        Inputs="$(PackageReadmeSource);$(PackageReadmeGenerator)"
+        Outputs="$(PackageReadmeOutput)">
+        <MakeDir Directories="$([System.IO.Path]::GetDirectoryName('$(PackageReadmeOutput)'))" />
+        <Exec
+            Command="dotnet fsi &quot;$(PackageReadmeGenerator)&quot; &quot;$(PackageReadmeSource)&quot; &quot;$(PackageReadmeOutput)&quot;" />
+    </Target>
 </Project>
