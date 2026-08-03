@@ -76,7 +76,7 @@ type ReadPackageConsolidation =
     PackageRequest<unit> -> Async<Result<PackageConsolidation list, PackageFailure>>
 
 type ReadPackagePreviewPrecondition =
-    PackageRequest<PackageOperationRequest>
+    PackageRequest<PackagePreviewPreconditionRequest>
         -> Async<Result<PackagePreviewPrecondition, PackageFailure>>
 
 type PreviewPackageOperation =
@@ -98,6 +98,7 @@ type PackageExplorerPorts =
       RefreshInstalled: RefreshInstalledPackages
       Updates: ReadPackageUpdates
       Consolidation: ReadPackageConsolidation
+      PreviewPrecondition: ReadPackagePreviewPrecondition
       Preview: PreviewPackageOperation
       ExecuteConfirmed: ExecutePackageOperation
       Cancel: CancelPackageWork }

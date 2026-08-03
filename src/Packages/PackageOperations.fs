@@ -13,6 +13,11 @@ type PackagePreviewPrecondition =
     { WorkspaceRevision: string
       FileFingerprints: Map<string, string> }
 
+type PackagePreviewPreconditionRequest =
+    { Operation: RequestedPackageOperation
+      Targets: NonEmptyList<PackageTargetScope>
+      BrowseSource: PackageSourceId option }
+
 type PackageOperationRequest =
     { Operation: RequestedPackageOperation
       Targets: NonEmptyList<PackageTargetScope>
@@ -83,7 +88,7 @@ type PackageTargetPreview =
 
 [<RequireQualifiedAccess>]
 module PackageTargetPreview =
-    let create target change ownerFiles graphFreshness impact =
+    let internal create target change ownerFiles graphFreshness impact =
         let owners = ownerFiles |> NonEmptyList.toList
 
         let restoreMatches =
@@ -128,7 +133,92 @@ module PackagePreview =
         | RequestedPackageOperation.ConsolidateVersion _, PackageTargetChange.Consolidate _ -> true
         | _ -> false
 
-    let create operation targets ownerFiles workspaceRevision fileFingerprints =
+    let private proposedVersion =
+        function
+        | ProposedPackageState.Direct version
+        | ProposedPackageState.CentrallyManaged(version, _) -> version
+
+    let private currentVersion =
+        function
+        | InstalledPackageState.Direct(_, version)
+        | InstalledPackageState.CentrallyManagedDirect(_, version, _)
+        | InstalledPackageState.Transitive version
+        | InstalledPackageState.FrameworkProvided version -> Some version
+        | InstalledPackageState.FrameworkProvidedWithoutVersion
+        | InstalledPackageState.UnresolvedDirect _
+        | InstalledPackageState.UnresolvedCentrallyManagedDirect _ -> None
+
+    let private proposalMatchesOwner comparison current proposed =
+        match current, proposed with
+        | InstalledPackageState.Direct _, ProposedPackageState.Direct _
+        | InstalledPackageState.UnresolvedDirect _, ProposedPackageState.Direct _ -> true
+        | InstalledPackageState.CentrallyManagedDirect(_, _, currentOwner),
+          ProposedPackageState.CentrallyManaged(_, proposedOwner)
+        | InstalledPackageState.UnresolvedCentrallyManagedDirect(_, currentOwner),
+          ProposedPackageState.CentrallyManaged(_, proposedOwner) ->
+            System.String.Equals(currentOwner, proposedOwner, comparison)
+        | _ -> false
+
+    let private validChange comparison operation target =
+        match operation, PackageTargetPreview.change target with
+        | RequestedPackageOperation.InstallLatest _, PackageTargetChange.Install(current, _) ->
+            current
+            |> Option.forall (function
+                | InstalledPackageState.Transitive _ -> true
+                | _ -> false)
+        | RequestedPackageOperation.InstallVersion(_, destination),
+          PackageTargetChange.Install(current, proposed) ->
+            current
+            |> Option.forall (function
+                | InstalledPackageState.Transitive _ -> true
+                | _ -> false)
+            && proposedVersion proposed = destination
+        | RequestedPackageOperation.UpdateLatest _, PackageTargetChange.Update(current, proposed) ->
+            proposalMatchesOwner comparison current proposed
+        | RequestedPackageOperation.UpdateVersion(_, destination),
+          PackageTargetChange.Update(current, proposed) ->
+            proposalMatchesOwner comparison current proposed
+            && proposedVersion proposed = destination
+        | RequestedPackageOperation.Uninstall _, PackageTargetChange.Uninstall current ->
+            match current with
+            | InstalledPackageState.Direct _
+            | InstalledPackageState.CentrallyManagedDirect _
+            | InstalledPackageState.UnresolvedDirect _
+            | InstalledPackageState.UnresolvedCentrallyManagedDirect _ -> true
+            | _ -> false
+        | RequestedPackageOperation.ConsolidateVersion(_, destination),
+          PackageTargetChange.Consolidate(current, position, proposed) ->
+            match position, current, proposed with
+            | PackageConsolidationPosition.AlreadyOnDestination,
+              Some(InstalledPackageState.Direct(_, version)),
+              None
+            | PackageConsolidationPosition.AlreadyOnDestination,
+              Some(InstalledPackageState.CentrallyManagedDirect(_, version, _)),
+              None -> version = destination
+            | (PackageConsolidationPosition.BelowDestination | PackageConsolidationPosition.AboveDestination),
+              Some state,
+              Some proposal ->
+                currentVersion state |> Option.exists ((<>) destination)
+                && proposedVersion proposal = destination
+                && proposalMatchesOwner comparison state proposal
+            | PackageConsolidationPosition.Unusable, None, None
+            | PackageConsolidationPosition.Unusable,
+              Some(InstalledPackageState.UnresolvedDirect _),
+              None
+            | PackageConsolidationPosition.Unusable,
+              Some(InstalledPackageState.UnresolvedCentrallyManagedDirect _),
+              None -> true
+            | _ -> false
+        | _ -> false
+
+    let internal create
+        pathComparison
+        operation
+        targets
+        ownerFiles
+        workspaceRevision
+        fileFingerprints
+        =
         let ownerPaths = ownerFiles |> NonEmptyList.toList
         let targetValues = targets |> NonEmptyList.toList
 
@@ -159,6 +249,8 @@ module PackagePreview =
         if System.String.IsNullOrWhiteSpace workspaceRevision then
             Error(PackageContractViolation.MissingValue "workspaceRevision")
         elif not (targetValues |> List.forall (operationMatches operation)) then
+            Error(PackageContractViolation.InvalidValue "targetChanges")
+        elif not (targetValues |> List.forall (validChange pathComparison operation)) then
             Error(PackageContractViolation.InvalidValue "targetChanges")
         elif not uniqueTargets then
             Error(PackageContractViolation.InvalidValue "targets")

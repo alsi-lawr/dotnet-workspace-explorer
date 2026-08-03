@@ -9,6 +9,7 @@
     </ItemGroup>
 
     <ItemGroup>
+        <Compile Include="AssemblyInfo.fs" />
         <Compile Include="PackageValues.fs" />
         <Compile Include="PackageTargets.fs" />
         <Compile Include="PackageCatalog.fs" />

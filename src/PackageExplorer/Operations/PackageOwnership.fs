@@ -27,16 +27,18 @@ type internal PackageOwnershipFailure =
 
 [<RequireQualifiedAccess>]
 module internal PackageOwnership =
-    let private pathComparison =
-        if OperatingSystem.IsWindows() then
+    let private pathComparison sensitivity =
+        if
+            sensitivity = Dotnet.WorkspaceExplorer.Workspaces.FileSystemCaseSensitivity.Insensitive
+        then
             StringComparison.OrdinalIgnoreCase
         else
             StringComparison.Ordinal
 
     let private fullPath value = Path.GetFullPath value
 
-    let private samePath left right =
-        String.Equals(fullPath left, fullPath right, pathComparison)
+    let private samePath sensitivity left right =
+        String.Equals(fullPath left, fullPath right, pathComparison sensitivity)
 
     let private packageEquals (package: PackageId) (candidate: string) =
         String.Equals(package.Value, candidate, StringComparison.OrdinalIgnoreCase)
@@ -54,11 +56,13 @@ module internal PackageOwnership =
         | PackageTargetScope.Runtime(_, framework, _) -> Some framework.Value
 
     let private snapshotFor
+        sensitivity
         (target: PackageTargetScope)
         (evaluations: ProjectEvaluationSnapshot list)
         =
         evaluations
-        |> List.tryFind (fun snapshot -> samePath snapshot.ProjectPath.Value (projectPath target))
+        |> List.tryFind (fun snapshot ->
+            samePath sensitivity snapshot.ProjectPath.Value (projectPath target))
 
     let private dimensions (target: PackageTargetScope) (snapshot: ProjectEvaluationSnapshot) =
         let available = snapshot.Dimensions |> Seq.toList
@@ -82,15 +86,15 @@ module internal PackageOwnership =
     let private enabled value =
         String.Equals(value, "true", StringComparison.OrdinalIgnoreCase)
 
-    let private isUnder root candidate =
+    let private isUnder sensitivity root candidate =
         let relative = Path.GetRelativePath(fullPath root, fullPath candidate)
 
         relative <> ".."
-        && not (relative.StartsWith($"..{Path.DirectorySeparatorChar}", pathComparison))
+        && not (relative.StartsWith($"..{Path.DirectorySeparatorChar}", pathComparison sensitivity))
         && not (Path.IsPathRooted relative)
 
-    let rec private containsLink root candidate =
-        if not (isUnder root candidate) then
+    let rec private containsLink sensitivity root candidate =
+        if not (isUnder sensitivity root candidate) then
             false
         else
             let current =
@@ -109,12 +113,12 @@ module internal PackageOwnership =
                     | :? IOException
                     | :? UnauthorizedAccessException -> false
 
-                if linked || samePath path root then
+                if linked || samePath sensitivity path root then
                     linked
                 else
                     match Directory.GetParent path with
                     | null -> false
-                    | parent -> containsLink root parent.FullName
+                    | parent -> containsLink sensitivity root parent.FullName
 
     let private currentState (installed: InstalledPackage option) = installed |> Option.map _.State
 
@@ -165,15 +169,21 @@ module internal PackageOwnership =
 
         distinctMemberships.Length > 1 || distinctVersions.Length > 1
 
-    let private classifyOwner workspaceRoot project central owner =
-        if not (isUnder workspaceRoot project) || not (isUnder workspaceRoot owner) then
+    let private classifyOwner sensitivity workspaceRoot project central owner =
+        if
+            not (isUnder sensitivity workspaceRoot project)
+            || not (isUnder sensitivity workspaceRoot owner)
+        then
             Error PackageOwnershipFailure.ExternalOwner
-        elif containsLink workspaceRoot project || containsLink workspaceRoot owner then
+        elif
+            containsLink sensitivity workspaceRoot project
+            || containsLink sensitivity workspaceRoot owner
+        then
             Error PackageOwnershipFailure.SymbolicLink
         elif central then
             let expected = Path.Combine(fullPath workspaceRoot, "Directory.Packages.props")
 
-            if not (samePath owner expected) then
+            if not (samePath sensitivity owner expected) then
                 Error PackageOwnershipFailure.NestedCentralOwner
             else
                 Ok(PackageOwnership.Central(fullPath project, fullPath owner))
@@ -182,13 +192,14 @@ module internal PackageOwnership =
 
     let resolve
         (workspaceRoot: string)
+        (sensitivity: Dotnet.WorkspaceExplorer.Workspaces.FileSystemCaseSensitivity)
         (evaluations: ProjectEvaluationSnapshot list)
         (operation: RequestedPackageOperation)
         (package: PackageId)
         (target: PackageTargetScope)
         (installed: InstalledPackage option)
         =
-        match snapshotFor target evaluations with
+        match snapshotFor sensitivity target evaluations with
         | None -> Error PackageOwnershipFailure.MissingEvaluation
         | Some snapshot ->
             match dimensions target snapshot with
@@ -232,7 +243,10 @@ module internal PackageOwnership =
                         memberships
                         |> List.exists (fun membership ->
                             not (
-                                samePath membership.DeclaringPath.Value snapshot.ProjectPath.Value
+                                samePath
+                                    sensitivity
+                                    membership.DeclaringPath.Value
+                                    snapshot.ProjectPath.Value
                             ))
                     then
                         Error PackageOwnershipFailure.ImportedMembership
@@ -254,7 +268,12 @@ module internal PackageOwnership =
                             else
                                 snapshot.ProjectPath.Value
 
-                        classifyOwner workspaceRoot snapshot.ProjectPath.Value isCentral owner
+                        classifyOwner
+                            sensitivity
+                            workspaceRoot
+                            snapshot.ProjectPath.Value
+                            isCentral
+                            owner
 
     let ownerFiles (operation: RequestedPackageOperation) (ownership: PackageOwnership) =
         match ownership, operation with

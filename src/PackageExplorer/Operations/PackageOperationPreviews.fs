@@ -34,24 +34,34 @@ module internal PackageOperationPreviews =
         | PackageTargetScope.Framework(project, _)
         | PackageTargetScope.Runtime(project, _, _) -> project
 
-    let private targetKey (target: PackageTargetScope) =
-        match target with
-        | PackageTargetScope.Project project -> project.Value, "", ""
-        | PackageTargetScope.Framework(project, framework) -> project.Value, framework.Value, ""
-        | PackageTargetScope.Runtime(project, framework, runtime) ->
-            project.Value, framework.Value, runtime.Value
+    let private pathIdentity sensitivity path =
+        let full = Path.GetFullPath path
 
-    let private sameProject (left: PackageTargetScope) (right: PackageTargetScope) =
+        if sensitivity = FileSystemCaseSensitivity.Insensitive then
+            full.ToUpperInvariant()
+        else
+            full
+
+    let private targetKey sensitivity (target: PackageTargetScope) =
+        match target with
+        | PackageTargetScope.Project project -> pathIdentity sensitivity project.Value, "", ""
+        | PackageTargetScope.Framework(project, framework) ->
+            pathIdentity sensitivity project.Value, framework.Value, ""
+        | PackageTargetScope.Runtime(project, framework, runtime) ->
+            pathIdentity sensitivity project.Value, framework.Value, runtime.Value
+
+    let private sameProject sensitivity (left: PackageTargetScope) (right: PackageTargetScope) =
         String.Equals(
             (targetProject left).Value,
             (targetProject right).Value,
-            if OperatingSystem.IsWindows() then
+            if sensitivity = FileSystemCaseSensitivity.Insensitive then
                 StringComparison.OrdinalIgnoreCase
             else
                 StringComparison.Ordinal
         )
 
     let private expandTargets
+        sensitivity
         (installed: InstalledPackageGraph list)
         (requested: NonEmptyList<PackageTargetScope>)
         =
@@ -60,15 +70,21 @@ module internal PackageOperationPreviews =
         |> List.collect (fun target ->
             match target with
             | PackageTargetScope.Project _ ->
-                let restored = installed |> List.map _.Target |> List.filter (sameProject target)
+                let restored =
+                    installed |> List.map _.Target |> List.filter (sameProject sensitivity target)
 
                 if List.isEmpty restored then [ target ] else restored
             | _ -> [ target ])
-        |> List.distinct
-        |> List.sortBy targetKey
+        |> List.distinctBy (targetKey sensitivity)
+        |> List.sortBy (targetKey sensitivity)
 
-    let private graphFor (target: PackageTargetScope) (graphs: InstalledPackageGraph list) =
-        graphs |> List.filter (fun graph -> graph.Target = target)
+    let private graphFor
+        sensitivity
+        (target: PackageTargetScope)
+        (graphs: InstalledPackageGraph list)
+        =
+        let key = targetKey sensitivity target
+        graphs |> List.filter (fun graph -> targetKey sensitivity graph.Target = key)
 
     let private currentPackage (package: PackageId) (graph: InstalledPackageGraph) =
         graph.Packages
@@ -84,11 +100,12 @@ module internal PackageOperationPreviews =
             | _ -> Error(invalid "The restored package graph contains duplicate package entries.")
 
     let private targetState
+        sensitivity
         (package: PackageId)
         (graphs: InstalledPackageGraph list)
         (target: PackageTargetScope)
         =
-        match graphFor target graphs with
+        match graphFor sensitivity target graphs with
         | [] ->
             Error(
                 stale
@@ -336,14 +353,7 @@ module internal PackageOperationPreviews =
                 Ok(PackageSourceMappingImpact.BrowseSourceDoesNotConstrainApply(browsed, allowed))
             | None -> Ok(PackageSourceMappingImpact.ApplyAllowed allowed)
 
-    let private pathKey root path =
-        let full = Path.GetFullPath path
-        let sensitivity = FileSystemCaseSensitivityDetector.DetectFromExistingPath root
-
-        if sensitivity = FileSystemCaseSensitivity.Insensitive then
-            full.ToUpperInvariant()
-        else
-            full
+    let private pathKey sensitivity path = pathIdentity sensitivity path
 
     let private orderedPaths root paths =
         paths
@@ -351,12 +361,17 @@ module internal PackageOperationPreviews =
         |> List.distinctBy (pathKey root)
         |> List.sortBy (pathKey root)
 
-    let private normalizeFingerprints root (fingerprints: Map<string, string>) =
-        fingerprints
-        |> Map.toList
-        |> List.map (fun (path, fingerprint) ->
-            pathKey root path, (Path.GetFullPath path, fingerprint))
-        |> Map.ofList
+    let private normalizeFingerprints sensitivity (fingerprints: Map<string, string>) =
+        let keyed =
+            fingerprints
+            |> Map.toList
+            |> List.map (fun (path, fingerprint) ->
+                pathKey sensitivity path, (Path.GetFullPath path, fingerprint))
+
+        if keyed |> List.countBy fst |> List.exists (snd >> ((<) 1)) then
+            Error(stale "Package preview fingerprints contain ambiguous path identities.")
+        else
+            Ok(Map.ofList keyed)
 
     let private verifyPrecondition
         (request: PackageOperationRequest)
@@ -366,30 +381,40 @@ module internal PackageOperationPreviews =
         if request.Precondition.WorkspaceRevision <> evidence.WorkspaceRevision then
             Error(stale "The workspace revision changed before the package preview was created.")
         else
-            let expected =
-                normalizeFingerprints evidence.WorkspaceRoot request.Precondition.FileFingerprints
+            let normalized =
+                match
+                    normalizeFingerprints
+                        evidence.CaseSensitivity
+                        request.Precondition.FileFingerprints,
+                    normalizeFingerprints evidence.CaseSensitivity evidence.FileFingerprints
+                with
+                | Ok expected, Ok current -> Ok(expected, current)
+                | Error error, _
+                | _, Error error -> Error error
 
-            let current = normalizeFingerprints evidence.WorkspaceRoot evidence.FileFingerprints
+            match normalized with
+            | Error error -> Error error
+            | Ok(expected, current) ->
+                let unchanged =
+                    ownerFiles
+                    |> List.forall (fun path ->
+                        let key = pathKey evidence.CaseSensitivity path
 
-            let unchanged =
-                ownerFiles
-                |> List.forall (fun path ->
-                    let key = pathKey evidence.WorkspaceRoot path
+                        match Map.tryFind key expected, Map.tryFind key current with
+                        | Some(_, expectedValue), Some(_, currentValue) ->
+                            expectedValue = currentValue
+                        | _ -> false)
 
-                    match Map.tryFind key expected, Map.tryFind key current with
-                    | Some(_, expectedValue), Some(_, currentValue) -> expectedValue = currentValue
-                    | _ -> false)
-
-            if unchanged then
-                ownerFiles
-                |> List.map (fun path ->
-                    let key = pathKey evidence.WorkspaceRoot path
-                    let currentPath, fingerprint = current[key]
-                    currentPath, fingerprint)
-                |> Map.ofList
-                |> Ok
-            else
-                Error(stale "A package owner file changed before the preview was created.")
+                if unchanged then
+                    ownerFiles
+                    |> List.map (fun path ->
+                        let key = pathKey evidence.CaseSensitivity path
+                        let currentPath, fingerprint = current[key]
+                        currentPath, fingerprint)
+                    |> Map.ofList
+                    |> Ok
+                else
+                    Error(stale "A package owner file changed before the preview was created.")
 
     let private planTarget
         (evidence: PackageOperationPreviewEvidence)
@@ -398,14 +423,33 @@ module internal PackageOperationPreviews =
         (version: NuGetVersion option)
         (target: PackageTargetScope)
         =
-        targetState package evidence.Installed target
+        targetState evidence.CaseSensitivity package evidence.Installed target
         |> Result.bind (fun (installed, freshness) ->
             validateCurrent request.Operation installed
             |> Result.bind (fun () ->
-                mappingImpact package request.BrowseSource freshness evidence.SourceMapping
+                let project = targetProject target
+
+                let policy =
+                    evidence.SourceMappings
+                    |> Map.toList
+                    |> List.tryPick (fun (candidate, policy) ->
+                        if
+                            pathIdentity evidence.CaseSensitivity candidate.Value = pathIdentity
+                                evidence.CaseSensitivity
+                                project.Value
+                        then
+                            Some policy
+                        else
+                            None)
+                    |> Option.defaultValue (
+                        PackageSourceMappingPolicy.InsufficientRestoredTransitiveEvidence []
+                    )
+
+                mappingImpact package request.BrowseSource freshness policy
                 |> Result.bind (fun mapping ->
                     PackageOwnership.resolve
                         evidence.WorkspaceRoot
+                        evidence.CaseSensitivity
                         evidence.Evaluations
                         request.Operation
                         package
@@ -417,7 +461,7 @@ module internal PackageOperationPreviews =
                         |> Result.bind (fun change ->
                             let owners =
                                 PackageOwnership.ownerFiles request.Operation ownership
-                                |> orderedPaths evidence.WorkspaceRoot
+                                |> orderedPaths evidence.CaseSensitivity
                                 |> NonEmptyList.tryCreate
                                 |> Option.defaultWith (fun () ->
                                     invalidOp
@@ -460,7 +504,9 @@ module internal PackageOperationPreviews =
         (evidence: PackageOperationPreviewEvidence)
         =
         let package = packageOf request.Value.Operation
-        let targets = expandTargets evidence.Installed request.Value.Targets
+
+        let targets =
+            expandTargets evidence.CaseSensitivity evidence.Installed request.Value.Targets
 
         match selectedVersion request.Value.Operation package evidence.Details with
         | Error error -> Error error
@@ -478,7 +524,7 @@ module internal PackageOperationPreviews =
                     let owners =
                         previews
                         |> List.collect (PackageTargetPreview.ownerFiles >> NonEmptyList.toList)
-                        |> orderedPaths evidence.WorkspaceRoot
+                        |> orderedPaths evidence.CaseSensitivity
 
                     match NonEmptyList.tryCreate owners with
                     | None -> Error(invalid "A package preview requires an owner file.")
@@ -487,6 +533,12 @@ module internal PackageOperationPreviews =
                         | Error error -> Error error
                         | Ok fingerprints ->
                             PackagePreview.create
+                                (if
+                                     evidence.CaseSensitivity = FileSystemCaseSensitivity.Insensitive
+                                 then
+                                     StringComparison.OrdinalIgnoreCase
+                                 else
+                                     StringComparison.Ordinal)
                                 request.Value.Operation
                                 previewTargets
                                 ownerFiles

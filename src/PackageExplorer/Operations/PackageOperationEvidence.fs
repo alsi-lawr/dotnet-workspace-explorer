@@ -8,7 +8,8 @@ type internal PackageOperationPreviewEvidence =
       Evaluations: ProjectEvaluationSnapshot list
       Installed: InstalledPackageGraph list
       Details: Map<NuGetVersion, PackageDetails>
-      SourceMapping: PackageSourceMappingPolicy
+      SourceMappings: Map<PackageProjectId, PackageSourceMappingPolicy>
+      CaseSensitivity: Dotnet.WorkspaceExplorer.Workspaces.FileSystemCaseSensitivity
       WorkspaceRevision: string
       FileFingerprints: Map<string, string> }
 

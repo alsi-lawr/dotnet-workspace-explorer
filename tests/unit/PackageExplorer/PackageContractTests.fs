@@ -109,15 +109,22 @@ type PackageContractTests() =
 
         let owners = NonEmptyList.singleton "src/Example.csproj"
 
-        PackagePreview.create operation targets owners "" (Map [ "src/Example.csproj", "hash" ])
+        PackagePreview.create
+            StringComparison.Ordinal
+            operation
+            targets
+            owners
+            ""
+            (Map [ "src/Example.csproj", "hash" ])
         |> PackageContractScenario.violation
         |> should equal (PackageContractViolation.MissingValue "workspaceRevision")
 
-        PackagePreview.create operation targets owners "revision" Map.empty
+        PackagePreview.create StringComparison.Ordinal operation targets owners "revision" Map.empty
         |> PackageContractScenario.violation
         |> should equal (PackageContractViolation.InvalidValue "fileFingerprints")
 
         PackagePreview.create
+            StringComparison.Ordinal
             (RequestedPackageOperation.Uninstall package)
             targets
             owners
@@ -125,6 +132,82 @@ type PackageContractTests() =
             (Map [ "src/Example.csproj", "hash" ])
         |> PackageContractScenario.violation
         |> should equal (PackageContractViolation.InvalidValue "targetChanges")
+
+    [<Fact>]
+    member _.``package preview contracts reject operation changes with inconsistent state versions or ownership``
+        ()
+        =
+        let package = PackageContractScenario.packageId "Example.Package"
+        let one = PackageContractScenario.version "1.0.0"
+        let two = PackageContractScenario.version "2.0.0"
+        let projectPath = "src/Example.csproj"
+        let centralPath = "Directory.Packages.props"
+        let target = PackageTargetScope.Project(PackageContractScenario.project projectPath)
+
+        let impact =
+            { Metadata = PackageMetadataImpact.Unknown
+              SourceMapping = PackageSourceMappingImpact.ApplyAllowed []
+              Restore =
+                PackageRestoreImpact.RequiredWithUnknownOutcome PackageGraphFreshness.Current }
+
+        let invalid operation change owner =
+            let targetPreview =
+                PackageTargetPreview.create
+                    target
+                    change
+                    (NonEmptyList.singleton owner)
+                    PackageGraphFreshness.Current
+                    impact
+                |> Result.defaultWith (failwithf "%A")
+
+            PackagePreview.create
+                StringComparison.Ordinal
+                operation
+                (NonEmptyList.singleton targetPreview)
+                (NonEmptyList.singleton owner)
+                "revision"
+                (Map [ owner, "hash" ])
+            |> PackageContractScenario.violation
+            |> should equal (PackageContractViolation.InvalidValue "targetChanges")
+
+        invalid
+            (RequestedPackageOperation.InstallVersion(package, two))
+            (PackageTargetChange.Install(
+                Some(InstalledPackageState.Direct(PackageVersionSelection.Exact one, one)),
+                ProposedPackageState.Direct two
+            ))
+            projectPath
+
+        invalid
+            (RequestedPackageOperation.InstallVersion(package, two))
+            (PackageTargetChange.Install(None, ProposedPackageState.Direct one))
+            projectPath
+
+        invalid
+            (RequestedPackageOperation.UpdateVersion(package, two))
+            (PackageTargetChange.Update(
+                InstalledPackageState.Direct(PackageVersionSelection.Exact one, one),
+                ProposedPackageState.CentrallyManaged(two, centralPath)
+            ))
+            projectPath
+
+        invalid
+            (RequestedPackageOperation.ConsolidateVersion(package, two))
+            (PackageTargetChange.Consolidate(
+                Some(InstalledPackageState.Direct(PackageVersionSelection.Exact one, one)),
+                PackageConsolidationPosition.BelowDestination,
+                Some(ProposedPackageState.Direct one)
+            ))
+            projectPath
+
+        invalid
+            (RequestedPackageOperation.ConsolidateVersion(package, two))
+            (PackageTargetChange.Consolidate(
+                Some(InstalledPackageState.Direct(PackageVersionSelection.Exact one, one)),
+                PackageConsolidationPosition.AlreadyOnDestination,
+                None
+            ))
+            projectPath
 
     [<Fact>]
     member _.``package failure contracts derive stable codes from one failure classification``() =

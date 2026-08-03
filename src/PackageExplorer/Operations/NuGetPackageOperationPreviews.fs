@@ -33,9 +33,7 @@ module internal NuGetPackageOperationPreviews =
             |> Option.ofObj
             |> Option.defaultValue (Directory.GetCurrentDirectory())
 
-    let private pathKey root =
-        let sensitivity = FileSystemCaseSensitivityDetector.DetectFromExistingPath root
-
+    let private pathKey sensitivity =
         fun path ->
             let full = Path.GetFullPath path
 
@@ -44,9 +42,10 @@ module internal NuGetPackageOperationPreviews =
             else
                 full
 
-    let private evidencePaths root evaluations =
+    let private evidencePaths root evaluations configFiles =
         seq {
             yield Path.Combine(root, "Directory.Packages.props")
+            yield! configFiles
 
             for evaluation: InstalledPackageEvaluation in evaluations do
                 yield evaluation.Snapshot.ProjectPath.Value
@@ -57,29 +56,44 @@ module internal NuGetPackageOperationPreviews =
                     yield! dimension.PackageVersions |> Seq.map (_.DeclaringPath.Value)
         }
 
-    let private fingerprints root evaluations =
+    let private fingerprints sensitivity root evaluations configFiles =
         try
-            let key = pathKey root
+            let key = pathKey sensitivity
 
-            evidencePaths root evaluations
-            |> Seq.map Path.GetFullPath
-            |> Seq.distinctBy key
-            |> Seq.sortBy key
-            |> Seq.map (fun path ->
-                ArtifactFiles.fingerprint path |> Result.map (fun value -> path, value))
-            |> Seq.toList
-            |> List.fold
-                (fun state item ->
-                    state
-                    |> Result.bind (fun values ->
-                        item |> Result.map (fun value -> value :: values)))
-                (Ok [])
-            |> Result.map (List.rev >> Map.ofList)
-            |> Result.mapError (fun _ ->
+            let paths =
+                evidencePaths root evaluations configFiles
+                |> Seq.map Path.GetFullPath
+                |> Seq.toList
+
+            let ambiguous =
+                paths
+                |> List.groupBy key
+                |> List.exists (fun (_, matches) -> matches |> List.distinct |> List.length > 1)
+
+            if ambiguous then
                 failure
                     PackageFailureKind.Unsupported
-                    "A package preview input could not be fingerprinted safely."
-                    PackageFailureRetry.AfterUserAction)
+                    "Package preview inputs contain ambiguous path identities."
+                    PackageFailureRetry.AfterUserAction
+                |> Error
+            else
+                paths
+                |> List.distinctBy key
+                |> List.sortBy key
+                |> List.map (fun path ->
+                    ArtifactFiles.fingerprint path |> Result.map (fun value -> path, value))
+                |> List.fold
+                    (fun state item ->
+                        state
+                        |> Result.bind (fun values ->
+                            item |> Result.map (fun value -> value :: values)))
+                    (Ok [])
+                |> Result.map (List.rev >> Map.ofList)
+                |> Result.mapError (fun _ ->
+                    failure
+                        PackageFailureKind.Unsupported
+                        "A package preview input could not be fingerprinted safely."
+                        PackageFailureRetry.AfterUserAction)
         with
         | :? IOException
         | :? UnauthorizedAccessException
@@ -91,8 +105,8 @@ module internal NuGetPackageOperationPreviews =
                     PackageFailureRetry.AfterUserAction
             )
 
-    let private revision root fingerprints =
-        let key = pathKey root
+    let private revision sensitivity fingerprints =
+        let key = pathKey sensitivity
 
         fingerprints
         |> Map.toList
@@ -103,14 +117,11 @@ module internal NuGetPackageOperationPreviews =
         |> SHA256.HashData
         |> Convert.ToHexString
 
-    let private readBase
-        (evaluator: ProjectEvaluator)
-        (request: PackageRequest<PackageOperationRequest>)
-        =
+    let private readBase (evaluator: ProjectEvaluator) requestId target =
         async {
             let unitRequest =
-                { Id = request.Id
-                  Target = request.Target
+                { Id = requestId
+                  Target = target
                   Value = () }
 
             let! evaluated =
@@ -119,18 +130,42 @@ module internal NuGetPackageOperationPreviews =
             match evaluated with
             | Error error -> return Error error
             | Ok values ->
-                let root = workspaceRoot request.Target
+                let root = workspaceRoot target
+                let sensitivity = FileSystemCaseSensitivityDetector.DetectFromExistingPath root
 
-                match fingerprints root values with
-                | Error error -> return Error error
-                | Ok fileFingerprints ->
-                    return
-                        Ok(
-                            root,
-                            values,
-                            { WorkspaceRevision = revision root fileFingerprints
-                              FileFingerprints = fileFingerprints }
-                        )
+                let catalogs =
+                    values
+                    |> List.map (fun value ->
+                        PackageWorkspaceTarget.file value.Snapshot.ProjectPath.Value
+                        |> Result.mapError (fun _ ->
+                            failure
+                                PackageFailureKind.Unsupported
+                                "A selected project target is invalid."
+                                PackageFailureRetry.Never)
+                        |> Result.bind NuGetSources.loadCatalog)
+
+                match
+                    catalogs
+                    |> List.tryPick (function
+                        | Error error -> Some error
+                        | _ -> None)
+                with
+                | Some error -> return Error error
+                | None ->
+                    let configFiles =
+                        catalogs |> List.choose Result.toOption |> List.collect _.ConfigFiles
+
+                    match fingerprints sensitivity root values configFiles with
+                    | Error error -> return Error error
+                    | Ok fileFingerprints ->
+                        return
+                            Ok(
+                                root,
+                                sensitivity,
+                                values,
+                                { WorkspaceRevision = revision sensitivity fileFingerprints
+                                  FileFingerprints = fileFingerprints }
+                            )
         }
 
     let private packageOf =
@@ -179,6 +214,41 @@ module internal NuGetPackageOperationPreviews =
                         Some(PackageVersionSelection.Exact version)
                     | _ -> None)
             |> List.distinct
+
+
+    let private readMappings
+        (request: PackageRequest<PackageOperationRequest>)
+        (package: PackageId)
+        (evaluated: InstalledPackageEvaluation list)
+        =
+        async {
+            let mutable result = Ok Map.empty
+
+            for item: InstalledPackageEvaluation in evaluated do
+                match result with
+                | Error _ -> ()
+                | Ok policies ->
+                    let target =
+                        PackageWorkspaceTarget.file item.Snapshot.ProjectPath.Value
+                        |> Result.defaultWith (failwithf "%A")
+
+                    let project =
+                        PackageProjectId.create item.Snapshot.ProjectPath.Value
+                        |> Result.defaultWith (failwithf "%A")
+
+                    let mappingRequest =
+                        { Id = request.Id
+                          Target = target
+                          Value =
+                            { Package = package
+                              CandidateSource = request.Value.BrowseSource
+                              RestoredTransitives = Some(transitivePackages [ item ]) } }
+
+                    let! policy = NuGetSources.sourceMapping mappingRequest
+                    result <- policy |> Result.map (fun value -> Map.add project value policies)
+
+            return result
+        }
 
     let private allowedSources (policy: PackageSourceMappingPolicy) =
         match policy with
@@ -230,13 +300,13 @@ module internal NuGetPackageOperationPreviews =
         (evaluatorFactory: unit -> ProjectEvaluator)
         (requests: ConcurrentDictionary<PackageRequestId, CancellationTokenSource>)
         =
-        let readPrecondition (request: PackageRequest<PackageOperationRequest>) =
+        let readPrecondition (request: PackageRequest<PackagePreviewPreconditionRequest>) =
             async {
                 let evaluator = evaluatorFactory ()
 
                 try
-                    let! evidence = readBase evaluator request
-                    return evidence |> Result.map (fun (_, _, precondition) -> precondition)
+                    let! evidence = readBase evaluator request.Id request.Target
+                    return evidence |> Result.map (fun (_, _, _, precondition) -> precondition)
                 finally
                     evaluator.DisposeAsync().AsTask().GetAwaiter().GetResult()
             }
@@ -246,27 +316,27 @@ module internal NuGetPackageOperationPreviews =
                 let evaluator = evaluatorFactory ()
 
                 try
-                    let! baseEvidence = readBase evaluator request
+                    let! baseEvidence = readBase evaluator request.Id request.Target
 
                     match baseEvidence with
                     | Error error -> return Error error
-                    | Ok(root, evaluated, precondition) ->
+                    | Ok(root, sensitivity, evaluated, precondition) ->
                         let package = packageOf request.Value.Operation
 
-                        let mappingRequest =
-                            { Id = request.Id
-                              Target = request.Target
-                              Value =
-                                { Package = package
-                                  CandidateSource = request.Value.BrowseSource
-                                  RestoredTransitives = Some(transitivePackages evaluated) } }
+                        let! mappings = readMappings request package evaluated
 
-                        let! mapping = NuGetSources.sourceMapping mappingRequest
-
-                        match mapping with
+                        match mappings with
                         | Error error -> return Error error
-                        | Ok policy ->
-                            let! details = readDetails requests request package policy evaluated
+                        | Ok policies ->
+                            let detailPolicy =
+                                policies
+                                |> Map.toList
+                                |> List.tryHead
+                                |> Option.map snd
+                                |> Option.defaultValue (PackageSourceMappingPolicy.Allowed [])
+
+                            let! details =
+                                readDetails requests request package detailPolicy evaluated
 
                             return
                                 details
@@ -275,7 +345,8 @@ module internal NuGetPackageOperationPreviews =
                                       Evaluations = evaluated |> List.map _.Snapshot
                                       Installed = evaluated |> List.collect _.Graphs
                                       Details = packageDetails
-                                      SourceMapping = policy
+                                      SourceMappings = policies
+                                      CaseSensitivity = sensitivity
                                       WorkspaceRevision = precondition.WorkspaceRevision
                                       FileFingerprints = precondition.FileFingerprints })
                 finally

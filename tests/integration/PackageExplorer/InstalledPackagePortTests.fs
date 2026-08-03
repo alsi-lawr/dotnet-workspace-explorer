@@ -61,7 +61,7 @@ module private InstalledPortScenario =
 
     let write (path: string) (contents: string) = File.WriteAllText(path, contents)
 
-    let private runDotnet directory arguments =
+    let runDotnet directory arguments =
         let startInfo =
             ProcessStartInfo(
                 FileName = "dotnet",
@@ -424,27 +424,27 @@ type InstalledPackagePortTests() =
             let project =
                 PackageProjectId.create workspace.Project |> Result.defaultWith (failwithf "%A")
 
-            let initial =
+            let selection =
                 { Id = PackageRequestId.newId ()
                   Target = target
                   Value =
                     { Operation = RequestedPackageOperation.InstallVersion(identity, version)
                       Targets = NonEmptyList.singleton (PackageTargetScope.Project project)
-                      BrowseSource = None
-                      Precondition =
-                        { WorkspaceRevision = "pending"
-                          FileFingerprints = Map.empty } } }
+                      BrowseSource = None } }
 
             let precondition =
-                catalog.PreviewPrecondition initial
+                catalog.PreviewPrecondition selection
                 |> Async.RunSynchronously
                 |> Result.defaultWith (fun error -> failwith (PackageFailure.message error))
 
             let request =
-                { initial with
-                    Value =
-                        { initial.Value with
-                            Precondition = precondition } }
+                { Id = selection.Id
+                  Target = selection.Target
+                  Value =
+                    { Operation = selection.Value.Operation
+                      Targets = selection.Value.Targets
+                      BrowseSource = selection.Value.BrowseSource
+                      Precondition = precondition } }
 
             let preview =
                 catalog.Preview request
@@ -455,5 +455,140 @@ type InstalledPackagePortTests() =
             |> should equal precondition.WorkspaceRevision
 
             restoreStarts |> should equal 0
+        finally
+            InstalledPortScenario.delete workspace
+
+    [<Fact>]
+    member _.``nested NuGet configurations remain project-scoped and invalidate an earlier preview precondition``
+        ()
+        =
+        let workspace = InstalledPortScenario.createWorkspace "nested-preview-config"
+
+        try
+            let nestedDirectory = Path.Combine(workspace.Directory, "nested")
+            let nestedFeed = Path.Combine(nestedDirectory, "feed")
+            Directory.CreateDirectory nestedFeed |> ignore
+
+            let nestedProject = Path.Combine(nestedDirectory, "Nested.csproj")
+            let nestedConfig = Path.Combine(nestedDirectory, "NuGet.Config")
+
+            InstalledPortScenario.write
+                nestedProject
+                """
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+</Project>
+"""
+
+            InstalledPortScenario.write
+                nestedConfig
+                $"""
+<configuration>
+  <packageSources>
+    <clear />
+    <add key="nested" value="{nestedFeed}" />
+  </packageSources>
+  <packageSourceMapping>
+    <clear />
+    <packageSource key="nested"><package pattern="*" /></packageSource>
+  </packageSourceMapping>
+</configuration>
+"""
+
+            InstalledPortScenario.runDotnet nestedDirectory [ "restore"; nestedProject; "--nologo" ]
+
+            let catalog =
+                NuGetPackageCatalog.createWith
+                    InstalledPortScenario.evaluatorFactory
+                    DotnetInstalledRestore.run
+
+            let identity =
+                PackageId.create "Preview.Package" |> Result.defaultWith (failwithf "%A")
+
+            let version = NuGetVersion.create "1.0.0" |> Result.defaultWith (failwithf "%A")
+
+            let projectScope path =
+                PackageProjectId.create path
+                |> Result.map PackageTargetScope.Project
+                |> Result.defaultWith (failwithf "%A")
+
+            let selection =
+                { Id = PackageRequestId.newId ()
+                  Target = InstalledPortScenario.directoryTarget workspace.Directory
+                  Value =
+                    { Operation = RequestedPackageOperation.InstallVersion(identity, version)
+                      Targets =
+                        NonEmptyList.create
+                            (projectScope workspace.Project)
+                            [ projectScope nestedProject ]
+                      BrowseSource = None } }
+
+            let precondition =
+                catalog.PreviewPrecondition selection
+                |> Async.RunSynchronously
+                |> Result.defaultWith (fun error -> failwith (PackageFailure.message error))
+
+            let fingerprintedPaths = precondition.FileFingerprints |> Map.keys |> Set.ofSeq
+
+            fingerprintedPaths
+            |> should contain (Path.Combine(workspace.Directory, "NuGet.Config"))
+
+            fingerprintedPaths |> should contain nestedConfig
+
+            let request =
+                { Id = selection.Id
+                  Target = selection.Target
+                  Value =
+                    { Operation = selection.Value.Operation
+                      Targets = selection.Value.Targets
+                      BrowseSource = selection.Value.BrowseSource
+                      Precondition = precondition } }
+
+            let preview =
+                catalog.Preview request
+                |> Async.RunSynchronously
+                |> Result.defaultWith (fun error -> failwith (PackageFailure.message error))
+
+            let mappings =
+                PackagePreview.targets preview
+                |> NonEmptyList.toList
+                |> List.map (fun target ->
+                    let project =
+                        match PackageTargetPreview.target target with
+                        | PackageTargetScope.Project project
+                        | PackageTargetScope.Framework(project, _)
+                        | PackageTargetScope.Runtime(project, _, _) -> project.Value
+
+                    project, (PackageTargetPreview.impact target).SourceMapping)
+                |> Map
+
+            let mappedSources =
+                function
+                | PackageSourceMappingImpact.ApplyAllowed sources
+                | PackageSourceMappingImpact.BrowseSourceDoesNotConstrainApply(_, sources)
+                | PackageSourceMappingImpact.UnknownTransitiveConsequences(sources, _) -> sources
+
+            mappings[workspace.Project]
+            |> mappedSources
+            |> should
+                equal
+                [ PackageSourceId.create "local" |> Result.defaultWith (failwithf "%A") ]
+
+            mappings[nestedProject]
+            |> mappedSources
+            |> should
+                equal
+                [ PackageSourceId.create "nested" |> Result.defaultWith (failwithf "%A") ]
+
+            InstalledPortScenario.write
+                nestedConfig
+                (File.ReadAllText nestedConfig + Environment.NewLine)
+
+            match catalog.Preview request |> Async.RunSynchronously with
+            | Ok _ -> failwith "The changed nested NuGet configuration unexpectedly remained valid."
+            | Error failure ->
+                PackageFailure.kind failure |> should equal PackageFailureKind.StaleState
         finally
             InstalledPortScenario.delete workspace

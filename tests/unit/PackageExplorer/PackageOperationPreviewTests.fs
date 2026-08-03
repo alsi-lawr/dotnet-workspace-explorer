@@ -217,7 +217,11 @@ module private PackageOperationPreviewScenario =
             details
             |> Option.map (fun value -> Map [ value.Summary.Version, value ])
             |> Option.defaultValue Map.empty
-          SourceMapping = mapping
+          SourceMappings =
+            evaluations
+            |> List.map (fun value -> project value.ProjectPath.Value, mapping)
+            |> Map.ofList
+          CaseSensitivity = FileSystemCaseSensitivity.Sensitive
           WorkspaceRevision = "42"
           FileFingerprints = fingerprints }
 
@@ -706,7 +710,10 @@ type PackageOperationPreviewTests() =
             let conflict =
                 PackageOperationPreviewScenario.preview
                     { baseline with
-                        SourceMapping = PackageSourceMappingPolicy.KnownConflict(identity, []) }
+                        SourceMappings =
+                            baseline.SourceMappings
+                            |> Map.map (fun _ _ ->
+                                PackageSourceMappingPolicy.KnownConflict(identity, [])) }
                     request
                 |> PackageOperationPreviewScenario.failure
 
@@ -716,9 +723,11 @@ type PackageOperationPreviewTests() =
             let unknown =
                 PackageOperationPreviewScenario.preview
                     { baseline with
-                        SourceMapping =
-                            PackageSourceMappingPolicy.InsufficientRestoredTransitiveEvidence
-                                [ feed ] }
+                        SourceMappings =
+                            baseline.SourceMappings
+                            |> Map.map (fun _ _ ->
+                                PackageSourceMappingPolicy.InsufficientRestoredTransitiveEvidence
+                                    [ feed ]) }
                     request
                 |> PackageOperationPreviewScenario.success
                 |> PackageOperationPreviewScenario.targets
@@ -728,6 +737,162 @@ type PackageOperationPreviewTests() =
             |> should
                 equal
                 (PackageSourceMappingImpact.UnknownTransitiveConsequences([ feed ], None))
+        finally
+            Directory.Delete(root, true)
+
+    [<Fact>]
+    member _.``multi-project previews apply each project source mapping without cross-contamination``
+        ()
+        =
+        let root = PackageOperationPreviewScenario.temporaryDirectory ()
+
+        try
+            let identity = PackageOperationPreviewScenario.package "Example.Package"
+            let selected = PackageOperationPreviewScenario.version "2.0.0"
+            let rootFeed = PackageOperationPreviewScenario.source "root-feed"
+            let nestedFeed = PackageOperationPreviewScenario.source "nested-feed"
+            let rootProject = Path.Combine(root, "Root.csproj")
+            let nestedProject = Path.Combine(root, "nested", "Nested.csproj")
+
+            for project in [ rootProject; nestedProject ] do
+                PackageOperationPreviewScenario.write project "original"
+
+            let projects = [ rootProject, rootFeed; nestedProject, nestedFeed ]
+
+            let snapshots =
+                projects
+                |> List.map (fun (project, _) ->
+                    PackageOperationPreviewScenario.snapshot
+                        project
+                        [ PackageOperationPreviewScenario.dimension
+                              project
+                              "net10.0"
+                              identity
+                              PackageOperationPreviewScenario.directShape ])
+
+            let targets =
+                projects
+                |> List.map (fun (project, _) ->
+                    PackageOperationPreviewScenario.target project "net10.0")
+
+            let fingerprints = projects |> List.map (fun (project, _) -> project, "hash") |> Map
+
+            let evidence =
+                PackageOperationPreviewScenario.evidence
+                    root
+                    snapshots
+                    (targets
+                     |> List.map (fun target -> PackageOperationPreviewScenario.graph target []))
+                    (Some(PackageOperationPreviewScenario.details identity selected rootFeed))
+                    (PackageSourceMappingPolicy.Allowed [])
+                    fingerprints
+
+            let sourceMappings =
+                projects
+                |> List.map (fun (project, feed) ->
+                    PackageOperationPreviewScenario.project project,
+                    PackageSourceMappingPolicy.Allowed [ feed ])
+                |> Map
+
+            let preview =
+                PackageOperationPreviewScenario.request
+                    root
+                    (RequestedPackageOperation.InstallVersion(identity, selected))
+                    targets
+                    None
+                    fingerprints
+                |> PackageOperationPreviewScenario.preview
+                    { evidence with
+                        SourceMappings = sourceMappings }
+                |> PackageOperationPreviewScenario.success
+
+            PackageOperationPreviewScenario.targets preview
+            |> List.map (fun target ->
+                PackageOperationPreviewScenario.targetProjectPath (
+                    PackageTargetPreview.target target
+                ),
+                (PackageTargetPreview.impact target).SourceMapping)
+            |> Map
+            |> should
+                equal
+                (Map
+                    [ rootProject, PackageSourceMappingImpact.ApplyAllowed [ rootFeed ]
+                      nestedProject, PackageSourceMappingImpact.ApplyAllowed [ nestedFeed ] ])
+        finally
+            Directory.Delete(root, true)
+
+    [<Fact>]
+    member _.``injected insensitive case policy matches owner paths and rejects ambiguous fingerprint keys``
+        ()
+        =
+        let root = PackageOperationPreviewScenario.temporaryDirectory ()
+
+        try
+            let identity = PackageOperationPreviewScenario.package "Example.Package"
+            let selected = PackageOperationPreviewScenario.version "2.0.0"
+            let feed = PackageOperationPreviewScenario.source "feed"
+            let project = Path.Combine(root, "Example.csproj")
+            let alternateCase = Path.Combine(root, "EXAMPLE.CSPROJ")
+            PackageOperationPreviewScenario.write project "original"
+
+            let requestedTarget =
+                PackageTargetScope.Project(PackageOperationPreviewScenario.project alternateCase)
+
+            let restoredTarget = PackageOperationPreviewScenario.target project "net10.0"
+
+            let snapshot =
+                PackageOperationPreviewScenario.snapshot
+                    project
+                    [ PackageOperationPreviewScenario.dimension
+                          project
+                          "net10.0"
+                          identity
+                          PackageOperationPreviewScenario.directShape ]
+
+            let evidence =
+                PackageOperationPreviewScenario.evidence
+                    root
+                    [ snapshot ]
+                    [ PackageOperationPreviewScenario.graph restoredTarget [] ]
+                    (Some(PackageOperationPreviewScenario.details identity selected feed))
+                    (PackageSourceMappingPolicy.Allowed [ feed ])
+                    (Map [ project, "hash" ])
+
+            let insensitiveEvidence =
+                { evidence with
+                    CaseSensitivity = FileSystemCaseSensitivity.Insensitive
+                    SourceMappings =
+                        Map
+                            [ PackageOperationPreviewScenario.project project,
+                              PackageSourceMappingPolicy.Allowed [ feed ] ] }
+
+            let insensitiveRequest fingerprints =
+                PackageOperationPreviewScenario.request
+                    root
+                    (RequestedPackageOperation.InstallVersion(identity, selected))
+                    [ requestedTarget
+                      PackageTargetScope.Project(PackageOperationPreviewScenario.project project) ]
+                    None
+                    fingerprints
+
+            let preview =
+                insensitiveRequest (Map [ alternateCase, "hash" ])
+                |> PackageOperationPreviewScenario.preview insensitiveEvidence
+                |> PackageOperationPreviewScenario.success
+
+            PackageOperationPreviewScenario.targets preview |> should haveLength 1
+
+            PackagePreview.ownerFiles preview
+            |> NonEmptyList.toList
+            |> should equal [ project ]
+
+            let ambiguous =
+                insensitiveRequest (Map [ project, "hash"; alternateCase, "hash" ])
+                |> PackageOperationPreviewScenario.preview insensitiveEvidence
+                |> PackageOperationPreviewScenario.failure
+
+            PackageFailure.kind ambiguous |> should equal PackageFailureKind.StaleState
+            PackageFailure.message ambiguous |> should haveSubstring "ambiguous"
         finally
             Directory.Delete(root, true)
 
@@ -1247,7 +1412,9 @@ type PackageOperationPreviewTests() =
                         { baseline with
                             Installed =
                                 [ PackageOperationPreviewScenario.graph target [ unresolved ] ]
-                            SourceMapping = PackageSourceMappingPolicy.Allowed [ feed ] }
+                            SourceMappings =
+                                baseline.SourceMappings
+                                |> Map.map (fun _ _ -> PackageSourceMappingPolicy.Allowed [ feed ]) }
                         request
                     |> PackageOperationPreviewScenario.failure
 
