@@ -89,13 +89,14 @@
           dotnet-workspace-explorer = workspaceExplorer pkgs;
 
           formatting-tools = pkgs.runCommand "dotnet-workspace-explorer-formatting-tools" {
-            nativeBuildInputs = formattingTools pkgs;
+            nativeBuildInputs = formattingTools pkgs ++ [ pkgs.fsautocomplete ];
           } ''
             export DOTNET_CLI_HOME="$TMPDIR"
             dotnet --version | grep -E '^10[.]'
             git --version
             fantomas --version | grep -F 'Fantomas v7.0.5'
             csharpier --version | grep -F '1.3.0'
+            fsautocomplete --version
             touch "$out"
           '';
         }

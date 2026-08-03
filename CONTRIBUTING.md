@@ -60,6 +60,16 @@ dotnet fantomas --check .
 dotnet csharpier check src/ProjectEvaluation
 ```
 
+## Clear F# diagnostics
+
+The Nix development shell includes FsAutoComplete. Before submitting an F# change, use
+FsAutoComplete to inspect every F# file you touched and clear its applicable warnings and
+suggestions.
+
+Use one FsAutoComplete process for the workspace and stop it when the check is complete. Do not run
+multiple language-server processes in parallel. FsAutoComplete is a local review tool, not a CI
+dependency; the compiler remains the deterministic warning gate.
+
 ## Tests and pull requests
 
 - Add focused tests for behavior changes.
