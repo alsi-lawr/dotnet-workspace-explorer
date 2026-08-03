@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <AssemblyName>Dotnet.WorkspaceExplorer.PackageExplorer</AssemblyName>
+        <RootNamespace>Dotnet.WorkspaceExplorer.PackageExplorer</RootNamespace>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../Packages/Dotnet.WorkspaceExplorer.Packages.fsproj" />
+        <PackageReference Include="FSharp.Core" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Compile Include="Application/PackagePorts.fs" />
+        <Compile Include="Startup/PackageStartup.fs" />
+    </ItemGroup>
+</Project>

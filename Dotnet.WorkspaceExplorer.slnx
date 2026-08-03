@@ -18,11 +18,14 @@
         <Project Path="src/WorkspaceEditing/Dotnet.WorkspaceExplorer.WorkspaceEditing.fsproj" />
         <Project Path="src/WorkspaceCommands/Dotnet.WorkspaceExplorer.WorkspaceCommands.fsproj" />
         <Project Path="src/CommandLine/Dotnet.WorkspaceExplorer.CommandLine.fsproj" />
+        <Project Path="src/Packages/Dotnet.WorkspaceExplorer.Packages.fsproj" />
+        <Project Path="src/PackageExplorer/Dotnet.WorkspaceExplorer.PackageExplorer.fsproj" />
         <Project Path="src/WorkspaceExplorer/Dotnet.WorkspaceExplorer.fsproj" />
     </Folder>
     <Folder Name="/tests/">
         <Project Path="tests/unit/Rpc/Dotnet.WorkspaceExplorer.Rpc.UnitTests.fsproj" />
         <Project Path="tests/unit/Workspaces/Dotnet.WorkspaceExplorer.Workspaces.UnitTests.fsproj" />
+        <Project Path="tests/unit/PackageExplorer/Dotnet.WorkspaceExplorer.PackageExplorer.UnitTests.fsproj" />
         <Project Path="tests/integration/ProjectEvaluation/Dotnet.WorkspaceExplorer.ProjectEvaluation.IntegrationTests.fsproj" />
         <Project Path="tests/integration/Workspaces/Dotnet.WorkspaceExplorer.Workspaces.IntegrationTests.fsproj" />
         <Project Path="tests/integration/Support/ScriptedDotnet/Dotnet.WorkspaceExplorer.Testing.ScriptedDotnet.fsproj" />

@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <AssemblyName>Dotnet.WorkspaceExplorer.Packages</AssemblyName>
+        <RootNamespace>Dotnet.WorkspaceExplorer.Packages</RootNamespace>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="FSharp.Core" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Compile Include="PackageValues.fs" />
+        <Compile Include="PackageTargets.fs" />
+        <Compile Include="PackageCatalog.fs" />
+        <Compile Include="PackageOperations.fs" />
+        <Compile Include="PackageFailures.fs" />
+    </ItemGroup>
+</Project>
