@@ -10,7 +10,7 @@ open Xunit
 [<Collection("Project evaluation scenarios")>]
 type CentralPackageOwnershipTests() =
     [<Fact>]
-    member _.``central package evaluation retains owner paths and exact item-group conditions for package membership``
+    member _.``central package evaluation retains owner paths and combined item-group and item conditions for package membership``
         ()
         =
         let directory = Test.temporaryDirectory "package-ownership"
@@ -27,7 +27,7 @@ type CentralPackageOwnershipTests() =
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
   </PropertyGroup>
   <ItemGroup Condition=" '$(TargetFramework)' == 'net8.0' ">
-    <PackageVersion Include="Example" Version="1.2.3" />
+    <PackageVersion Include="Example" Version="1.2.3" Condition=" '$(Configuration)' == 'Debug' " />
   </ItemGroup>
 </Project>
 """
@@ -38,7 +38,7 @@ type CentralPackageOwnershipTests() =
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
   <ItemGroup Condition=" '$(TargetFramework)' == 'net8.0' ">
-    <PackageReference Include="Example" />
+    <PackageReference Include="Example" Condition=" '$(Configuration)' == 'Debug' " />
   </ItemGroup>
 </Project>
 """
@@ -58,10 +58,14 @@ type CentralPackageOwnershipTests() =
                 Test.stringField "declaringPath" owner |> should equal root
 
                 Test.stringField "condition" membership
-                |> should equal " '$(TargetFramework)' == 'net8.0' "
+                |> should
+                    equal
+                    " '$(TargetFramework)' == 'net8.0'  AND  '$(Configuration)' == 'Debug' "
 
                 Test.stringField "condition" owner
-                |> should equal " '$(TargetFramework)' == 'net8.0' "
+                |> should
+                    equal
+                    " '$(TargetFramework)' == 'net8.0'  AND  '$(Configuration)' == 'Debug' "
 
                 3u)
         finally

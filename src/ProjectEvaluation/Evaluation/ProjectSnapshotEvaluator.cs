@@ -354,7 +354,7 @@ internal sealed class ProjectSnapshotEvaluator : IDisposable
                 item.EvaluatedInclude,
                 EmptyToNull(item.GetMetadataValue("Version")),
                 WorkspaceArtifactPath.Create(item.Xml.ContainingProject.FullPath),
-                item.Xml.Parent?.Condition ?? string.Empty
+                PackageCondition(item)
             ))
             .OrderBy(item => item.Id, StringComparer.Ordinal)
             .ThenBy(item => item.Condition, StringComparer.Ordinal)
@@ -365,7 +365,7 @@ internal sealed class ProjectSnapshotEvaluator : IDisposable
                 item.EvaluatedInclude,
                 EmptyToNull(item.GetMetadataValue("Version")),
                 WorkspaceArtifactPath.Create(item.Xml.ContainingProject.FullPath),
-                item.Xml.Parent?.Condition ?? string.Empty
+                PackageCondition(item)
             ))
             .OrderBy(item => item.Id, StringComparer.Ordinal)
             .ThenBy(item => item.Condition, StringComparer.Ordinal)
@@ -394,6 +394,14 @@ internal sealed class ProjectSnapshotEvaluator : IDisposable
             PackageVersions = packageVersions,
         };
     }
+
+    private static string PackageCondition(ProjectItem item) =>
+        string.Join(
+            " AND ",
+            new[] { item.Xml.Parent?.Condition, item.Xml.Condition }.Where(condition =>
+                !string.IsNullOrWhiteSpace(condition)
+            )
+        );
 
     private EvaluatedItem MaterializeItem(string projectPath, ProjectItem item, int ordinal) =>
         new(

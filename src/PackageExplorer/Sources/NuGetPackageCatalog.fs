@@ -11,6 +11,8 @@ type PackageCatalogPorts =
       Details: ReadPackageDetails
       Installed: ReadInstalledPackages
       RefreshInstalled: RefreshInstalledPackages
+      PreviewPrecondition: ReadPackagePreviewPrecondition
+      Preview: PreviewPackageOperation
       Cancel: CancelPackageWork }
 
 [<RequireQualifiedAccess>]
@@ -31,6 +33,8 @@ module NuGetPackageCatalog =
                 | PackageCancellation.Operation _ -> ()
             }
 
+        let previews = NuGetPackageOperationPreviews.createWith evaluatorFactory requests
+
         ({ ConfiguredSources = NuGetSources.configuredSources
            SourceMapping = NuGetSources.sourceMapping
            Search = NuGetPackageSearch.search requests
@@ -38,6 +42,8 @@ module NuGetPackageCatalog =
            Installed = NuGetInstalledPackages.readWithFactory evaluatorFactory
            RefreshInstalled =
              NuGetInstalledPackages.refreshWith evaluatorFactory runRestore requests
+           PreviewPrecondition = previews.ReadPrecondition
+           Preview = previews.Preview
            Cancel = cancel }
         : PackageCatalogPorts)
 

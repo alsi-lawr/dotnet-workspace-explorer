@@ -3,6 +3,7 @@ namespace Dotnet.WorkspaceExplorer.PackageExplorer
 open System
 open System.IO
 open Dotnet.WorkspaceExplorer.Packages
+open Dotnet.WorkspaceExplorer.Workspaces
 
 [<RequireQualifiedAccess>]
 module internal PackageOperationPreviews =
@@ -95,9 +96,13 @@ module internal PackageOperationPreviews =
             )
         | [ graph ] ->
             match graph.State with
-            | InstalledPackageGraphState.Current
+            | InstalledPackageGraphState.Current ->
+                currentPackage package graph
+                |> Result.map (fun installed -> installed, PackageGraphFreshness.Current)
             | InstalledPackageGraphState.UnverifiablyFreshRestoreGraph ->
                 currentPackage package graph
+                |> Result.map (fun installed ->
+                    installed, PackageGraphFreshness.AwaitingBackgroundRestore)
             | InstalledPackageGraphState.MissingRestoreGraph ->
                 Error(stale "The selected target has not been restored.")
             | InstalledPackageGraphState.MismatchedRestoreGraph ->
@@ -108,7 +113,8 @@ module internal PackageOperationPreviews =
 
     let private selectedVersion
         (operation: RequestedPackageOperation)
-        (details: PackageDetails option)
+        (package: PackageId)
+        (details: Map<NuGetVersion, PackageDetails>)
         =
         match operation with
         | RequestedPackageOperation.InstallVersion(_, version)
@@ -116,13 +122,25 @@ module internal PackageOperationPreviews =
         | RequestedPackageOperation.ConsolidateVersion(_, version) -> Ok(Some version)
         | RequestedPackageOperation.InstallLatest _
         | RequestedPackageOperation.UpdateLatest _ ->
-            match details with
-            | Some value -> Ok(Some value.Summary.Version)
-            | None ->
-                Error(
-                    unsupported
-                        "Package metadata is required to preview a latest-version package change."
-                )
+            details
+            |> Map.toList
+            |> List.map snd
+            |> List.filter (fun value ->
+                String.Equals(
+                    value.Summary.Identity.Value,
+                    package.Value,
+                    StringComparison.OrdinalIgnoreCase
+                ))
+            |> List.sortByDescending (fun value ->
+                NuGet.Versioning.NuGetVersion.Parse(value.Summary.Version.Value))
+            |> List.tryHead
+            |> function
+                | Some value -> Ok(Some value.Summary.Version)
+                | None ->
+                    Error(
+                        unsupported
+                            "Package metadata for the selected package is required to preview a latest-version change."
+                    )
         | RequestedPackageOperation.Uninstall _ -> Ok None
 
     let private resolvedVersion (installed: InstalledPackage option) =
@@ -154,28 +172,46 @@ module internal PackageOperationPreviews =
             with :? ArgumentException ->
                 PackageConsolidationPosition.Unusable
 
-    let private proposedState
+    let private targetChange
         (operation: RequestedPackageOperation)
         (version: NuGetVersion option)
         (ownership: PackageOwnership)
         (installed: InstalledPackage option)
         =
-        match operation, version with
-        | RequestedPackageOperation.Uninstall _, _ -> Ok ProposedPackageState.NotInstalled, None
-        | RequestedPackageOperation.ConsolidateVersion(_, destination), Some _ ->
-            let position = consolidationPosition destination installed
+        match operation, version, installed with
+        | (RequestedPackageOperation.InstallLatest _ | RequestedPackageOperation.InstallVersion _),
+          Some selected,
+          current ->
+            Ok(
+                PackageTargetChange.Install(
+                    current |> Option.map _.State,
+                    PackageOwnership.proposed selected ownership
+                )
+            )
+        | (RequestedPackageOperation.UpdateLatest _ | RequestedPackageOperation.UpdateVersion _),
+          Some selected,
+          Some current ->
+            Ok(
+                PackageTargetChange.Update(
+                    current.State,
+                    PackageOwnership.proposed selected ownership
+                )
+            )
+        | RequestedPackageOperation.Uninstall _, _, Some current ->
+            Ok(PackageTargetChange.Uninstall current.State)
+        | RequestedPackageOperation.ConsolidateVersion(_, destination), Some _, current ->
+            let position = consolidationPosition destination current
 
             let proposed =
                 match position with
                 | PackageConsolidationPosition.BelowDestination
                 | PackageConsolidationPosition.AboveDestination ->
-                    PackageOwnership.proposed destination ownership
+                    Some(PackageOwnership.proposed destination ownership)
                 | PackageConsolidationPosition.AlreadyOnDestination
-                | PackageConsolidationPosition.Unusable -> ProposedPackageState.Unchanged
+                | PackageConsolidationPosition.Unusable -> None
 
-            Ok proposed, Some position
-        | _, Some selected -> Ok(PackageOwnership.proposed selected ownership), None
-        | _ -> Error(invalid "The package operation does not identify a proposed version."), None
+            Ok(PackageTargetChange.Consolidate(current |> Option.map _.State, position, proposed))
+        | _ -> Error(invalid "The package operation does not identify a valid state change.")
 
     let private validateCurrent
         (operation: RequestedPackageOperation)
@@ -185,8 +221,12 @@ module internal PackageOperationPreviews =
         | (RequestedPackageOperation.InstallLatest _ | RequestedPackageOperation.InstallVersion _),
           Some { State = InstalledPackageState.Direct _ }
         | (RequestedPackageOperation.InstallLatest _ | RequestedPackageOperation.InstallVersion _),
-          Some { State = InstalledPackageState.CentrallyManagedDirect _ } ->
-            Error(invalid "The selected package is already installed directly in this target.")
+          Some { State = InstalledPackageState.CentrallyManagedDirect _ }
+        | (RequestedPackageOperation.InstallLatest _ | RequestedPackageOperation.InstallVersion _),
+          Some { State = InstalledPackageState.UnresolvedDirect _ }
+        | (RequestedPackageOperation.InstallLatest _ | RequestedPackageOperation.InstallVersion _),
+          Some { State = InstalledPackageState.UnresolvedCentrallyManagedDirect _ } ->
+            Error(invalid "The selected package is already declared directly in this target.")
         | (RequestedPackageOperation.UpdateLatest _ | RequestedPackageOperation.UpdateVersion _ | RequestedPackageOperation.Uninstall _),
           None -> Error(invalid "The selected package is not installed in this target.")
         | _ -> Ok()
@@ -197,57 +237,97 @@ module internal PackageOperationPreviews =
         | PackageTargetScope.Framework(_, framework)
         | PackageTargetScope.Runtime(_, framework, _) -> Some framework
 
+    let private compatibleDependencies
+        (target: PackageTargetScope)
+        (groups: Map<TargetFramework option, (PackageId * NuGetVersionRange) list>)
+        =
+        match frameworkOf target with
+        | None -> Map.tryFind None groups |> Option.defaultValue []
+        | Some framework ->
+            let targetFramework = NuGet.Frameworks.NuGetFramework.ParseFolder framework.Value
+
+            let candidates =
+                groups
+                |> Map.toList
+                |> List.choose (fun (candidate, dependencies) ->
+                    candidate
+                    |> Option.map (fun value ->
+                        NuGet.Frameworks.NuGetFramework.ParseFolder value.Value, dependencies))
+
+            let nearest =
+                NuGet.Frameworks
+                    .FrameworkReducer()
+                    .GetNearest(targetFramework, candidates |> List.map fst)
+
+            Option.ofObj nearest
+            |> Option.bind (fun selected ->
+                candidates |> List.tryFind (fun (candidate, _) -> candidate = selected))
+            |> Option.map snd
+            |> Option.orElseWith (fun () -> Map.tryFind None groups)
+            |> Option.defaultValue []
+
     let private metadataImpact
         (package: PackageId)
-        (version: NuGetVersion option)
+        (effectiveVersion: NuGetVersion option)
         (target: PackageTargetScope)
-        (details: PackageDetails option)
+        (details: Map<NuGetVersion, PackageDetails>)
         =
-        let matches =
-            details
-            |> Option.filter (fun value ->
-                String.Equals(
-                    value.Summary.Identity.Value,
-                    package.Value,
-                    StringComparison.OrdinalIgnoreCase
+        effectiveVersion
+        |> Option.bind (fun version ->
+            Map.tryFind version details |> Option.map (fun value -> version, value))
+        |> Option.filter (fun (version, value) ->
+            value.Summary.Version = version
+            && String.Equals(
+                value.Summary.Identity.Value,
+                package.Value,
+                StringComparison.OrdinalIgnoreCase
+            ))
+        |> function
+            | None -> PackageMetadataImpact.Unknown
+            | Some(_, value) ->
+                let dependencies =
+                    compatibleDependencies target value.DependencyGroups
+                    |> List.sortBy (fun (identity, range) -> identity.Value, range.Value)
+
+                let vulnerabilities =
+                    value.Vulnerabilities
+                    |> List.sortBy (fun item -> item.Severity, item.Advisory.AbsoluteUri)
+
+                PackageMetadataImpact.Known(
+                    dependencies,
+                    value.Deprecation,
+                    vulnerabilities,
+                    value.License
                 )
-                && (version |> Option.forall (fun selected -> selected = value.Summary.Version)))
-
-        match matches with
-        | None -> PackageMetadataImpact.Unknown
-        | Some value ->
-            let dependencies =
-                frameworkOf target
-                |> Option.bind (fun framework ->
-                    Map.tryFind (Some framework) value.DependencyGroups)
-                |> Option.orElseWith (fun () -> Map.tryFind None value.DependencyGroups)
-                |> Option.defaultValue []
-                |> List.sortBy (fun (identity, range) -> identity.Value, range.Value)
-
-            let vulnerabilities =
-                value.Vulnerabilities
-                |> List.sortBy (fun item -> item.Severity, item.Advisory.AbsoluteUri)
-
-            PackageMetadataImpact.Known(
-                dependencies,
-                value.Deprecation,
-                vulnerabilities,
-                value.License
-            )
 
     let private sortedSources (sources: PackageSourceId list) =
         sources |> List.distinct |> List.sortBy _.Value
 
     let private mappingImpact
+        (package: PackageId)
         (browseSource: PackageSourceId option)
+        (freshness: PackageGraphFreshness)
         (policy: PackageSourceMappingPolicy)
         =
+        let unknown sources =
+            PackageSourceMappingImpact.UnknownTransitiveConsequences(
+                sortedSources sources,
+                browseSource
+            )
+
         match policy with
-        | PackageSourceMappingPolicy.KnownConflict(package, _) ->
+        | PackageSourceMappingPolicy.KnownConflict(conflict, _) when conflict = package ->
             Error(
                 unsupported
                     $"Package source mapping does not allow '{package.Value}' for the selected operation."
             )
+        | PackageSourceMappingPolicy.KnownConflict(_, sources) -> Ok(unknown sources)
+        | PackageSourceMappingPolicy.InsufficientRestoredTransitiveEvidence sources ->
+            Ok(unknown sources)
+        | PackageSourceMappingPolicy.Allowed sources when
+            freshness = PackageGraphFreshness.AwaitingBackgroundRestore
+            ->
+            Ok(unknown sources)
         | PackageSourceMappingPolicy.Allowed sources ->
             let allowed = sortedSources sources
 
@@ -255,18 +335,27 @@ module internal PackageOperationPreviews =
             | Some browsed ->
                 Ok(PackageSourceMappingImpact.BrowseSourceDoesNotConstrainApply(browsed, allowed))
             | None -> Ok(PackageSourceMappingImpact.ApplyAllowed allowed)
-        | PackageSourceMappingPolicy.InsufficientRestoredTransitiveEvidence sources ->
-            Ok(
-                PackageSourceMappingImpact.UnknownTransitiveConsequences(
-                    sortedSources sources,
-                    browseSource
-                )
-            )
 
-    let private normalizeFingerprints (fingerprints: Map<string, string>) =
+    let private pathKey root path =
+        let full = Path.GetFullPath path
+        let sensitivity = FileSystemCaseSensitivityDetector.DetectFromExistingPath root
+
+        if sensitivity = FileSystemCaseSensitivity.Insensitive then
+            full.ToUpperInvariant()
+        else
+            full
+
+    let private orderedPaths root paths =
+        paths
+        |> List.map Path.GetFullPath
+        |> List.distinctBy (pathKey root)
+        |> List.sortBy (pathKey root)
+
+    let private normalizeFingerprints root (fingerprints: Map<string, string>) =
         fingerprints
         |> Map.toList
-        |> List.map (fun (path, fingerprint) -> Path.GetFullPath path, fingerprint)
+        |> List.map (fun (path, fingerprint) ->
+            pathKey root path, (Path.GetFullPath path, fingerprint))
         |> Map.ofList
 
     let private verifyPrecondition
@@ -277,18 +366,28 @@ module internal PackageOperationPreviews =
         if request.Precondition.WorkspaceRevision <> evidence.WorkspaceRevision then
             Error(stale "The workspace revision changed before the package preview was created.")
         else
-            let expected = normalizeFingerprints request.Precondition.FileFingerprints
-            let current = normalizeFingerprints evidence.FileFingerprints
+            let expected =
+                normalizeFingerprints evidence.WorkspaceRoot request.Precondition.FileFingerprints
+
+            let current = normalizeFingerprints evidence.WorkspaceRoot evidence.FileFingerprints
 
             let unchanged =
                 ownerFiles
                 |> List.forall (fun path ->
-                    match Map.tryFind path expected, Map.tryFind path current with
-                    | Some expectedValue, Some currentValue -> expectedValue = currentValue
+                    let key = pathKey evidence.WorkspaceRoot path
+
+                    match Map.tryFind key expected, Map.tryFind key current with
+                    | Some(_, expectedValue), Some(_, currentValue) -> expectedValue = currentValue
                     | _ -> false)
 
             if unchanged then
-                Ok(ownerFiles |> List.map (fun path -> path, current[path]) |> Map.ofList)
+                ownerFiles
+                |> List.map (fun path ->
+                    let key = pathKey evidence.WorkspaceRoot path
+                    let currentPath, fingerprint = current[key]
+                    currentPath, fingerprint)
+                |> Map.ofList
+                |> Ok
             else
                 Error(stale "A package owner file changed before the preview was created.")
 
@@ -297,45 +396,54 @@ module internal PackageOperationPreviews =
         (request: PackageOperationRequest)
         (package: PackageId)
         (version: NuGetVersion option)
-        (mapping: PackageSourceMappingImpact)
         (target: PackageTargetScope)
         =
         targetState package evidence.Installed target
-        |> Result.bind (fun installed ->
+        |> Result.bind (fun (installed, freshness) ->
             validateCurrent request.Operation installed
             |> Result.bind (fun () ->
-                PackageOwnership.resolve
-                    evidence.WorkspaceRoot
-                    evidence.Evaluations
-                    request.Operation
-                    package
-                    target
-                    installed
-                |> Result.mapError (PackageOwnership.failureMessage >> unsupported)
-                |> Result.bind (fun ownership ->
-                    let proposed, consolidation =
-                        proposedState request.Operation version ownership installed
+                mappingImpact package request.BrowseSource freshness evidence.SourceMapping
+                |> Result.bind (fun mapping ->
+                    PackageOwnership.resolve
+                        evidence.WorkspaceRoot
+                        evidence.Evaluations
+                        request.Operation
+                        package
+                        target
+                        installed
+                    |> Result.mapError (PackageOwnership.failureMessage >> unsupported)
+                    |> Result.bind (fun ownership ->
+                        targetChange request.Operation version ownership installed
+                        |> Result.bind (fun change ->
+                            let owners =
+                                PackageOwnership.ownerFiles request.Operation ownership
+                                |> orderedPaths evidence.WorkspaceRoot
+                                |> NonEmptyList.tryCreate
+                                |> Option.defaultWith (fun () ->
+                                    invalidOp
+                                        "Package ownership must identify at least one file.")
 
-                    proposed
-                    |> Result.map (fun proposedState ->
-                        let owners =
-                            PackageOwnership.ownerFiles request.Operation ownership
-                            |> List.map Path.GetFullPath
-                            |> List.distinct
-                            |> List.sort
-                            |> NonEmptyList.tryCreate
-                            |> Option.defaultWith (fun () ->
-                                invalidOp "Package ownership must identify at least one file.")
+                            let effectiveMetadataVersion =
+                                match request.Operation with
+                                | RequestedPackageOperation.Uninstall _ ->
+                                    resolvedVersion installed
+                                | _ -> version
 
-                        { Target = target
-                          Current = installed |> Option.map _.State
-                          Proposed = proposedState
-                          OwnerFiles = owners
-                          Consolidation = consolidation
-                          Impact =
-                            { Metadata = metadataImpact package version target evidence.Details
-                              SourceMapping = mapping
-                              Restore = PackageRestoreImpact.RequiredWithUnknownOutcome } }))))
+                            let impact =
+                                { Metadata =
+                                    metadataImpact
+                                        package
+                                        effectiveMetadataVersion
+                                        target
+                                        evidence.Details
+                                  SourceMapping = mapping
+                                  Restore =
+                                    PackageRestoreImpact.RequiredWithUnknownOutcome freshness }
+
+                            PackageTargetPreview.create target change owners freshness impact
+                            |> Result.mapError (fun violation ->
+                                invalid
+                                    $"The package target preview is invalid ({violation})."))))))
 
     let private collect (results: Result<PackageTargetPreview, PackageFailure> list) =
         results
@@ -354,42 +462,38 @@ module internal PackageOperationPreviews =
         let package = packageOf request.Value.Operation
         let targets = expandTargets evidence.Installed request.Value.Targets
 
-        match selectedVersion request.Value.Operation evidence.Details with
+        match selectedVersion request.Value.Operation package evidence.Details with
         | Error error -> Error error
         | Ok version ->
-            match mappingImpact request.Value.BrowseSource evidence.SourceMapping with
+            match
+                targets
+                |> List.map (planTarget evidence request.Value package version)
+                |> collect
+            with
             | Error error -> Error error
-            | Ok mapping ->
-                match
-                    targets
-                    |> List.map (planTarget evidence request.Value package version mapping)
-                    |> collect
-                with
-                | Error error -> Error error
-                | Ok previews ->
-                    match NonEmptyList.tryCreate previews with
-                    | None -> Error(invalid "A package preview requires at least one target.")
-                    | Some previewTargets ->
-                        let owners =
-                            previews
-                            |> List.collect (_.OwnerFiles >> NonEmptyList.toList)
-                            |> List.distinct
-                            |> List.sort
+            | Ok previews ->
+                match NonEmptyList.tryCreate previews with
+                | None -> Error(invalid "A package preview requires at least one target.")
+                | Some previewTargets ->
+                    let owners =
+                        previews
+                        |> List.collect (PackageTargetPreview.ownerFiles >> NonEmptyList.toList)
+                        |> orderedPaths evidence.WorkspaceRoot
 
-                        match NonEmptyList.tryCreate owners with
-                        | None -> Error(invalid "A package preview requires an owner file.")
-                        | Some ownerFiles ->
-                            match verifyPrecondition request.Value evidence owners with
-                            | Error error -> Error error
-                            | Ok fingerprints ->
-                                PackagePreview.create
-                                    request.Value.Operation
-                                    previewTargets
-                                    ownerFiles
-                                    evidence.WorkspaceRevision
-                                    fingerprints
-                                |> Result.mapError (fun violation ->
-                                    invalid $"The package preview is invalid ({violation}).")
+                    match NonEmptyList.tryCreate owners with
+                    | None -> Error(invalid "A package preview requires an owner file.")
+                    | Some ownerFiles ->
+                        match verifyPrecondition request.Value evidence owners with
+                        | Error error -> Error error
+                        | Ok fingerprints ->
+                            PackagePreview.create
+                                request.Value.Operation
+                                previewTargets
+                                ownerFiles
+                                evidence.WorkspaceRevision
+                                fingerprints
+                            |> Result.mapError (fun violation ->
+                                invalid $"The package preview is invalid ({violation}).")
 
     let create (readEvidence: ReadPackageOperationPreviewEvidence) : PreviewPackageOperation =
         fun request ->

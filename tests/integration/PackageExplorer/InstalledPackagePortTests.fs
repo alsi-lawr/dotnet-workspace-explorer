@@ -395,3 +395,65 @@ type InstalledPackagePortTests() =
                 PackageFailure.code error |> should equal "DWE-PACKAGE-CANCELLED"
         finally
             InstalledPortScenario.delete workspace
+
+    [<Fact>]
+    member _.``production preview composition evaluates and fingerprints without invoking package restore``
+        ()
+        =
+        let workspace = InstalledPortScenario.createWorkspace "preview-read-only"
+
+        try
+            let mutable restoreStarts = 0
+
+            let runRestore _ _ _ =
+                async {
+                    restoreStarts <- restoreStarts + 1
+                    return failwith "Preview must not invoke restore."
+                }
+
+            let catalog =
+                NuGetPackageCatalog.createWith InstalledPortScenario.evaluatorFactory runRestore
+
+            let target = InstalledPortScenario.fileTarget workspace.Project
+
+            let identity =
+                PackageId.create "Preview.Package" |> Result.defaultWith (failwithf "%A")
+
+            let version = NuGetVersion.create "1.0.0" |> Result.defaultWith (failwithf "%A")
+
+            let project =
+                PackageProjectId.create workspace.Project |> Result.defaultWith (failwithf "%A")
+
+            let initial =
+                { Id = PackageRequestId.newId ()
+                  Target = target
+                  Value =
+                    { Operation = RequestedPackageOperation.InstallVersion(identity, version)
+                      Targets = NonEmptyList.singleton (PackageTargetScope.Project project)
+                      BrowseSource = None
+                      Precondition =
+                        { WorkspaceRevision = "pending"
+                          FileFingerprints = Map.empty } } }
+
+            let precondition =
+                catalog.PreviewPrecondition initial
+                |> Async.RunSynchronously
+                |> Result.defaultWith (fun error -> failwith (PackageFailure.message error))
+
+            let request =
+                { initial with
+                    Value =
+                        { initial.Value with
+                            Precondition = precondition } }
+
+            let preview =
+                catalog.Preview request
+                |> Async.RunSynchronously
+                |> Result.defaultWith (fun error -> failwith (PackageFailure.message error))
+
+            PackagePreview.workspaceRevision preview
+            |> should equal precondition.WorkspaceRevision
+
+            restoreStarts |> should equal 0
+        finally
+            InstalledPortScenario.delete workspace

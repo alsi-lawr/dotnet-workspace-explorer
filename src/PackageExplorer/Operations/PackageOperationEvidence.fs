@@ -7,7 +7,7 @@ type internal PackageOperationPreviewEvidence =
     { WorkspaceRoot: string
       Evaluations: ProjectEvaluationSnapshot list
       Installed: InstalledPackageGraph list
-      Details: PackageDetails option
+      Details: Map<NuGetVersion, PackageDetails>
       SourceMapping: PackageSourceMappingPolicy
       WorkspaceRevision: string
       FileFingerprints: Map<string, string> }

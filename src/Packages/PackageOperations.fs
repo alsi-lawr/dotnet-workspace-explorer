@@ -21,10 +21,8 @@ type PackageOperationRequest =
 
 [<RequireQualifiedAccess>]
 type ProposedPackageState =
-    | NotInstalled
     | Direct of version: NuGetVersion
     | CentrallyManaged of version: NuGetVersion * ownerFile: string
-    | Unchanged
 
 [<RequireQualifiedAccess>]
 type PackageConsolidationPosition =
@@ -32,6 +30,21 @@ type PackageConsolidationPosition =
     | BelowDestination
     | AboveDestination
     | Unusable
+
+[<RequireQualifiedAccess>]
+type PackageGraphFreshness =
+    | Current
+    | AwaitingBackgroundRestore
+
+[<RequireQualifiedAccess>]
+type PackageTargetChange =
+    | Install of current: InstalledPackageState option * proposed: ProposedPackageState
+    | Update of current: InstalledPackageState * proposed: ProposedPackageState
+    | Uninstall of current: InstalledPackageState
+    | Consolidate of
+        current: InstalledPackageState option *
+        position: PackageConsolidationPosition *
+        proposed: ProposedPackageState option
 
 [<RequireQualifiedAccess>]
 type PackageMetadataImpact =
@@ -53,7 +66,7 @@ type PackageSourceMappingImpact =
         browseSource: PackageSourceId option
 
 [<RequireQualifiedAccess>]
-type PackageRestoreImpact = | RequiredWithUnknownOutcome
+type PackageRestoreImpact = RequiredWithUnknownOutcome of graph: PackageGraphFreshness
 
 type PackageTargetImpact =
     { Metadata: PackageMetadataImpact
@@ -61,12 +74,39 @@ type PackageTargetImpact =
       Restore: PackageRestoreImpact }
 
 type PackageTargetPreview =
-    { Target: PackageTargetScope
-      Current: InstalledPackageState option
-      Proposed: ProposedPackageState
-      OwnerFiles: NonEmptyList<string>
-      Consolidation: PackageConsolidationPosition option
-      Impact: PackageTargetImpact }
+    private
+        { Target: PackageTargetScope
+          Change: PackageTargetChange
+          OwnerFiles: NonEmptyList<string>
+          GraphFreshness: PackageGraphFreshness
+          Impact: PackageTargetImpact }
+
+[<RequireQualifiedAccess>]
+module PackageTargetPreview =
+    let create target change ownerFiles graphFreshness impact =
+        let owners = ownerFiles |> NonEmptyList.toList
+
+        let restoreMatches =
+            match impact.Restore with
+            | PackageRestoreImpact.RequiredWithUnknownOutcome evidence -> evidence = graphFreshness
+
+        if owners |> List.exists System.String.IsNullOrWhiteSpace then
+            Error(PackageContractViolation.MissingValue "ownerFiles")
+        elif not restoreMatches then
+            Error(PackageContractViolation.InvalidValue "graphFreshness")
+        else
+            Ok
+                { Target = target
+                  Change = change
+                  OwnerFiles = ownerFiles
+                  GraphFreshness = graphFreshness
+                  Impact = impact }
+
+    let target preview = preview.Target
+    let change preview = preview.Change
+    let ownerFiles preview = preview.OwnerFiles
+    let graphFreshness preview = preview.GraphFreshness
+    let impact preview = preview.Impact
 
 type PackagePreview =
     private
@@ -78,8 +118,19 @@ type PackagePreview =
 
 [<RequireQualifiedAccess>]
 module PackagePreview =
+    let private operationMatches operation target =
+        match operation, PackageTargetPreview.change target with
+        | (RequestedPackageOperation.InstallLatest _ | RequestedPackageOperation.InstallVersion _),
+          PackageTargetChange.Install _
+        | (RequestedPackageOperation.UpdateLatest _ | RequestedPackageOperation.UpdateVersion _),
+          PackageTargetChange.Update _
+        | RequestedPackageOperation.Uninstall _, PackageTargetChange.Uninstall _
+        | RequestedPackageOperation.ConsolidateVersion _, PackageTargetChange.Consolidate _ -> true
+        | _ -> false
+
     let create operation targets ownerFiles workspaceRevision fileFingerprints =
         let ownerPaths = ownerFiles |> NonEmptyList.toList
+        let targetValues = targets |> NonEmptyList.toList
 
         let validFingerprints =
             ownerPaths
@@ -89,8 +140,32 @@ module PackagePreview =
                    |> Map.tryFind path
                    |> Option.exists (System.String.IsNullOrWhiteSpace >> not))
 
+        let exactOwners =
+            targetValues
+            |> List.collect (PackageTargetPreview.ownerFiles >> NonEmptyList.toList)
+            |> Set.ofList
+            |> (=) (Set.ofList ownerPaths)
+
+        let exactFingerprints =
+            fileFingerprints |> Map.keys |> Set.ofSeq |> (=) (Set.ofList ownerPaths)
+
+        let uniqueTargets =
+            targetValues
+            |> List.map PackageTargetPreview.target
+            |> List.distinct
+            |> List.length
+            |> (=) targetValues.Length
+
         if System.String.IsNullOrWhiteSpace workspaceRevision then
             Error(PackageContractViolation.MissingValue "workspaceRevision")
+        elif not (targetValues |> List.forall (operationMatches operation)) then
+            Error(PackageContractViolation.InvalidValue "targetChanges")
+        elif not uniqueTargets then
+            Error(PackageContractViolation.InvalidValue "targets")
+        elif not exactOwners then
+            Error(PackageContractViolation.InvalidValue "ownerFiles")
+        elif not exactFingerprints then
+            Error(PackageContractViolation.InvalidValue "fileFingerprints")
         elif not validFingerprints then
             Error(PackageContractViolation.MissingValue "fileFingerprints")
         else

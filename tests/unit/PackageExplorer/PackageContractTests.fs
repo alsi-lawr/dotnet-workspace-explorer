@@ -93,16 +93,19 @@ type PackageContractTests() =
         let impact =
             { Metadata = PackageMetadataImpact.Unknown
               SourceMapping = PackageSourceMappingImpact.ApplyAllowed []
-              Restore = PackageRestoreImpact.RequiredWithUnknownOutcome }
+              Restore =
+                PackageRestoreImpact.RequiredWithUnknownOutcome PackageGraphFreshness.Current }
 
-        let targets =
-            NonEmptyList.singleton
-                { Target = target
-                  Current = None
-                  Proposed = ProposedPackageState.Direct version
-                  OwnerFiles = NonEmptyList.singleton "src/Example.csproj"
-                  Consolidation = None
-                  Impact = impact }
+        let targetPreview =
+            PackageTargetPreview.create
+                target
+                (PackageTargetChange.Install(None, ProposedPackageState.Direct version))
+                (NonEmptyList.singleton "src/Example.csproj")
+                PackageGraphFreshness.Current
+                impact
+            |> Result.defaultWith (failwithf "%A")
+
+        let targets = NonEmptyList.singleton targetPreview
 
         let owners = NonEmptyList.singleton "src/Example.csproj"
 
@@ -112,7 +115,16 @@ type PackageContractTests() =
 
         PackagePreview.create operation targets owners "revision" Map.empty
         |> PackageContractScenario.violation
-        |> should equal (PackageContractViolation.MissingValue "fileFingerprints")
+        |> should equal (PackageContractViolation.InvalidValue "fileFingerprints")
+
+        PackagePreview.create
+            (RequestedPackageOperation.Uninstall package)
+            targets
+            owners
+            "revision"
+            (Map [ "src/Example.csproj", "hash" ])
+        |> PackageContractScenario.violation
+        |> should equal (PackageContractViolation.InvalidValue "targetChanges")
 
     [<Fact>]
     member _.``package failure contracts derive stable codes from one failure classification``() =

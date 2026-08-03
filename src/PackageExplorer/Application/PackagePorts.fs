@@ -75,6 +75,10 @@ type ReadPackageUpdates =
 type ReadPackageConsolidation =
     PackageRequest<unit> -> Async<Result<PackageConsolidation list, PackageFailure>>
 
+type ReadPackagePreviewPrecondition =
+    PackageRequest<PackageOperationRequest>
+        -> Async<Result<PackagePreviewPrecondition, PackageFailure>>
+
 type PreviewPackageOperation =
     PackageRequest<PackageOperationRequest> -> Async<Result<PackagePreview, PackageFailure>>
 

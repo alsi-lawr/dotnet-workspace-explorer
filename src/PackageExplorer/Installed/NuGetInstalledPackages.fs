@@ -12,6 +12,11 @@ open Dotnet.WorkspaceExplorer.ProjectEvaluation
 open Dotnet.WorkspaceExplorer.Solutions
 open Dotnet.WorkspaceExplorer.Workspaces
 
+
+type internal InstalledPackageEvaluation =
+    { Snapshot: ProjectEvaluationSnapshot
+      Graphs: InstalledPackageGraph list }
+
 [<RequireQualifiedAccess>]
 module internal NuGetInstalledPackages =
     let private failure kind message retry =
@@ -164,15 +169,17 @@ module internal NuGetInstalledPackages =
                             InstalledPackageGraphs.configurationFor snapshot projectTarget catalog
 
                         return
-                            InstalledPackageGraphs.readSnapshot
-                                { configuration with
-                                    RestoreVerified = restoreVerified }
-                                snapshot
-                                (assetsPath snapshot)
+                            { Snapshot = snapshot
+                              Graphs =
+                                InstalledPackageGraphs.readSnapshot
+                                    { configuration with
+                                        RestoreVerified = restoreVerified }
+                                    snapshot
+                                    (assetsPath snapshot) }
                             |> Ok
         }
 
-    let private readResolved
+    let private readEvaluationResolved
         (evaluator: ProjectEvaluator)
         restoreVerified
         (request: PackageRequest<unit>)
@@ -194,18 +201,10 @@ module internal NuGetInstalledPackages =
                     | Ok _ -> None)
             with
             | Some error -> return Error error
-            | None ->
-                return
-                    results
-                    |> Array.choose (function
-                        | Ok graphs -> Some graphs
-                        | Error _ -> None)
-                    |> Array.collect List.toArray
-                    |> Array.toList
-                    |> Ok
+            | None -> return results |> Array.choose Result.toOption |> Array.toList |> Ok
         }
 
-    let readWithEvaluator (evaluator: ProjectEvaluator) (request: PackageRequest<unit>) =
+    let readEvaluationWithEvaluator (evaluator: ProjectEvaluator) (request: PackageRequest<unit>) =
         async {
             let! projects = projectPaths request.Target
 
@@ -219,7 +218,13 @@ module internal NuGetInstalledPackages =
                             "The package explorer target contains no supported projects."
                             PackageFailureRetry.AfterUserAction
                     )
-            | Ok resolved -> return! readResolved evaluator false request resolved
+            | Ok resolved -> return! readEvaluationResolved evaluator false request resolved
+        }
+
+    let readWithEvaluator (evaluator: ProjectEvaluator) (request: PackageRequest<unit>) =
+        async {
+            let! evaluated = readEvaluationWithEvaluator evaluator request
+            return evaluated |> Result.map (List.collect _.Graphs)
         }
 
     let readWithFactory
@@ -302,7 +307,10 @@ module internal NuGetInstalledPackages =
                             let evaluator = evaluatorFactory ()
 
                             try
-                                return! readResolved evaluator true request resolved
+                                let! evaluated =
+                                    readEvaluationResolved evaluator true request resolved
+
+                                return evaluated |> Result.map (List.collect _.Graphs)
                             finally
                                 evaluator.DisposeAsync().AsTask().GetAwaiter().GetResult()
                 finally

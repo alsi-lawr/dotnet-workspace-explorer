@@ -213,7 +213,10 @@ module private PackageOperationPreviewScenario =
         { WorkspaceRoot = root
           Evaluations = evaluations
           Installed = graphs
-          Details = details
+          Details =
+            details
+            |> Option.map (fun value -> Map [ value.Summary.Version, value ])
+            |> Option.defaultValue Map.empty
           SourceMapping = mapping
           WorkspaceRevision = "42"
           FileFingerprints = fingerprints }
@@ -330,19 +333,24 @@ type PackageOperationPreviewTests() =
                 |> PackageOperationPreviewScenario.targets
                 |> List.exactlyOne
 
-            install.Proposed |> should equal (ProposedPackageState.Direct two)
-            install.Current |> should equal None
-            install.OwnerFiles |> NonEmptyList.toList |> should equal [ directProject ]
+            PackageTargetPreview.change install
+            |> should equal (PackageTargetChange.Install(None, ProposedPackageState.Direct two))
 
-            install.Impact.Restore
-            |> should equal PackageRestoreImpact.RequiredWithUnknownOutcome
+            PackageTargetPreview.ownerFiles install
+            |> NonEmptyList.toList
+            |> should equal [ directProject ]
 
-            install.Impact.SourceMapping
+            (PackageTargetPreview.impact install).Restore
+            |> should
+                equal
+                (PackageRestoreImpact.RequiredWithUnknownOutcome PackageGraphFreshness.Current)
+
+            (PackageTargetPreview.impact install).SourceMapping
             |> should
                 equal
                 (PackageSourceMappingImpact.BrowseSourceDoesNotConstrainApply(browse, [ apply ]))
 
-            match install.Impact.Metadata with
+            match (PackageTargetPreview.impact install).Metadata with
             | PackageMetadataImpact.Known(dependencies, deprecation, vulnerabilities, license) ->
                 dependencies
                 |> List.map (fst >> _.Value)
@@ -388,10 +396,17 @@ type PackageOperationPreviewTests() =
                 |> PackageOperationPreviewScenario.targets
                 |> List.exactlyOne
 
-            update.Proposed
-            |> should equal (ProposedPackageState.CentrallyManaged(two, centralOwner))
+            PackageTargetPreview.change update
+            |> should
+                equal
+                (PackageTargetChange.Update(
+                    centralInstalled.State,
+                    ProposedPackageState.CentrallyManaged(two, centralOwner)
+                ))
 
-            update.OwnerFiles |> NonEmptyList.toList |> should equal [ centralOwner ]
+            PackageTargetPreview.ownerFiles update
+            |> NonEmptyList.toList
+            |> should equal [ centralOwner ]
 
             let directInstalled =
                 PackageOperationPreviewScenario.installed
@@ -403,7 +418,7 @@ type PackageOperationPreviewTests() =
                 { installEvidence with
                     Installed =
                         [ PackageOperationPreviewScenario.graph directTarget [ directInstalled ] ]
-                    Details = None }
+                    Details = Map.empty }
 
             let uninstall =
                 PackageOperationPreviewScenario.request
@@ -417,9 +432,11 @@ type PackageOperationPreviewTests() =
                 |> PackageOperationPreviewScenario.targets
                 |> List.exactlyOne
 
-            uninstall.Current |> should equal (Some directInstalled.State)
-            uninstall.Proposed |> should equal ProposedPackageState.NotInstalled
-            uninstall.Impact.Metadata |> should equal PackageMetadataImpact.Unknown
+            PackageTargetPreview.change uninstall
+            |> should equal (PackageTargetChange.Uninstall directInstalled.State)
+
+            (PackageTargetPreview.impact uninstall).Metadata
+            |> should equal PackageMetadataImpact.Unknown
         finally
             Directory.Delete(root, true)
 
@@ -499,7 +516,7 @@ type PackageOperationPreviewTests() =
                 |> PackageOperationPreviewScenario.success
 
             PackageOperationPreviewScenario.targets first
-            |> List.map (fun target -> target.Target)
+            |> List.map PackageTargetPreview.target
             |> should
                 equal
                 [ PackageOperationPreviewScenario.target alpha "net10.0"
@@ -595,23 +612,53 @@ type PackageOperationPreviewTests() =
 
             PackageOperationPreviewScenario.targets preview
             |> List.map (fun target ->
-                Path.GetFileName((PackageOperationPreviewScenario.targetProjectPath target.Target)),
-                target.Consolidation,
-                target.Proposed)
+                Path.GetFileName(
+                    (PackageOperationPreviewScenario.targetProjectPath (
+                        PackageTargetPreview.target target
+                    ))
+                ),
+                PackageTargetPreview.change target)
             |> should
                 equal
                 [ "Above.csproj",
-                  Some PackageConsolidationPosition.AboveDestination,
-                  ProposedPackageState.Direct destination
+                  PackageTargetChange.Consolidate(
+                      Some(
+                          InstalledPackageState.Direct(
+                              PackageVersionSelection.Exact(
+                                  PackageOperationPreviewScenario.version "3.0.0"
+                              ),
+                              PackageOperationPreviewScenario.version "3.0.0"
+                          )
+                      ),
+                      PackageConsolidationPosition.AboveDestination,
+                      Some(ProposedPackageState.Direct destination)
+                  )
                   "Already.csproj",
-                  Some PackageConsolidationPosition.AlreadyOnDestination,
-                  ProposedPackageState.Unchanged
+                  PackageTargetChange.Consolidate(
+                      Some(
+                          InstalledPackageState.Direct(
+                              PackageVersionSelection.Exact destination,
+                              destination
+                          )
+                      ),
+                      PackageConsolidationPosition.AlreadyOnDestination,
+                      None
+                  )
                   "Below.csproj",
-                  Some PackageConsolidationPosition.BelowDestination,
-                  ProposedPackageState.Direct destination
+                  PackageTargetChange.Consolidate(
+                      Some(
+                          InstalledPackageState.Direct(
+                              PackageVersionSelection.Exact(
+                                  PackageOperationPreviewScenario.version "1.0.0"
+                              ),
+                              PackageOperationPreviewScenario.version "1.0.0"
+                          )
+                      ),
+                      PackageConsolidationPosition.BelowDestination,
+                      Some(ProposedPackageState.Direct destination)
+                  )
                   "Unusable.csproj",
-                  Some PackageConsolidationPosition.Unusable,
-                  ProposedPackageState.Unchanged ]
+                  PackageTargetChange.Consolidate(None, PackageConsolidationPosition.Unusable, None) ]
         finally
             Directory.Delete(root, true)
 
@@ -677,7 +724,7 @@ type PackageOperationPreviewTests() =
                 |> PackageOperationPreviewScenario.targets
                 |> List.exactlyOne
 
-            unknown.Impact.SourceMapping
+            (PackageTargetPreview.impact unknown).SourceMapping
             |> should
                 equal
                 (PackageSourceMappingImpact.UnknownTransitiveConsequences([ feed ], None))
@@ -967,7 +1014,6 @@ type PackageOperationPreviewTests() =
             |> List.iter (fun (path, content) -> PackageOperationPreviewScenario.write path content)
 
             let before = files |> List.map (fun (path, _) -> path, File.ReadAllBytes path)
-            let mutable subprocessStarts = 0
             let target = PackageOperationPreviewScenario.target project "net10.0"
 
             let snapshot =
@@ -999,11 +1045,7 @@ type PackageOperationPreviewTests() =
                     fingerprints
 
             let previewPort =
-                PackageOperationPreviews.create (fun _ ->
-                    async {
-                        // There is deliberately no process callback at this read-only boundary.
-                        return Ok evidence
-                    })
+                PackageOperationPreviews.create (fun _ -> async { return Ok evidence })
 
             previewPort request
             |> Async.RunSynchronously
@@ -1011,9 +1053,205 @@ type PackageOperationPreviewTests() =
             |> PackagePreview.workspaceRevision
             |> should equal "42"
 
-            subprocessStarts |> should equal 0
 
             before
             |> List.iter (fun (path, bytes) -> File.ReadAllBytes path |> should equal bytes)
+        finally
+            Directory.Delete(root, true)
+
+    [<Fact>]
+    member _.``latest and uninstall metadata must match package versions while compatible dependency groups reduce to the selected framework``
+        ()
+        =
+        let root = PackageOperationPreviewScenario.temporaryDirectory ()
+
+        try
+            let identity = PackageOperationPreviewScenario.package "Example.Package"
+            let other = PackageOperationPreviewScenario.package "Other.Package"
+            let one = PackageOperationPreviewScenario.version "1.0.0"
+            let two = PackageOperationPreviewScenario.version "2.0.0"
+            let feed = PackageOperationPreviewScenario.source "feed"
+            let project = Path.Combine(root, "Example.csproj")
+            PackageOperationPreviewScenario.write project "original"
+            let target = PackageOperationPreviewScenario.target project "net10.0"
+            let fingerprints = Map [ project, "hash" ]
+
+            let snapshot =
+                PackageOperationPreviewScenario.snapshot
+                    project
+                    [ PackageOperationPreviewScenario.dimension
+                          project
+                          "net10.0"
+                          identity
+                          PackageOperationPreviewScenario.directShape ]
+
+            let graph = PackageOperationPreviewScenario.graph target []
+            let wrongDetails = PackageOperationPreviewScenario.details other two feed
+
+            let baseline =
+                PackageOperationPreviewScenario.evidence
+                    root
+                    [ snapshot ]
+                    [ graph ]
+                    None
+                    (PackageSourceMappingPolicy.Allowed [ feed ])
+                    fingerprints
+
+            let latestFailure =
+                PackageOperationPreviewScenario.request
+                    root
+                    (RequestedPackageOperation.InstallLatest identity)
+                    [ target ]
+                    None
+                    fingerprints
+                |> PackageOperationPreviewScenario.preview
+                    { baseline with
+                        Details = Map [ two, wrongDetails ] }
+                |> PackageOperationPreviewScenario.failure
+
+            PackageFailure.kind latestFailure |> should equal PackageFailureKind.Unsupported
+
+            let installed =
+                PackageOperationPreviewScenario.installed
+                    target
+                    identity
+                    (InstalledPackageState.Direct(PackageVersionSelection.Exact one, one))
+
+            let compatible =
+                { PackageOperationPreviewScenario.details identity one feed with
+                    DependencyGroups =
+                        Map
+                            [ Some(PackageOperationPreviewScenario.framework "netstandard2.0"),
+                              [ PackageOperationPreviewScenario.package "Compatible.Dependency",
+                                PackageOperationPreviewScenario.range "[1.0.0, )" ] ] }
+
+            let uninstall =
+                PackageOperationPreviewScenario.request
+                    root
+                    (RequestedPackageOperation.Uninstall identity)
+                    [ target ]
+                    None
+                    fingerprints
+                |> PackageOperationPreviewScenario.preview
+                    { baseline with
+                        Installed = [ PackageOperationPreviewScenario.graph target [ installed ] ]
+                        Details = Map [ one, compatible ] }
+                |> PackageOperationPreviewScenario.success
+                |> PackageOperationPreviewScenario.targets
+                |> List.exactlyOne
+
+            match (PackageTargetPreview.impact uninstall).Metadata with
+            | PackageMetadataImpact.Known(dependencies, _, _, _) ->
+                dependencies
+                |> List.map (fst >> _.Value)
+                |> should equal [ "Compatible.Dependency" ]
+            | PackageMetadataImpact.Unknown -> failwith "Expected compatible metadata."
+
+            let mismatched =
+                PackageOperationPreviewScenario.request
+                    root
+                    (RequestedPackageOperation.Uninstall identity)
+                    [ target ]
+                    None
+                    fingerprints
+                |> PackageOperationPreviewScenario.preview
+                    { baseline with
+                        Installed = [ PackageOperationPreviewScenario.graph target [ installed ] ]
+                        Details =
+                            Map [ two, PackageOperationPreviewScenario.details identity two feed ] }
+                |> PackageOperationPreviewScenario.success
+                |> PackageOperationPreviewScenario.targets
+                |> List.exactlyOne
+
+            (PackageTargetPreview.impact mismatched).Metadata
+            |> should equal PackageMetadataImpact.Unknown
+        finally
+            Directory.Delete(root, true)
+
+    [<Fact>]
+    member _.``transitive mapping conflict and unverifiable graph remain unknown while unresolved direct declarations block install``
+        ()
+        =
+        let root = PackageOperationPreviewScenario.temporaryDirectory ()
+
+        try
+            let identity = PackageOperationPreviewScenario.package "Example.Package"
+            let transitive = PackageOperationPreviewScenario.package "Transitive.Package"
+            let selected = PackageOperationPreviewScenario.version "2.0.0"
+            let feed = PackageOperationPreviewScenario.source "feed"
+            let project = Path.Combine(root, "Example.csproj")
+            PackageOperationPreviewScenario.write project "original"
+            let target = PackageOperationPreviewScenario.target project "net10.0"
+            let fingerprints = Map [ project, "hash" ]
+
+            let snapshot =
+                PackageOperationPreviewScenario.snapshot
+                    project
+                    [ PackageOperationPreviewScenario.dimension
+                          project
+                          "net10.0"
+                          identity
+                          PackageOperationPreviewScenario.directShape ]
+
+            let request =
+                PackageOperationPreviewScenario.request
+                    root
+                    (RequestedPackageOperation.InstallVersion(identity, selected))
+                    [ target ]
+                    None
+                    fingerprints
+
+            let baseline =
+                PackageOperationPreviewScenario.evidence
+                    root
+                    [ snapshot ]
+                    [ { PackageOperationPreviewScenario.graph target [] with
+                          State = InstalledPackageGraphState.UnverifiablyFreshRestoreGraph } ]
+                    None
+                    (PackageSourceMappingPolicy.KnownConflict(transitive, [ feed ]))
+                    fingerprints
+
+            let preview =
+                PackageOperationPreviewScenario.preview baseline request
+                |> PackageOperationPreviewScenario.success
+                |> PackageOperationPreviewScenario.targets
+                |> List.exactlyOne
+
+            PackageTargetPreview.graphFreshness preview
+            |> should equal PackageGraphFreshness.AwaitingBackgroundRestore
+
+            (PackageTargetPreview.impact preview).SourceMapping
+            |> should
+                equal
+                (PackageSourceMappingImpact.UnknownTransitiveConsequences([ feed ], None))
+
+            (PackageTargetPreview.impact preview).Restore
+            |> should
+                equal
+                (PackageRestoreImpact.RequiredWithUnknownOutcome(
+                    PackageGraphFreshness.AwaitingBackgroundRestore
+                ))
+
+            let unresolvedStates =
+                [ InstalledPackageState.UnresolvedDirect(PackageVersionSelection.Exact selected)
+                  InstalledPackageState.UnresolvedCentrallyManagedDirect(
+                      PackageVersionSelection.Exact selected,
+                      Path.Combine(root, "Directory.Packages.props")
+                  ) ]
+
+            for state in unresolvedStates do
+                let unresolved = PackageOperationPreviewScenario.installed target identity state
+
+                let blocked =
+                    PackageOperationPreviewScenario.preview
+                        { baseline with
+                            Installed =
+                                [ PackageOperationPreviewScenario.graph target [ unresolved ] ]
+                            SourceMapping = PackageSourceMappingPolicy.Allowed [ feed ] }
+                        request
+                    |> PackageOperationPreviewScenario.failure
+
+                PackageFailure.kind blocked |> should equal PackageFailureKind.InvalidRequest
+                PackageFailure.message blocked |> should haveSubstring "already declared"
         finally
             Directory.Delete(root, true)
