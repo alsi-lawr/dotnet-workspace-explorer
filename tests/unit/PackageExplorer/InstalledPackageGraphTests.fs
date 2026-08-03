@@ -412,7 +412,7 @@ type InstalledPackageGraphTests() =
             Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``changed membership central version project reference framework source mapping or restored target marks existing assets stale``
+    member _.``changed evaluated membership central version project reference framework source or restored target marks assets stale while source mapping alone remains unverifiably fresh``
         ()
         =
         let directory = InstalledPackageGraphScenario.temporaryDirectory ()
