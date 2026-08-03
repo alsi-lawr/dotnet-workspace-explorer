@@ -9,6 +9,7 @@ type PackageCatalogPorts =
       SourceMapping: ReadPackageSourceMapping
       Search: SearchPackages
       Details: ReadPackageDetails
+      Installed: ReadInstalledPackages
       Cancel: CancelPackageWork }
 
 [<RequireQualifiedAccess>]
@@ -30,4 +31,5 @@ module NuGetPackageCatalog =
           SourceMapping = NuGetSources.sourceMapping
           Search = NuGetPackageSearch.search requests
           Details = NuGetPackageDetails.details requests
+          Installed = NuGetInstalledPackages.read
           Cancel = cancel }

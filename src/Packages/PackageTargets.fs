@@ -71,3 +71,7 @@ module PackageWorkspaceTarget =
 type PackageTargetScope =
     | Project of PackageProjectId
     | Framework of project: PackageProjectId * framework: TargetFramework
+    | Runtime of
+        project: PackageProjectId *
+        framework: TargetFramework *
+        runtimeIdentifier: RuntimeIdentifier

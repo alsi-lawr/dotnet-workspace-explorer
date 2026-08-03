@@ -6,9 +6,12 @@
 
     <ItemGroup>
         <ProjectReference Include="../Packages/Dotnet.WorkspaceExplorer.Packages.fsproj" />
+        <ProjectReference Include="../ProjectEvaluation/Dotnet.WorkspaceExplorer.ProjectEvaluation.csproj" />
+        <ProjectReference Include="../Solutions/Dotnet.WorkspaceExplorer.Solutions.fsproj" />
         <PackageReference Include="FSharp.Core" />
         <PackageReference Include="NuGet.Configuration" />
         <PackageReference Include="NuGet.Frameworks" />
+        <PackageReference Include="NuGet.ProjectModel" />
         <PackageReference Include="NuGet.Protocol" />
         <PackageReference Include="NuGet.Versioning" />
     </ItemGroup>
@@ -19,6 +22,8 @@
         <Compile Include="Sources/PackageMetadata.fs" />
         <Compile Include="Sources/NuGetSourceFailures.fs" />
         <Compile Include="Sources/NuGetSources.fs" />
+        <Compile Include="Installed/InstalledPackageGraphs.fs" />
+        <Compile Include="Installed/NuGetInstalledPackages.fs" />
         <Compile Include="Sources/NuGetPackageSearch.fs" />
         <Compile Include="Sources/NuGetPackageDetails.fs" />
         <Compile Include="Sources/NuGetPackageCatalog.fs" />

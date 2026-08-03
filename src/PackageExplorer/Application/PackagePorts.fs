@@ -64,7 +64,7 @@ type ReadPackageSourceMapping =
         -> Async<Result<PackageSourceMappingPolicy, PackageFailure>>
 
 type ReadInstalledPackages =
-    PackageRequest<unit> -> Async<Result<InstalledPackage list, PackageFailure>>
+    PackageRequest<unit> -> Async<Result<InstalledPackageGraph list, PackageFailure>>
 
 type ReadPackageUpdates =
     PackageRequest<PrereleaseSelection> -> Async<Result<PackageUpdate list, PackageFailure>>

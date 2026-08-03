@@ -146,13 +146,28 @@ type InstalledPackageState =
     | FrameworkProvidedWithoutVersion
     | UnresolvedDirect of requested: PackageVersionSelection
     | UnresolvedCentrallyManagedDirect of requested: PackageVersionSelection * ownerFile: string
-    | MissingRestoreGraph
-    | StaleRestoreGraph
+
+type PackageDeclaration =
+    { OwnerFile: string; Condition: string }
 
 type InstalledPackage =
     { Identity: PackageId
       Target: PackageTargetScope
-      State: InstalledPackageState }
+      State: InstalledPackageState
+      Declaration: PackageDeclaration option }
+
+[<RequireQualifiedAccess>]
+type InstalledPackageGraphState =
+    | Current
+    | MissingRestoreGraph
+    | MismatchedRestoreGraph
+    | UnverifiablyFreshRestoreGraph
+    | StaleRestoreGraph
+
+type InstalledPackageGraph =
+    { Target: PackageTargetScope
+      State: InstalledPackageGraphState
+      Packages: InstalledPackage list }
 
 type PackageUpdate =
     { Installed: InstalledPackage

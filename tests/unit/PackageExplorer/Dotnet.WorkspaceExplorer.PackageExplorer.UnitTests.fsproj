@@ -11,6 +11,7 @@
     <ItemGroup>
         <Compile Include="PackageContractTests.fs" />
         <Compile Include="NuGetPackageCatalogTests.fs" />
+        <Compile Include="InstalledPackageGraphTests.fs" />
         <Compile Include="PackageStartupTests.fs" />
         <Compile Include="ProgramInvocationTests.fs" />
     </ItemGroup>
@@ -18,6 +19,7 @@
     <ItemGroup>
         <ProjectReference Include="../../../src/Packages/Dotnet.WorkspaceExplorer.Packages.fsproj" />
         <ProjectReference Include="../../../src/PackageExplorer/Dotnet.WorkspaceExplorer.PackageExplorer.fsproj" />
+        <ProjectReference Include="../../../src/ProjectEvaluation/Dotnet.WorkspaceExplorer.ProjectEvaluation.csproj" />
         <ProjectReference Include="../../../src/WorkspaceExplorer/Dotnet.WorkspaceExplorer.fsproj" />
     </ItemGroup>
 

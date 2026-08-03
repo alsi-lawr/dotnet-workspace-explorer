@@ -14,7 +14,8 @@ type internal ConfiguredSource =
 
 type internal ConfiguredCatalog =
     { Sources: ConfiguredSource list
-      Mapping: PackageSourceMapping }
+      Mapping: PackageSourceMapping
+      ConfigFiles: string list }
 
 [<RequireQualifiedAccess>]
 module internal NuGetSources =
@@ -129,7 +130,14 @@ module internal NuGetSources =
                         |> List.choose (function
                             | Ok value -> Some value
                             | _ -> None)
-                      Mapping = PackageSourceMapping.GetPackageSourceMapping settings }
+                      Mapping = PackageSourceMapping.GetPackageSourceMapping settings
+                      ConfigFiles =
+                        settings.GetConfigFilePaths()
+                        |> Seq.map Path.GetFullPath
+                        |> Seq.distinct
+                        |> Seq.sortWith (fun left right ->
+                            StringComparer.Ordinal.Compare(left, right))
+                        |> Seq.toList }
         with
         | :? OperationCanceledException -> Error(NuGetSourceFailures.cancelled ())
         | _ ->

@@ -102,6 +102,20 @@ module TargetFramework =
         PackageValue.text "targetFramework" value |> Result.map TargetFramework
 
 [<Struct>]
+type RuntimeIdentifier =
+    private
+    | RuntimeIdentifier of string
+
+    member this.Value =
+        let (RuntimeIdentifier value) = this
+        value
+
+[<RequireQualifiedAccess>]
+module RuntimeIdentifier =
+    let create value =
+        PackageValue.text "runtimeIdentifier" value |> Result.map RuntimeIdentifier
+
+[<Struct>]
 type PackageRequestId =
     private
     | PackageRequestId of Guid
