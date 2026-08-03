@@ -12,6 +12,7 @@
         <PackageVersion Include="Microsoft.NET.StringTools" Version="18.7.1" />
         <PackageVersion Include="NuGet.Configuration" Version="7.6.0" />
         <PackageVersion Include="NuGet.Frameworks" Version="7.6.0" />
+        <PackageVersion Include="NuGet.Packaging" Version="7.6.0" />
         <PackageVersion Include="NuGet.ProjectModel" Version="7.6.0" />
         <PackageVersion Include="NuGet.Protocol" Version="7.6.0" />
         <PackageVersion Include="NuGet.Versioning" Version="7.6.0" />

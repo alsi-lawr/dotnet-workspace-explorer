@@ -12,6 +12,7 @@
         <PackageReference Include="FSharp.Core" />
         <PackageReference Include="NuGet.Configuration" />
         <PackageReference Include="NuGet.Frameworks" />
+        <PackageReference Include="NuGet.Packaging" />
         <PackageReference Include="NuGet.ProjectModel" />
         <PackageReference Include="NuGet.Protocol" />
         <PackageReference Include="NuGet.Versioning" />
@@ -32,6 +33,7 @@
         <Compile Include="Installed/NuGetInstalledPackages.fs" />
         <Compile Include="Operations/PackageOperationExecution.fs" />
         <Compile Include="Sources/NuGetPackageSearch.fs" />
+        <Compile Include="Sources/NuGetPackageReadme.fs" />
         <Compile Include="Sources/NuGetPackageDetails.fs" />
         <Compile Include="Operations/NuGetPackageOperationPreviews.fs" />
         <Compile Include="Sources/NuGetPackageCatalog.fs" />

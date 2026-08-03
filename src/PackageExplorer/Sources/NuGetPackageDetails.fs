@@ -6,18 +6,11 @@ open System.Threading
 open Dotnet.WorkspaceExplorer.Packages
 open NuGet.Common
 open NuGet.Frameworks
-open NuGet.Protocol
 open NuGet.Protocol.Core.Types
 open NuGet.Versioning
 
 [<RequireQualifiedAccess>]
 module internal NuGetPackageDetails =
-    type private ResultBuilder() =
-        member _.Bind(value, binding) = Result.bind binding value
-        member _.Return value = Ok value
-        member _.ReturnFrom value = value
-
-    let private result = ResultBuilder()
     let private logger = NullLogger.Instance
 
     let private selectMetadata
@@ -31,7 +24,7 @@ module internal NuGetPackageDetails =
 
         let exact (value: string) (item: IPackageSearchMetadata) =
             try
-                item.Identity.Version = NuGet.Versioning.NuGetVersion.Parse value
+                item.Identity.Version = NuGetVersion.Parse value
             with :? ArgumentException ->
                 false
 
@@ -57,31 +50,28 @@ module internal NuGetPackageDetails =
             |> PackageMetadata.dependencyGroups
             |> Seq.fold
                 (fun state group ->
-                    result {
-                        let! accumulated = state
-
-                        let! framework =
+                    state
+                    |> Result.bind (fun accumulated ->
+                        let framework =
                             if
                                 group.TargetFramework.IsAny
                                 || group.TargetFramework = NuGetFramework.AnyFramework
                             then
                                 Ok None
                             else
-                                TargetFramework.create (group.TargetFramework.GetShortFolderName())
+                                TargetFramework.create (
+                                    group.TargetFramework.GetShortFolderName()
+                                )
                                 |> Result.map Some
 
-                        let! dependencies =
+                        let dependencies =
                             group.Packages
                             |> PackageMetadata.dependencies
                             |> Seq.map (fun dependency ->
-                                result {
-                                    let! identity = PackageMetadata.packageId dependency.Id
-
-                                    let! range =
-                                        PackageMetadata.versionRange dependency.VersionRange
-
-                                    return identity, range
-                                })
+                                PackageMetadata.packageId dependency.Id
+                                |> Result.bind (fun identity ->
+                                    PackageMetadata.versionRange dependency.VersionRange
+                                    |> Result.map (fun range -> identity, range)))
                             |> Seq.fold
                                 (fun dependencies dependency ->
                                     match dependencies, dependency with
@@ -91,15 +81,16 @@ module internal NuGetPackageDetails =
                                 (Ok [])
                             |> Result.map List.rev
 
-                        let existing =
-                            accumulated |> Map.tryFind framework |> Option.defaultValue []
+                        match framework, dependencies with
+                        | Ok target, Ok values ->
+                            let existing =
+                                accumulated |> Map.tryFind target |> Option.defaultValue []
 
-                        return
-                            accumulated
-                            |> Map.add
-                                framework
-                                (PackageMetadata.mergeDependencies existing dependencies)
-                    })
+                            PackageMetadata.mergeDependencies existing values
+                            |> fun merged -> Map.add target merged accumulated
+                            |> Ok
+                        | Error error, _
+                        | _, Error error -> Error error))
                 (Ok Map.empty)
 
     let private deprecation (token: CancellationToken) (metadata: IPackageSearchMetadata) =
@@ -158,13 +149,10 @@ module internal NuGetPackageDetails =
                 |> Option.map (fun advisory ->
                     let severity =
                         match vulnerability.Severity with
-                        | value when value <= 0 ->
-                            Dotnet.WorkspaceExplorer.Packages.PackageVulnerabilitySeverity.Low
-                        | 1 ->
-                            Dotnet.WorkspaceExplorer.Packages.PackageVulnerabilitySeverity.Moderate
-                        | 2 -> Dotnet.WorkspaceExplorer.Packages.PackageVulnerabilitySeverity.High
-                        | _ ->
-                            Dotnet.WorkspaceExplorer.Packages.PackageVulnerabilitySeverity.Critical
+                        | value when value <= 0 -> PackageVulnerabilitySeverity.Low
+                        | 1 -> PackageVulnerabilitySeverity.Moderate
+                        | 2 -> PackageVulnerabilitySeverity.High
+                        | _ -> PackageVulnerabilitySeverity.Critical
 
                     { Severity = severity
                       Advisory = advisory }))
@@ -179,7 +167,7 @@ module internal NuGetPackageDetails =
         async {
             try
                 let! resource =
-                    source.Repository.GetResourceAsync<PackageMetadataResource>(token)
+                    source.Repository.GetResourceAsync<PackageMetadataResource> token
                     |> Async.AwaitTask
 
                 if isNull resource then
@@ -247,30 +235,45 @@ module internal NuGetPackageDetails =
                                 |> Option.orElseWith (fun () ->
                                     PackageMetadata.safeUriText selected.ReadmeFileUrl)
 
-                            return
-                                Ok(
-                                    Some
-                                        { Summary = summary
-                                          Versions =
-                                            normalizedVersions
-                                            |> List.choose (function
-                                                | Ok version -> Some version
-                                                | _ -> None)
-                                            |> List.distinct
-                                          Authors = summary.Authors
-                                          ProjectUrl = PackageMetadata.safeUri selected.ProjectUrl
-                                          License = license
-                                          LicenseUrl =
-                                            if isNull selected.LicenseMetadata then
-                                                PackageMetadata.safeUri selected.LicenseUrl
-                                            else
-                                                PackageMetadata.safeUri
-                                                    selected.LicenseMetadata.LicenseUrl
-                                          ReadmeUrl = readme
-                                          DependencyGroups = groups
-                                          Deprecation = deprecationState
-                                          Vulnerabilities = vulnerabilities selected }
-                                )
+                            let! readmeContent =
+                                NuGetPackageReadme.read
+                                    source
+                                    cache
+                                    summary.Identity
+                                    selected.Identity.Version
+                                    token
+
+                            match readmeContent with
+                            | Error failure -> return Error failure
+                            | Ok content ->
+                                token.ThrowIfCancellationRequested()
+
+                                return
+                                    Ok(
+                                        Some
+                                            { Summary = summary
+                                              Versions =
+                                                normalizedVersions
+                                                |> List.choose (function
+                                                    | Ok version -> Some version
+                                                    | _ -> None)
+                                                |> List.distinct
+                                              Authors = summary.Authors
+                                              ProjectUrl =
+                                                PackageMetadata.safeUri selected.ProjectUrl
+                                              License = license
+                                              LicenseUrl =
+                                                if isNull selected.LicenseMetadata then
+                                                    PackageMetadata.safeUri selected.LicenseUrl
+                                                else
+                                                    PackageMetadata.safeUri
+                                                        selected.LicenseMetadata.LicenseUrl
+                                              ReadmeUrl = readme
+                                              ReadmeContent = content
+                                              DependencyGroups = groups
+                                              Deprecation = deprecationState
+                                              Vulnerabilities = vulnerabilities selected }
+                                    )
             with
             | _ when token.IsCancellationRequested ->
                 return raise (OperationCanceledException token)

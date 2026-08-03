@@ -3,6 +3,7 @@ namespace Dotnet.WorkspaceExplorer.PackageExplorer.UnitTests
 open System
 open System.Collections.Concurrent
 open System.IO
+open System.IO.Compression
 open System.Net
 open System.Net.Http
 open System.Net.Sockets
@@ -16,7 +17,8 @@ open Xunit
 
 type private FeedResponse =
     { Status: int
-      Content: string
+      Content: byte array
+      ContentType: string
       Delay: TimeSpan option }
 
 type private LocalFeed(handler: string -> string -> string -> FeedResponse) =
@@ -34,7 +36,7 @@ type private LocalFeed(handler: string -> string -> string -> FeedResponse) =
         task {
             while not cancellation.IsCancellationRequested do
                 try
-                    let! context = listener.GetContextAsync().WaitAsync(cancellation.Token)
+                    let! context = listener.GetContextAsync().WaitAsync cancellation.Token
 
                     let path =
                         context.Request.Url
@@ -51,15 +53,21 @@ type private LocalFeed(handler: string -> string -> string -> FeedResponse) =
                     | Some delay -> do! Task.Delay(delay, cancellation.Token)
                     | None -> ()
 
-                    let bytes = Encoding.UTF8.GetBytes response.Content
                     context.Response.StatusCode <- response.Status
-                    context.Response.ContentType <- "application/json"
-                    context.Response.ContentLength64 <- bytes.LongLength
-                    do! context.Response.OutputStream.WriteAsync(bytes, cancellation.Token)
+                    context.Response.ContentType <- response.ContentType
+                    context.Response.ContentLength64 <- response.Content.LongLength
+
+                    do!
+                        context.Response.OutputStream.WriteAsync(
+                            response.Content,
+                            cancellation.Token
+                        )
+
                     context.Response.Close()
                 with
                 | :? OperationCanceledException -> ()
                 | :? HttpListenerException when cancellation.IsCancellationRequested -> ()
+                | :? IOException -> ()
         }
 
     do
@@ -78,20 +86,31 @@ type private LocalFeed(handler: string -> string -> string -> FeedResponse) =
             cancellation.Dispose()
 
 module private NuGetCatalogScenario =
-    let response content =
+    let response (content: string) =
         { Status = 200
-          Content = content
+          Content = Encoding.UTF8.GetBytes content
+          ContentType = "application/json"
           Delay = None }
 
     let status code =
         { Status = code
-          Content = "{}"
+          Content = Encoding.UTF8.GetBytes "{}"
+          ContentType = "application/json"
           Delay = None }
 
-    let delayed delay content =
+    let delayed delay (content: string) =
+        { Status = 200
+          Content = Encoding.UTF8.GetBytes content
+          ContentType = "application/json"
+          Delay = Some delay }
+
+    let package delay content =
         { Status = 200
           Content = content
-          Delay = Some delay }
+          ContentType = "application/octet-stream"
+          Delay = delay }
+
+    let packageVersions = response """{"versions":["2.0.0"]}"""
 
     let temporaryWorkspace () =
         let path =
@@ -168,11 +187,26 @@ module private NuGetCatalogScenario =
     let serviceIndex root includeRegistration =
         let registration =
             if includeRegistration then
-                $""",{{"@id":"{root}registration/","@type":"RegistrationsBaseUrl"}},{{"@id":"{root}registration/","@type":"RegistrationsBaseUrl/3.0.0-beta"}},{{"@id":"{root}registration/","@type":"RegistrationsBaseUrl/3.0.0-rc"}},{{"@id":"{root}registration/","@type":"RegistrationsBaseUrl/3.6.0"}}"""
+                [ "RegistrationsBaseUrl"
+                  "RegistrationsBaseUrl/3.0.0-beta"
+                  "RegistrationsBaseUrl/3.0.0-rc"
+                  "RegistrationsBaseUrl/3.6.0" ]
+                |> List.map (fun resourceType ->
+                    $"""{{"@id":"{root}registration/","@type":"{resourceType}"}}""")
             else
-                ""
+                []
 
-        $"""{{"version":"3.0.0","resources":[{{"@id":"{root}query","@type":"SearchQueryService"}},{{"@id":"{root}query","@type":"SearchQueryService/3.0.0-beta"}},{{"@id":"{root}query","@type":"SearchQueryService/3.0.0-rc"}},{{"@id":"{root}query","@type":"SearchQueryService/3.5.0"}}{registration}]}}"""
+        let search =
+            [ "SearchQueryService"
+              "SearchQueryService/3.0.0-beta"
+              "SearchQueryService/3.0.0-rc"
+              "SearchQueryService/3.5.0" ]
+            |> List.map (fun resourceType ->
+                $"""{{"@id":"{root}query","@type":"{resourceType}"}}""")
+
+        let flat = $"""{{"@id":"{root}flat/","@type":"PackageBaseAddress/3.0.0"}}"""
+        let resources = String.concat "," (search @ [ flat ] @ registration)
+        $"""{{"version":"3.0.0","resources":[{resources}]}}"""
 
     let registration root =
         $"""
@@ -265,6 +299,38 @@ module private NuGetCatalogScenario =
                 "https://advisory-user:advisory-password@advisories.example.test/one?sig=advisory-secret"
             )
 
+    let packageArchive readme =
+        use output = new MemoryStream()
+
+        do
+            use archive = new ZipArchive(output, ZipArchiveMode.Create, true)
+
+            let writeEntry path (content: string) =
+                let entry = archive.CreateEntry path
+                use writer = new StreamWriter(entry.Open(), UTF8Encoding false)
+                writer.Write content
+
+            let readmeElement =
+                readme
+                |> Option.map (fun (path, _) -> $"<readme>{path}</readme>")
+                |> Option.defaultValue ""
+
+            writeEntry
+                "Example.Package.nuspec"
+                $"""
+                <package>
+                    <metadata>
+                        <id>Example.Package</id>
+                        <version>2.0.0</version>
+                        {readmeElement}
+                    </metadata>
+                </package>
+                """
+
+            readme |> Option.iter (fun (path, content) -> writeEntry path content)
+
+        output.ToArray()
+
     let searchResults packages =
         let data =
             packages
@@ -305,8 +371,26 @@ module private NuGetCatalogScenario =
               PageSize = pageSize size
               Continuation = continuation }
 
-    let run operation =
-        Async.RunSynchronously(operation, timeout = 10000)
+    let detailsRequest project source =
+        request
+            project
+            { Package = packageId "Example.Package"
+              Version =
+                PackageVersionSelection.Exact(
+                    NuGetVersion.create "2.0.0" |> Result.defaultWith (failwithf "%A")
+                )
+              Source = sourceId source }
+
+    let waitForRequest (feed: LocalFeed) expected =
+        let timeout = DateTime.UtcNow + TimeSpan.FromSeconds 5.0
+
+        while DateTime.UtcNow < timeout
+              && not (feed.Requests |> List.exists (fun request -> request = expected)) do
+            Thread.Sleep 10
+
+        feed.Requests |> should contain expected
+
+    let run operation = Async.RunSynchronously operation
 
     let value result =
         result |> Result.defaultWith (fun failure -> failwithf "%A" failure)
@@ -522,7 +606,7 @@ type NuGetPackageCatalogTests() =
             page.Items.Head.Tags |> should equal [ "one"; "two" ]
 
             feed.Requests
-            |> should contain ("/query?q=Example&skip=0&take=1&prerelease=true&semVerLevel=2.0.0")
+            |> should contain "/query?q=Example&skip=0&take=1&prerelease=true&semVerLevel=2.0.0"
         finally
             NuGetCatalogScenario.delete directory
 
@@ -745,6 +829,13 @@ type NuGetPackageCatalogTests() =
     member _.``package details expose versions dependencies deprecation vulnerabilities and safe links``
         ()
         =
+        let commonMark =
+            """
+# Example Package
+
+Use `Example.Package` as-is.
+"""
+
         use feed =
             new LocalFeed(fun root path _ ->
                 match path with
@@ -752,6 +843,11 @@ type NuGetPackageCatalogTests() =
                     NuGetCatalogScenario.response (NuGetCatalogScenario.serviceIndex root true)
                 | "/registration/example.package/index.json" ->
                     NuGetCatalogScenario.response (NuGetCatalogScenario.registration root)
+                | "/flat/example.package/index.json" -> NuGetCatalogScenario.packageVersions
+                | "/flat/example.package/2.0.0/example.package.2.0.0.nupkg" ->
+                    NuGetCatalogScenario.package
+                        None
+                        (NuGetCatalogScenario.packageArchive (Some("docs/README.md", commonMark)))
                 | _ -> NuGetCatalogScenario.status 404)
 
         let directory, project = NuGetCatalogScenario.temporaryWorkspace ()
@@ -785,6 +881,7 @@ type NuGetPackageCatalogTests() =
             details.License |> should equal (Some "MIT")
             details.LicenseUrl.Value.Host |> should equal "licenses.nuget.org"
             details.ReadmeUrl.Value.Host |> should equal "readmes.example.test"
+            details.ReadmeContent |> should equal (Some commonMark)
 
             details.DependencyGroups
             |> Map.toList
@@ -810,6 +907,243 @@ type NuGetPackageCatalogTests() =
             NuGetCatalogScenario.delete directory
 
     [<Fact>]
+    member _.``selected package source returns unchanged README CommonMark content``() =
+        let feedWith readme =
+            new LocalFeed(fun root path _ ->
+                match path with
+                | "/index.json" ->
+                    NuGetCatalogScenario.response (NuGetCatalogScenario.serviceIndex root true)
+                | "/registration/example.package/index.json" ->
+                    NuGetCatalogScenario.response (NuGetCatalogScenario.registration root)
+                | "/flat/example.package/index.json" -> NuGetCatalogScenario.packageVersions
+                | "/flat/example.package/2.0.0/example.package.2.0.0.nupkg" ->
+                    NuGetCatalogScenario.package
+                        None
+                        (NuGetCatalogScenario.packageArchive (Some("docs/README.md", readme)))
+                | _ -> NuGetCatalogScenario.status 404)
+
+        use first = feedWith "# README from first"
+        use selected = feedWith "# README from selected\n\n- unchanged\n"
+        let directory, project = NuGetCatalogScenario.temporaryWorkspace ()
+
+        try
+            NuGetCatalogScenario.writeConfiguration
+                directory
+                [ "First", $"{first.Root}index.json"; "Selected", $"{selected.Root}index.json" ]
+                []
+                []
+
+            let details =
+                NuGetPackageCatalog.create ()
+                |> fun catalog ->
+                    catalog.Details(NuGetCatalogScenario.detailsRequest project "Selected")
+                |> NuGetCatalogScenario.run
+                |> NuGetCatalogScenario.value
+
+            details.ReadmeContent
+            |> should equal (Some "# README from selected\n\n- unchanged\n")
+
+            first.Requests
+            |> should not' (contain "/flat/example.package/2.0.0/example.package.2.0.0.nupkg")
+
+            selected.Requests
+            |> should contain "/flat/example.package/2.0.0/example.package.2.0.0.nupkg"
+        finally
+            NuGetCatalogScenario.delete directory
+
+    [<Fact>]
+    member _.``package details return no README when the selected package manifest declares none``
+        ()
+        =
+        use feed =
+            new LocalFeed(fun root path _ ->
+                match path with
+                | "/index.json" ->
+                    NuGetCatalogScenario.response (NuGetCatalogScenario.serviceIndex root true)
+                | "/registration/example.package/index.json" ->
+                    NuGetCatalogScenario.response (NuGetCatalogScenario.registration root)
+                | "/flat/example.package/index.json" -> NuGetCatalogScenario.packageVersions
+                | "/flat/example.package/2.0.0/example.package.2.0.0.nupkg" ->
+                    NuGetCatalogScenario.package None (NuGetCatalogScenario.packageArchive None)
+                | _ -> NuGetCatalogScenario.status 404)
+
+        let directory, project = NuGetCatalogScenario.temporaryWorkspace ()
+
+        try
+            NuGetCatalogScenario.writeConfiguration
+                directory
+                [ "Local", $"{feed.Root}index.json" ]
+                []
+                []
+
+            let details =
+                NuGetPackageCatalog.create ()
+                |> fun catalog ->
+                    catalog.Details(NuGetCatalogScenario.detailsRequest project "Local")
+                |> NuGetCatalogScenario.run
+                |> NuGetCatalogScenario.value
+
+            details.ReadmeContent |> should equal None
+        finally
+            NuGetCatalogScenario.delete directory
+
+    [<Fact>]
+    member _.``package details reject a README path that escapes the package archive``() =
+        use feed =
+            new LocalFeed(fun root path _ ->
+                match path with
+                | "/index.json" ->
+                    NuGetCatalogScenario.response (NuGetCatalogScenario.serviceIndex root true)
+                | "/registration/example.package/index.json" ->
+                    NuGetCatalogScenario.response (NuGetCatalogScenario.registration root)
+                | "/flat/example.package/index.json" -> NuGetCatalogScenario.packageVersions
+                | "/flat/example.package/2.0.0/example.package.2.0.0.nupkg" ->
+                    NuGetCatalogScenario.package
+                        None
+                        (NuGetCatalogScenario.packageArchive (
+                            Some("../README.md", "# Unsafe README")
+                        ))
+                | _ -> NuGetCatalogScenario.status 404)
+
+        let directory, project = NuGetCatalogScenario.temporaryWorkspace ()
+
+        try
+            NuGetCatalogScenario.writeConfiguration
+                directory
+                [ "Local", $"{feed.Root}index.json" ]
+                []
+                []
+
+            let failure =
+                NuGetPackageCatalog.create ()
+                |> fun catalog ->
+                    catalog.Details(NuGetCatalogScenario.detailsRequest project "Local")
+                |> NuGetCatalogScenario.run
+                |> NuGetCatalogScenario.failure
+
+            PackageFailure.kind failure |> should equal PackageFailureKind.MalformedSource
+            PackageFailure.code failure |> should equal "DWE-PACKAGE-SOURCE-MALFORMED"
+        finally
+            NuGetCatalogScenario.delete directory
+
+    [<Fact>]
+    member _.``unavailable package README downloads retain a stable redacted package failure``() =
+        use feed =
+            new LocalFeed(fun root path _ ->
+                match path with
+                | "/index.json" ->
+                    NuGetCatalogScenario.response (NuGetCatalogScenario.serviceIndex root true)
+                | "/registration/example.package/index.json" ->
+                    NuGetCatalogScenario.response (NuGetCatalogScenario.registration root)
+                | "/flat/example.package/index.json" -> NuGetCatalogScenario.packageVersions
+                | "/flat/example.package/2.0.0/example.package.2.0.0.nupkg" ->
+                    NuGetCatalogScenario.status 500
+                | _ -> NuGetCatalogScenario.status 404)
+
+        let directory, project = NuGetCatalogScenario.temporaryWorkspace ()
+
+        try
+            NuGetCatalogScenario.writeConfiguration
+                directory
+                [ "Private", $"{feed.Root}index.json?sig=readme-source-secret" ]
+                []
+                []
+
+            let failure =
+                NuGetPackageCatalog.create ()
+                |> fun catalog ->
+                    catalog.Details(NuGetCatalogScenario.detailsRequest project "Private")
+                |> NuGetCatalogScenario.run
+                |> NuGetCatalogScenario.failure
+
+            PackageFailure.kind failure |> should equal PackageFailureKind.SourceUnavailable
+
+            let exposed = sprintf "%A %s" failure (PackageFailure.message failure)
+            exposed |> should not' (haveSubstring "readme-source-secret")
+        finally
+            NuGetCatalogScenario.delete directory
+
+    [<Theory>]
+    [<InlineData(401, 0)>]
+    [<InlineData(403, 1)>]
+    member _.``archive-only credential failures retain stable redacted package classifications``
+        (statusCode: int, expectedKind: int)
+        =
+        use feed =
+            new LocalFeed(fun root path _ ->
+                match path with
+                | "/index.json" ->
+                    NuGetCatalogScenario.response (NuGetCatalogScenario.serviceIndex root true)
+                | "/registration/example.package/index.json" ->
+                    NuGetCatalogScenario.response (NuGetCatalogScenario.registration root)
+                | "/flat/example.package/index.json" -> NuGetCatalogScenario.packageVersions
+                | "/flat/example.package/2.0.0/example.package.2.0.0.nupkg" ->
+                    NuGetCatalogScenario.status statusCode
+                | _ -> NuGetCatalogScenario.status 404)
+
+        let directory, project = NuGetCatalogScenario.temporaryWorkspace ()
+
+        try
+            NuGetCatalogScenario.writeConfiguration
+                directory
+                [ "Private", $"{feed.Root}index.json?sig=archive-source-secret" ]
+                []
+                [ "Private", "archive-user", "archive-password" ]
+
+            let failure =
+                NuGetPackageCatalog.create ()
+                |> fun catalog ->
+                    catalog.Details(NuGetCatalogScenario.detailsRequest project "Private")
+                |> NuGetCatalogScenario.run
+                |> NuGetCatalogScenario.failure
+
+            let expected =
+                if expectedKind = 0 then
+                    PackageFailureKind.AuthenticationRequired
+                else
+                    PackageFailureKind.Unauthorized
+
+            PackageFailure.kind failure |> should equal expected
+
+            let exposed = sprintf "%A %s" failure (PackageFailure.message failure)
+            exposed |> should not' (haveSubstring "archive-user")
+            exposed |> should not' (haveSubstring "archive-password")
+            exposed |> should not' (haveSubstring "archive-source-secret")
+        finally
+            NuGetCatalogScenario.delete directory
+
+    [<Fact>]
+    member _.``package details preserve credential-required failures without exposing credentials``
+        ()
+        =
+        use feed = new LocalFeed(fun _ _ _ -> NuGetCatalogScenario.status 401)
+        let directory, project = NuGetCatalogScenario.temporaryWorkspace ()
+
+        try
+            NuGetCatalogScenario.writeConfiguration
+                directory
+                [ "Private", $"{feed.Root}index.json?sig=readme-source-secret" ]
+                []
+                [ "Private", "readme-user", "readme-password" ]
+
+            let failure =
+                NuGetPackageCatalog.create ()
+                |> fun catalog ->
+                    catalog.Details(NuGetCatalogScenario.detailsRequest project "Private")
+                |> NuGetCatalogScenario.run
+                |> NuGetCatalogScenario.failure
+
+            PackageFailure.kind failure
+            |> should equal PackageFailureKind.AuthenticationRequired
+
+            let exposed = sprintf "%A %s" failure (PackageFailure.message failure)
+            exposed |> should not' (haveSubstring "readme-user")
+            exposed |> should not' (haveSubstring "readme-password")
+            exposed |> should not' (haveSubstring "readme-source-secret")
+        finally
+            NuGetCatalogScenario.delete directory
+
+    [<Fact>]
     member _.``credential-bearing metadata links and advisories never enter package details``() =
         use feed =
             new LocalFeed(fun root path _ ->
@@ -820,6 +1154,9 @@ type NuGetPackageCatalogTests() =
                     NuGetCatalogScenario.response (
                         NuGetCatalogScenario.credentialBearingRegistration root
                     )
+                | "/flat/example.package/index.json" -> NuGetCatalogScenario.packageVersions
+                | "/flat/example.package/2.0.0/example.package.2.0.0.nupkg" ->
+                    NuGetCatalogScenario.package None (NuGetCatalogScenario.packageArchive None)
                 | _ -> NuGetCatalogScenario.status 404)
 
         let directory, project = NuGetCatalogScenario.temporaryWorkspace ()
@@ -852,6 +1189,7 @@ type NuGetPackageCatalogTests() =
             details.License |> should equal None
             details.LicenseUrl |> should equal None
             details.ReadmeUrl |> should equal None
+            details.ReadmeContent |> should equal None
             details.Vulnerabilities |> should be Empty
 
             let exposed = sprintf "%A" details
@@ -921,9 +1259,8 @@ type NuGetPackageCatalogTests() =
         let failure =
             NuGetSourceFailures.sourceFailure
                 source
-                (HttpRequestException(
-                    "https://diag-user:diag-password@private.test/index.json?sig=diag-secret"
-                ))
+                (HttpRequestException
+                    "https://diag-user:diag-password@private.test/index.json?sig=diag-secret")
 
         PackageSourceFailure.kind failure
         |> should equal PackageSourceFailureKind.Unavailable
@@ -1015,5 +1352,109 @@ type NuGetPackageCatalogTests() =
             let failure = running.GetAwaiter().GetResult() |> NuGetCatalogScenario.failure
             PackageFailure.kind failure |> should equal PackageFailureKind.Cancelled
             PackageFailure.code failure |> should equal "DWE-PACKAGE-CANCELLED"
+        finally
+            NuGetCatalogScenario.delete directory
+
+    [<Fact>]
+    member _.``active package README download cancellation returns no late package details``() =
+        let packagePath = "/flat/example.package/2.0.0/example.package.2.0.0.nupkg"
+
+        use feed =
+            new LocalFeed(fun root path _ ->
+                match path with
+                | "/index.json" ->
+                    NuGetCatalogScenario.response (NuGetCatalogScenario.serviceIndex root true)
+                | "/registration/example.package/index.json" ->
+                    NuGetCatalogScenario.response (NuGetCatalogScenario.registration root)
+                | "/flat/example.package/index.json" -> NuGetCatalogScenario.packageVersions
+                | path when path = packagePath ->
+                    NuGetCatalogScenario.package
+                        (Some(TimeSpan.FromSeconds 5.0))
+                        (NuGetCatalogScenario.packageArchive (Some("README.md", "# Late README")))
+                | _ -> NuGetCatalogScenario.status 404)
+
+        let directory, project = NuGetCatalogScenario.temporaryWorkspace ()
+
+        try
+            NuGetCatalogScenario.writeConfiguration
+                directory
+                [ "Slow", $"{feed.Root}index.json" ]
+                []
+                []
+
+            let catalog = NuGetPackageCatalog.create ()
+            let request = NuGetCatalogScenario.detailsRequest project "Slow"
+            let running = Async.StartAsTask(catalog.Details request)
+            NuGetCatalogScenario.waitForRequest feed packagePath
+
+            catalog.Cancel(PackageCancellation.Request request.Id)
+            |> NuGetCatalogScenario.run
+
+            let failure = running.GetAwaiter().GetResult() |> NuGetCatalogScenario.failure
+            PackageFailure.kind failure |> should equal PackageFailureKind.Cancelled
+            PackageFailure.code failure |> should equal "DWE-PACKAGE-CANCELLED"
+        finally
+            NuGetCatalogScenario.delete directory
+
+    [<Fact>]
+    member _.``replacement package details return only their README after cancelled work finishes``
+        ()
+        =
+        let packagePath = "/flat/example.package/2.0.0/example.package.2.0.0.nupkg"
+        let mutable downloads = 0
+
+        use feed =
+            new LocalFeed(fun root path _ ->
+                match path with
+                | "/index.json" ->
+                    NuGetCatalogScenario.response (NuGetCatalogScenario.serviceIndex root true)
+                | "/registration/example.package/index.json" ->
+                    NuGetCatalogScenario.response (NuGetCatalogScenario.registration root)
+                | "/flat/example.package/index.json" -> NuGetCatalogScenario.packageVersions
+                | path when path = packagePath ->
+                    let download = Interlocked.Increment(&downloads)
+
+                    if download = 1 then
+                        NuGetCatalogScenario.package
+                            (Some(TimeSpan.FromMilliseconds 250.0))
+                            (NuGetCatalogScenario.packageArchive (
+                                Some("README.md", "# Superseded README")
+                            ))
+                    else
+                        NuGetCatalogScenario.package
+                            None
+                            (NuGetCatalogScenario.packageArchive (
+                                Some("README.md", "# Current README")
+                            ))
+                | _ -> NuGetCatalogScenario.status 404)
+
+        let directory, project = NuGetCatalogScenario.temporaryWorkspace ()
+
+        try
+            NuGetCatalogScenario.writeConfiguration
+                directory
+                [ "Local", $"{feed.Root}index.json" ]
+                []
+                []
+
+            let catalog = NuGetPackageCatalog.create ()
+            let superseded = NuGetCatalogScenario.detailsRequest project "Local"
+            let running = Async.StartAsTask(catalog.Details superseded)
+            NuGetCatalogScenario.waitForRequest feed packagePath
+
+            catalog.Cancel(PackageCancellation.Request superseded.Id)
+            |> NuGetCatalogScenario.run
+
+            running.GetAwaiter().GetResult()
+            |> NuGetCatalogScenario.failure
+            |> PackageFailure.kind
+            |> should equal PackageFailureKind.Cancelled
+
+            let current =
+                catalog.Details(NuGetCatalogScenario.detailsRequest project "Local")
+                |> NuGetCatalogScenario.run
+                |> NuGetCatalogScenario.value
+
+            current.ReadmeContent |> should equal (Some "# Current README")
         finally
             NuGetCatalogScenario.delete directory

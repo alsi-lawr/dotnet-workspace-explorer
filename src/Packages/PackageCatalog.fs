@@ -125,6 +125,7 @@ type PackageDetails =
       License: string option
       LicenseUrl: Uri option
       ReadmeUrl: Uri option
+      ReadmeContent: string option
       DependencyGroups: Map<TargetFramework option, (PackageId * NuGetVersionRange) list>
       Deprecation: PackageDeprecation
       Vulnerabilities: PackageVulnerability list }

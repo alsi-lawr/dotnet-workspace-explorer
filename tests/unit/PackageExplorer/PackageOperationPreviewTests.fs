@@ -196,6 +196,7 @@ module private PackageOperationPreviewScenario =
           License = Some "MIT"
           LicenseUrl = None
           ReadmeUrl = None
+          ReadmeContent = None
           DependencyGroups = Map [ None, [ dependency ] ]
           Deprecation = PackageDeprecation.Deprecated(NonEmptyList.singleton "Legacy", None)
           Vulnerabilities =
