@@ -33,12 +33,19 @@ type PackageStartupFailure =
 type PackageStartup =
     | NotPackageRoute
     | Invalid of PackageStartupFailure
-    | Terminal of PackageWorkspaceTarget
     | Pipe of PackageWorkspaceTarget
 
 [<RequireQualifiedAccess>]
 module PackageStartup =
     let private directCommands = set [ "add"; "remove"; "update"; "list"; "search" ]
+
+    let private externalProductMessage =
+        "Package Explorer is a separate application. "
+        + "This tool only accepts packages <TARGET> --pipe."
+
+    let private directCommandMessage =
+        "Direct package commands are not supported here. "
+        + "Use the standard dotnet package command."
 
     let private invalid detail =
         PackageStartup.Invalid(PackageStartupFailure.InvalidInvocation detail)
@@ -62,45 +69,6 @@ module PackageStartup =
         | :? NotSupportedException
         | :? PathTooLongException -> Error(PackageStartupFailure.UnsupportedTarget target)
 
-    let private eligibleFile path =
-        match PackageWorkspaceTarget.file path with
-        | Ok target -> Some target
-        | Error _ -> None
-
-    let private resolveCurrentDirectory currentDirectory =
-        try
-            let directory = Path.GetFullPath currentDirectory
-
-            if not (Directory.Exists directory) then
-                Error(PackageStartupFailure.TargetNotFound directory)
-            else
-                let candidates =
-                    Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly)
-                    |> Seq.choose eligibleFile
-                    |> Seq.sortWith (fun left right ->
-                        StringComparer.Ordinal.Compare(
-                            PackageWorkspaceTarget.path left,
-                            PackageWorkspaceTarget.path right
-                        ))
-                    |> Seq.toList
-
-                match candidates with
-                | [ target ] -> Ok target
-                | [] -> Error(PackageStartupFailure.TargetNotFound directory)
-                | first :: rest ->
-                    let paths =
-                        NonEmptyList.create first rest
-                        |> NonEmptyList.map PackageWorkspaceTarget.path
-
-                    Error(PackageStartupFailure.AmbiguousWorkspace(directory, paths))
-        with
-        | :? ArgumentException
-        | :? NotSupportedException
-        | :? PathTooLongException
-        | :? IOException
-        | :? UnauthorizedAccessException ->
-            Error(PackageStartupFailure.UnsupportedTarget currentDirectory)
-
     let private select startup result =
         match result with
         | Ok target -> startup target
@@ -108,16 +76,14 @@ module PackageStartup =
 
     let resolve currentDirectory (arguments: string array) =
         match arguments |> Array.toList with
-        | "packages" :: [] ->
-            resolveCurrentDirectory currentDirectory |> select PackageStartup.Terminal
+        | "packages" :: [] -> invalid externalProductMessage
         | "packages" :: "--pipe" :: [] ->
-            invalid "Package pipe startup requires exactly one target before --pipe."
-        | "packages" :: command :: _ when directCommands.Contains command ->
             invalid
-                "Direct package commands are not supported here. Use the standard dotnet package command."
-        | "packages" :: target :: [] when target <> "--pipe" ->
-            classifyExistingTarget currentDirectory target |> select PackageStartup.Terminal
+                "Package pipe startup requires exactly one target. Use packages <TARGET> --pipe."
+        | "packages" :: command :: _ when directCommands.Contains command ->
+            invalid directCommandMessage
+        | "packages" :: _target :: [] -> invalid externalProductMessage
         | "packages" :: target :: "--pipe" :: [] when target <> "--pipe" ->
             classifyExistingTarget currentDirectory target |> select PackageStartup.Pipe
-        | "packages" :: _ -> invalid "Use packages [TARGET] or packages <TARGET> --pipe."
+        | "packages" :: _ -> invalid "Use packages <TARGET> --pipe."
         | _ -> PackageStartup.NotPackageRoute

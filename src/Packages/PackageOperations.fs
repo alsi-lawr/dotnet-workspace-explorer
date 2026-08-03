@@ -614,3 +614,14 @@ module PackageProgress =
 type PackageCancellation =
     | Request of PackageRequestId
     | Operation of PackageOperationId
+
+[<RequireQualifiedAccess>]
+type PackageRestoreOutcome =
+    | NotRequired
+    | Completed
+
+type PackageExecution =
+    { Operation: PackageOperationId
+      Entries: PackageExecutionEntry list
+      ChangedFiles: string list
+      Restore: PackageRestoreOutcome }

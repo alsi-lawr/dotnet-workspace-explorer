@@ -6,6 +6,7 @@
 
     <ItemGroup>
         <ProjectReference Include="../Workspaces/Dotnet.WorkspaceExplorer.Workspaces.fsproj" />
+        <ProjectReference Include="../Packages/Dotnet.WorkspaceExplorer.Packages.fsproj" />
         <PackageReference Include="FSharp.Core" />
         <PackageReference Include="MessagePack" />
     </ItemGroup>
@@ -22,6 +23,9 @@
         <Compile Include="Sessions/RpcSession.fs" />
         <Compile Include="Hosting/RpcFrameReader.fs" />
         <Compile Include="Hosting/RpcHost.fs" />
+        <Compile Include="Package/PackageRpcContract.fs" />
+        <Compile Include="Package/PackageRpcRequests.fs" />
+        <Compile Include="Package/PackageRpcResponses.fs" />
         <Compile Include="Workspace/WorkspaceRpcRequests.fs" />
         <Compile Include="Workspace/WorkspaceRpcResponses.fs" />
         <Compile Include="Workspace/WorkspaceRpcNotifications.fs" />

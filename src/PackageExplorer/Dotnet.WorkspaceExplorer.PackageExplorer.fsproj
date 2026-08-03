@@ -31,6 +31,7 @@
         <Compile Include="Operations/DotnetPackageOperations.fs" />
         <Compile Include="Installed/DotnetInstalledRestore.fs" />
         <Compile Include="Installed/NuGetInstalledPackages.fs" />
+        <Compile Include="Application/PackageInventories.fs" />
         <Compile Include="Operations/PackageOperationExecution.fs" />
         <Compile Include="Sources/NuGetPackageSearch.fs" />
         <Compile Include="Sources/NuGetPackageReadme.fs" />

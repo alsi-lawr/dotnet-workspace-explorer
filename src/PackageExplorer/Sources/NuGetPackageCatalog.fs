@@ -11,6 +11,8 @@ type PackageCatalogPorts =
       Details: ReadPackageDetails
       Installed: ReadInstalledPackages
       RefreshInstalled: RefreshInstalledPackages
+      Updates: ReadPackageUpdates
+      Consolidation: ReadPackageConsolidation
       PreviewPrecondition: ReadPackagePreviewPrecondition
       Preview: PreviewPackageOperation
       UpdateBatchPrecondition: ReadPackageUpdateBatchPrecondition
@@ -42,12 +44,23 @@ module NuGetPackageCatalog =
                   RefreshInstalled = refresh
                   RunCommand = DotnetPackageOperations.run }
 
+        let installed = NuGetInstalledPackages.readWithFactory evaluatorFactory
+        let details = NuGetPackageDetails.details requests
+
         ({ ConfiguredSources = NuGetSources.configuredSources
            SourceMapping = NuGetSources.sourceMapping
            Search = NuGetPackageSearch.search requests
-           Details = NuGetPackageDetails.details requests
-           Installed = NuGetInstalledPackages.readWithFactory evaluatorFactory
+           Details = details
+           Installed = installed
            RefreshInstalled = refresh
+           Updates =
+             PackageInventories.updates
+                 requests
+                 installed
+                 NuGetSources.configuredSources
+                 NuGetSources.sourceMapping
+                 details
+           Consolidation = PackageInventories.consolidation requests installed
            PreviewPrecondition = previews.ReadPrecondition
            Preview = previews.Preview
            UpdateBatchPrecondition = previews.ReadUpdateBatchPrecondition

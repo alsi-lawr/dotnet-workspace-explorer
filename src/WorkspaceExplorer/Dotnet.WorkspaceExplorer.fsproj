@@ -68,6 +68,9 @@
         <Compile Include="RpcHosting/WorkspaceCommandRequests.fs" />
         <Compile Include="RpcHosting/WorkspaceRpcInvocation.fs" />
         <Compile Include="RpcHosting/WorkspaceRpcServer.fs" />
+        <Compile Include="RpcHosting/Packages/PackageRpcState.fs" />
+        <Compile Include="RpcHosting/Packages/PackageRpcDispatch.fs" />
+        <Compile Include="RpcHosting/Packages/PackageRpcServer.fs" />
         <Compile Include="Hosting/ProgramInvocation.fs" />
         <Compile Include="Program.fs" />
     </ItemGroup>

@@ -11,6 +11,8 @@
         <Compile Include="Testing/WorkspaceRpcFrames.fs" />
         <Compile Include="Testing/WorkspaceRpcStreams.fs" />
         <Compile Include="Framing/WorkspaceRpcGoldenFrameTests.fs" />
+        <Compile Include="Framing/PackageRpcGoldenFrameTests.fs" />
+        <Compile Include="Sessions/PackageRpcContractTests.fs" />
         <Compile Include="Framing/RecoverableRequestTests.fs" />
         <Compile Include="Framing/WorkspaceRpcStreamTests.fs" />
         <Compile Include="Sessions/WorkspaceRpcInitializationTests.fs" />
@@ -19,10 +21,26 @@
         <Compile Include="Sessions/OutboundFrameLimitTests.fs" />
     </ItemGroup>
     <ItemGroup>
-        <None Include="../../Fixtures/WorkspaceRpc/**/*" Link="Fixtures/WorkspaceRpc/%(RecursiveDir)%(Filename)%(Extension)" Pack="false" CopyToOutputDirectory="PreserveNewest" />
+        <None
+            Include="../../Fixtures/WorkspaceRpc/**/*"
+            Link="Fixtures/WorkspaceRpc/%(RecursiveDir)%(Filename)%(Extension)"
+            Pack="false"
+            CopyToOutputDirectory="PreserveNewest" />
+        <None
+            Include="../../Fixtures/PackageRpc/**/*"
+            Link="Fixtures/PackageRpc/%(RecursiveDir)%(Filename)%(Extension)"
+            Pack="false"
+            CopyToOutputDirectory="PreserveNewest" />
+        <None
+            Include="../../../protocol/package-v1.schema.json"
+            Link="protocol/package-v1.schema.json"
+            Pack="false"
+            CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
     <ItemGroup>
         <ProjectReference Include="../../../src/Rpc/Dotnet.WorkspaceExplorer.Rpc.fsproj" />
+        <ProjectReference
+            Include="../../../src/Packages/Dotnet.WorkspaceExplorer.Packages.fsproj" />
     </ItemGroup>
     <ItemGroup>
         <PackageReference Include="FSharp.Core" />

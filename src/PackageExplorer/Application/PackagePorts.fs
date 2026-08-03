@@ -39,17 +39,6 @@ type PackageSourceMappingRequest =
       CandidateSource: PackageSourceId option
       RestoredTransitives: PackageId list option }
 
-[<RequireQualifiedAccess>]
-type PackageRestoreOutcome =
-    | NotRequired
-    | Completed
-
-type PackageExecution =
-    { Operation: PackageOperationId
-      Entries: PackageExecutionEntry list
-      ChangedFiles: string list
-      Restore: PackageRestoreOutcome }
-
 type ConfiguredPackageSources =
     PackageRequest<unit> -> Async<Result<PackageSource list, PackageFailure>>
 

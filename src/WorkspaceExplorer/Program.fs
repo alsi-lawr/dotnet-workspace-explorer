@@ -36,12 +36,6 @@ module Program =
 
             DirectCommandRendering.render result jsonMode Console.Out Console.Error
 
-    let private unavailablePackageHost name =
-        Console.Error.WriteLine
-            $"DWE-PACKAGES-HOST-UNAVAILABLE: The package {name} host is not installed yet."
-
-        69
-
     [<EntryPoint>]
     let main arguments =
         Console.OutputEncoding <- Encoding.UTF8
@@ -54,8 +48,15 @@ module Program =
         match ProgramInvocation.parse Environment.CurrentDirectory arguments with
         | ProgramInvocation.ProjectEvaluationHost sdkPath ->
             ProjectEvaluationHost.RunAsync(sdkPath, cancellation.Token).GetAwaiter().GetResult()
-        | ProgramInvocation.PackageTerminal _ -> unavailablePackageHost "terminal"
-        | ProgramInvocation.PackagePipe _ -> unavailablePackageHost "RPC"
+        | ProgramInvocation.PackagePipe target ->
+            PackageRpcServer.runAsync
+                target
+                (Console.OpenStandardInput())
+                (Console.OpenStandardOutput())
+                Console.Error
+                cancellation.Token
+            |> _.GetAwaiter()
+            |> _.GetResult()
         | ProgramInvocation.InvalidPackageStartup failure ->
             Console.Error.WriteLine $"{failure.Code}: {failure.Message}"
             64

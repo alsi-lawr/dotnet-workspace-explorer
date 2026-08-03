@@ -27,16 +27,13 @@ type ProgramInvocationTests() =
         |> should equal (ProgramInvocation.ProjectEvaluationHost "/sdk")
 
     [<Fact>]
-    member _.``program invocation gives package terminal and pipe startup distinct final routes``
-        ()
-        =
+    member _.``program invocation accepts only the explicit package pipe route``() =
         let directory, project = ProgramInvocationScenario.temporaryProject ()
 
         try
             match ProgramInvocation.parse directory [| "packages"; project |] with
-            | ProgramInvocation.PackageTerminal target ->
-                PackageWorkspaceTarget.path target |> should equal (Path.GetFullPath project)
-            | route -> failwithf "Expected package terminal route, got %A" route
+            | ProgramInvocation.InvalidPackageStartup _ -> ()
+            | route -> failwithf "Expected package startup failure, got %A" route
 
             match ProgramInvocation.parse directory [| "packages"; project; "--pipe" |] with
             | ProgramInvocation.PackagePipe target ->

@@ -16,6 +16,10 @@ module internal Test =
         Path.Combine(AppContext.BaseDirectory, "Fixtures", "WorkspaceRpc", name)
         |> File.ReadAllBytes
 
+    let packageGolden name =
+        Path.Combine(AppContext.BaseDirectory, "Fixtures", "PackageRpc", name)
+        |> File.ReadAllBytes
+
     let request id name parameters =
         MessagePackRpcCodec.encodeFrame (Request(id, name, parameters))
 
