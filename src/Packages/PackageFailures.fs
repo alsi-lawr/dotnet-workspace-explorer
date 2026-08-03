@@ -27,7 +27,8 @@ type PackageFailure =
         { Kind: PackageFailureKind
           Code: string
           Message: string
-          Retry: PackageFailureRetry }
+          Retry: PackageFailureRetry
+          Recovery: PackageExecutionEntry list }
 
 [<RequireQualifiedAccess>]
 module PackageFailure =
@@ -55,9 +56,13 @@ module PackageFailure =
                 { Kind = kind
                   Code = stableCode kind
                   Message = message
-                  Retry = retry }
+                  Retry = retry
+                  Recovery = [] }
+
+    let withRecovery recovery failure = { failure with Recovery = recovery }
 
     let kind failure = failure.Kind
     let code failure = failure.Code
     let message failure = failure.Message
     let retry failure = failure.Retry
+    let recovery failure = failure.Recovery

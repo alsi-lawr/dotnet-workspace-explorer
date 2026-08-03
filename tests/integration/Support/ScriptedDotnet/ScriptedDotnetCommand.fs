@@ -33,6 +33,12 @@ module internal ScriptedDotnetCommand =
             | "reference" :: verb :: _ when verb = "add" || verb = "remove" ->
                 ProjectFileEditing.mutateReference verb arguments
                 true
+            | "add" :: _project :: "package" :: _ ->
+                ProjectFileEditing.mutatePackage "add" arguments
+                true
+            | "remove" :: _project :: "package" :: _ ->
+                ProjectFileEditing.mutatePackage "remove" arguments
+                true
             | "package" :: verb :: _ when verb = "add" || verb = "remove" || verb = "update" ->
                 ProjectFileEditing.mutatePackage verb arguments
                 true

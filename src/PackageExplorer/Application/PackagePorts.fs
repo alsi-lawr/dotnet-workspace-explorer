@@ -46,6 +46,7 @@ type PackageRestoreOutcome =
 
 type PackageExecution =
     { Operation: PackageOperationId
+      Entries: PackageExecutionEntry list
       ChangedFiles: string list
       Restore: PackageRestoreOutcome }
 
@@ -95,6 +96,11 @@ type ExecutePackageOperation =
         -> (PackageProgress -> unit)
         -> Async<Result<PackageExecution, PackageFailure>>
 
+type ExecutePackageUpdateBatch =
+    PackageRequest<PackageUpdateBatchConfirmation>
+        -> (PackageProgress -> unit)
+        -> Async<Result<PackageExecution, PackageFailure>>
+
 type CancelPackageWork = PackageCancellation -> Async<unit>
 
 type PackageExplorerPorts =
@@ -111,4 +117,5 @@ type PackageExplorerPorts =
       UpdateBatchPrecondition: ReadPackageUpdateBatchPrecondition
       PreviewUpdateBatch: PreviewPackageUpdateBatch
       ExecuteConfirmed: ExecutePackageOperation
+      ExecuteConfirmedUpdateBatch: ExecutePackageUpdateBatch
       Cancel: CancelPackageWork }

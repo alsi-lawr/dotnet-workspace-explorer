@@ -33,6 +33,14 @@ module Program =
             InvocationSettings.recordInvocation arguments
             Console.Error.Write "\u001b[31mfailure\u001b[0m"
             23
+        | _, Some "authentication-required" ->
+            InvocationSettings.recordInvocation arguments
+            Console.Error.Write "Response status code does not indicate success: 401."
+            23
+        | _, Some "unauthorized" ->
+            InvocationSettings.recordInvocation arguments
+            Console.Error.Write "Response status code does not indicate success: 403."
+            23
         | _, Some "marker" ->
             match
                 InvocationSettings.setting "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_DOTNET_STARTED_PATH"

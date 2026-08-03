@@ -10,6 +10,7 @@
 
     <ItemGroup>
         <Compile Include="InstalledPackagePortTests.fs" />
+        <Compile Include="PackageCommandProcessTests.fs" />
     </ItemGroup>
 
     <ItemGroup>

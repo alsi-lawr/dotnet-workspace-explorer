@@ -150,10 +150,38 @@ type PackagePreview =
           Targets: NonEmptyList<PackageTargetPreview>
           OwnerFiles: NonEmptyList<string>
           WorkspaceRevision: string
-          FileFingerprints: Map<string, string> }
+          FileFingerprints: Map<string, string>
+          ConfirmationToken: string }
 
 [<RequireQualifiedAccess>]
 module PackagePreview =
+    let private createConfirmationToken
+        (operation: RequestedPackageOperation)
+        (targets: NonEmptyList<PackageTargetPreview>)
+        (ownerFiles: NonEmptyList<string>)
+        (workspaceRevision: string)
+        (fileFingerprints: Map<string, string>)
+        =
+        let values =
+            [ $"operation:{operation:A}"
+              $"targets:{targets:A}"
+              yield!
+                  ownerFiles
+                  |> NonEmptyList.toList
+                  |> List.map (fun value -> $"owner:{value.Length}:{value}")
+              $"revision:{workspaceRevision.Length}:{workspaceRevision}"
+              yield!
+                  fileFingerprints
+                  |> Map.toList
+                  |> List.map (fun (path, fingerprint) ->
+                      $"fingerprint:{path.Length}:{path}:{fingerprint.Length}:{fingerprint}") ]
+
+        values
+        |> String.concat "\u0000"
+        |> System.Text.Encoding.UTF8.GetBytes
+        |> System.Security.Cryptography.SHA256.HashData
+        |> System.Convert.ToHexString
+
     let private operationMatches operation target =
         match operation, PackageTargetPreview.change target with
         | (RequestedPackageOperation.InstallLatest _ | RequestedPackageOperation.InstallVersion _),
@@ -297,13 +325,21 @@ module PackagePreview =
                   Targets = targets
                   OwnerFiles = ownerFiles
                   WorkspaceRevision = workspaceRevision
-                  FileFingerprints = fileFingerprints }
+                  FileFingerprints = fileFingerprints
+                  ConfirmationToken =
+                    createConfirmationToken
+                        operation
+                        targets
+                        ownerFiles
+                        workspaceRevision
+                        fileFingerprints }
 
     let operation preview = preview.Operation
     let targets preview = preview.Targets
     let ownerFiles preview = preview.OwnerFiles
     let workspaceRevision preview = preview.WorkspaceRevision
     let fileFingerprints preview = preview.FileFingerprints
+    let confirmationToken preview = preview.ConfirmationToken
 
 type PackageUpdateTargetPreview =
     private
@@ -334,10 +370,33 @@ type PackageUpdateBatchPreview =
         { Updates: NonEmptyList<PackageUpdateTargetPreview>
           OwnerFiles: NonEmptyList<string>
           WorkspaceRevision: string
-          FileFingerprints: Map<string, string> }
+          FileFingerprints: Map<string, string>
+          ConfirmationToken: string }
 
 [<RequireQualifiedAccess>]
 module PackageUpdateBatchPreview =
+    let private createConfirmationToken
+        (updates: NonEmptyList<PackageUpdateTargetPreview>)
+        (ownerFiles: NonEmptyList<string>)
+        (workspaceRevision: string)
+        (fileFingerprints: Map<string, string>)
+        =
+        [ $"updates:{updates:A}"
+          yield!
+              ownerFiles
+              |> NonEmptyList.toList
+              |> List.map (fun value -> $"owner:{value.Length}:{value}")
+          $"revision:{workspaceRevision.Length}:{workspaceRevision}"
+          yield!
+              fileFingerprints
+              |> Map.toList
+              |> List.map (fun (path, fingerprint) ->
+                  $"fingerprint:{path.Length}:{path}:{fingerprint.Length}:{fingerprint}") ]
+        |> String.concat "\u0000"
+        |> System.Text.Encoding.UTF8.GetBytes
+        |> System.Security.Cryptography.SHA256.HashData
+        |> System.Convert.ToHexString
+
     let internal create pathComparison updates ownerFiles workspaceRevision fileFingerprints =
         let pathKey path =
             let full = System.IO.Path.GetFullPath path
@@ -367,7 +426,7 @@ module PackageUpdateBatchPreview =
         let updateValues = updates |> NonEmptyList.toList |> List.sortBy targetKey
 
         let duplicateUpdates =
-            updateValues |> List.countBy targetKey |> List.exists (snd >> ((<) 1))
+            updateValues |> List.countBy targetKey |> List.exists (snd >> (<) 1)
 
         let ownerPaths = ownerFiles |> NonEmptyList.toList
 
@@ -425,20 +484,29 @@ module PackageUpdateBatchPreview =
         elif not validFingerprints then
             Error(PackageContractViolation.MissingValue "fileFingerprints")
         else
+            let orderedUpdates =
+                updateValues
+                |> NonEmptyList.tryCreate
+                |> Option.defaultWith (fun () ->
+                    invalidOp "A package update preview requires at least one update.")
+
             Ok
-                { Updates =
-                    updateValues
-                    |> NonEmptyList.tryCreate
-                    |> Option.defaultWith (fun () ->
-                        invalidOp "A package update preview requires at least one update.")
+                { Updates = orderedUpdates
                   OwnerFiles = ownerFiles
                   WorkspaceRevision = workspaceRevision
-                  FileFingerprints = fileFingerprints }
+                  FileFingerprints = fileFingerprints
+                  ConfirmationToken =
+                    createConfirmationToken
+                        orderedUpdates
+                        ownerFiles
+                        workspaceRevision
+                        fileFingerprints }
 
     let updates preview = preview.Updates
     let ownerFiles preview = preview.OwnerFiles
     let workspaceRevision preview = preview.WorkspaceRevision
     let fileFingerprints preview = preview.FileFingerprints
+    let confirmationToken preview = preview.ConfirmationToken
 
 type PackageConfirmation =
     private
@@ -450,6 +518,16 @@ module PackageConfirmation =
     let create preview confirmationToken =
         if System.String.IsNullOrWhiteSpace confirmationToken then
             Error(PackageContractViolation.MissingValue "confirmationToken")
+        elif
+            not (
+                System.String.Equals(
+                    confirmationToken,
+                    PackagePreview.confirmationToken preview,
+                    System.StringComparison.Ordinal
+                )
+            )
+        then
+            Error(PackageContractViolation.InvalidValue "confirmationToken")
         else
             Ok
                 { Preview = preview
@@ -468,6 +546,16 @@ module PackageUpdateBatchConfirmation =
     let create preview confirmationToken =
         if System.String.IsNullOrWhiteSpace confirmationToken then
             Error(PackageContractViolation.MissingValue "confirmationToken")
+        elif
+            not (
+                System.String.Equals(
+                    confirmationToken,
+                    PackageUpdateBatchPreview.confirmationToken preview,
+                    System.StringComparison.Ordinal
+                )
+            )
+        then
+            Error(PackageContractViolation.InvalidValue "confirmationToken")
         else
             Ok
                 { Preview = preview
@@ -475,6 +563,18 @@ module PackageUpdateBatchConfirmation =
 
     let preview confirmation = confirmation.Preview
     let token confirmation = confirmation.ConfirmationToken
+
+[<RequireQualifiedAccess>]
+type PackageExecutionState =
+    | Completed
+    | Compensated
+    | Unchanged
+    | Uncertain
+
+type PackageExecutionEntry =
+    { Package: PackageId
+      Target: PackageTargetScope
+      State: PackageExecutionState }
 
 [<RequireQualifiedAccess>]
 type PackageOperationStage =

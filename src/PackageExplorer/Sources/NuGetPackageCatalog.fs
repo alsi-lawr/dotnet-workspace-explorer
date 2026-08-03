@@ -15,6 +15,8 @@ type PackageCatalogPorts =
       Preview: PreviewPackageOperation
       UpdateBatchPrecondition: ReadPackageUpdateBatchPrecondition
       PreviewUpdateBatch: PreviewPackageUpdateBatch
+      ExecuteConfirmed: ExecutePackageOperation
+      ExecuteConfirmedUpdateBatch: ExecutePackageUpdateBatch
       Cancel: CancelPackageWork }
 
 [<RequireQualifiedAccess>]
@@ -24,31 +26,35 @@ module NuGetPackageCatalog =
         (runRestore: RunInstalledRestore)
         =
         let requests = ConcurrentDictionary<PackageRequestId, CancellationTokenSource>()
-
-        let cancel cancellation =
-            async {
-                match cancellation with
-                | PackageCancellation.Request request ->
-                    match requests.TryGetValue request with
-                    | true, active -> active.Cancel()
-                    | _ -> ()
-                | PackageCancellation.Operation _ -> ()
-            }
+        let operations = ConcurrentDictionary<PackageOperationId, CancellationTokenSource>()
 
         let previews = NuGetPackageOperationPreviews.createWith evaluatorFactory requests
+
+        let refresh =
+            NuGetInstalledPackages.refreshWith evaluatorFactory runRestore requests
+
+        let execution =
+            PackageOperationExecution.createWith
+                requests
+                operations
+                { ReadPrecondition = previews.ReadPrecondition
+                  ReadUpdateBatchPrecondition = previews.ReadUpdateBatchPrecondition
+                  RefreshInstalled = refresh
+                  RunCommand = DotnetPackageOperations.run }
 
         ({ ConfiguredSources = NuGetSources.configuredSources
            SourceMapping = NuGetSources.sourceMapping
            Search = NuGetPackageSearch.search requests
            Details = NuGetPackageDetails.details requests
            Installed = NuGetInstalledPackages.readWithFactory evaluatorFactory
-           RefreshInstalled =
-             NuGetInstalledPackages.refreshWith evaluatorFactory runRestore requests
+           RefreshInstalled = refresh
            PreviewPrecondition = previews.ReadPrecondition
            Preview = previews.Preview
            UpdateBatchPrecondition = previews.ReadUpdateBatchPrecondition
            PreviewUpdateBatch = previews.PreviewUpdateBatch
-           Cancel = cancel }
+           ExecuteConfirmed = execution.Execute
+           ExecuteConfirmedUpdateBatch = execution.ExecuteUpdateBatch
+           Cancel = execution.Cancel }
         : PackageCatalogPorts)
 
     let create () =

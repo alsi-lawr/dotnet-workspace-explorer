@@ -13,6 +13,7 @@
         <Compile Include="NuGetPackageCatalogTests.fs" />
         <Compile Include="InstalledPackageGraphTests.fs" />
         <Compile Include="PackageOperationPreviewTests.fs" />
+        <Compile Include="PackageOperationExecutionTests.fs" />
         <Compile Include="PackageStartupTests.fs" />
         <Compile Include="ProgramInvocationTests.fs" />
     </ItemGroup>

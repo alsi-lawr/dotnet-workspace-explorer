@@ -509,7 +509,9 @@ type PackageOperationPreviewTests() =
             PackageUpdateBatchPreview.workspaceRevision preview |> should equal "42"
 
             let confirmation =
-                PackageUpdateBatchConfirmation.create preview "confirm-batch"
+                PackageUpdateBatchConfirmation.create
+                    preview
+                    (PackageUpdateBatchPreview.confirmationToken preview)
                 |> Result.defaultWith (failwithf "%A")
 
             PackageUpdateBatchConfirmation.preview confirmation |> should equal preview

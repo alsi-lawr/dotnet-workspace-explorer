@@ -89,13 +89,22 @@ module internal ProjectFileEditing =
         | _ -> invalidOp "The fake reference command requires --project and a reference path."
 
     let private packageIdentity (arguments: string array) =
-        positionalArguments arguments |> List.tryHead
+        match arguments |> Array.toList with
+        | "add" :: _project :: "package" :: identity :: _
+        | "remove" :: _project :: "package" :: identity :: _ -> Some identity
+        | "package" :: "update" :: identity :: _ -> Some identity
+        | _ -> positionalArguments arguments |> List.tryHead
+
+    let private packageProject (arguments: string array) =
+        match arguments |> Array.toList with
+        | ("add" | "remove") :: project :: "package" :: _ -> Some project
+        | _ -> InvocationSettings.argumentValue "--project" arguments
 
     let private packageVersion (arguments: string array) =
         InvocationSettings.argumentValue "--version" arguments
 
     let mutatePackage verb (arguments: string array) =
-        match InvocationSettings.argumentValue "--project" arguments, packageIdentity arguments with
+        match packageProject arguments, packageIdentity arguments with
         | Some projectPath, Some identity ->
             let document = XDocument.Load projectPath
 
