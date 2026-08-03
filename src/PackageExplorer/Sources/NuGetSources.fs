@@ -35,7 +35,7 @@ module internal NuGetSources =
             |> Option.ofObj
             |> Option.defaultValue (Directory.GetCurrentDirectory())
 
-    let private sourceUri (root: string) (source: NuGet.Configuration.PackageSource) =
+    let private rawSourceUri (root: string) (source: NuGet.Configuration.PackageSource) =
         match source.TrySourceAsUri with
         | null ->
             let path =
@@ -46,6 +46,27 @@ module internal NuGetSources =
 
             Uri(Path.GetFullPath path)
         | uri -> uri
+
+    let private publicSourceUri root source =
+        let raw = rawSourceUri root source
+
+        if raw.IsAbsoluteUri then
+            let redacted = UriBuilder raw
+            redacted.UserName <- String.Empty
+            redacted.Password <- String.Empty
+            redacted.Query <- String.Empty
+            redacted.Fragment <- String.Empty
+            redacted.Uri
+        else
+            let redactedPath = raw.OriginalString.Split([| '?'; '#' |], 2)[0]
+
+            let path =
+                if Path.IsPathRooted redactedPath then
+                    redactedPath
+                else
+                    Path.Combine(root, redactedPath)
+
+            Uri(Path.GetFullPath path)
 
     let loadCatalog (target: PackageWorkspaceTarget) =
         try
@@ -73,7 +94,7 @@ module internal NuGetSources =
                               Name =
                                 PackageMetadata.text PackageMetadata.limits.Person source.Name
                                 |> Option.defaultValue sourceId.Value
-                              Location = sourceUri root source
+                              Location = publicSourceUri root source
                               Availability = PackageSourceAvailability.Available }
 
                         match Map.tryFind source.Name repositories with
@@ -167,12 +188,7 @@ module internal NuGetSources =
                             |> List.tryPick (fun transitive ->
                                 let transitiveSources = mappingSources catalog transitive.Value
 
-                                let candidateMatches =
-                                    request.Value.CandidateSource
-                                    |> Option.forall (fun candidate ->
-                                        List.contains candidate transitiveSources)
-
-                                if List.isEmpty transitiveSources || not candidateMatches then
+                                if List.isEmpty transitiveSources then
                                     Some(transitive, transitiveSources)
                                 else
                                     None)

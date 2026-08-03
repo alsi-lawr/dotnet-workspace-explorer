@@ -5,17 +5,25 @@ open Dotnet.WorkspaceExplorer.Packages
 open NuGet.Protocol.Core.Types
 
 type internal MetadataLimits =
-    { PackageId: int
-      Version: int
-      Description: int
-      Summary: int
-      Person: int
-      People: int
-      Tag: int
-      Tags: int
-      License: int
-      Link: int
-      DeprecationReason: int }
+    {
+        PackageId: int
+        Version: int
+        Description: int
+        Summary: int
+        Person: int
+        People: int
+        Tag: int
+        Tags: int
+        License: int
+        Link: int
+        DeprecationReason: int
+        /// Maximum package versions accepted from one remote metadata response.
+        AvailableVersions: int
+        /// Maximum framework dependency groups accepted for one package version.
+        DependencyGroups: int
+        /// Maximum dependencies accepted in one framework group.
+        DependenciesPerGroup: int
+    }
 
 [<RequireQualifiedAccess>]
 module internal PackageMetadata =
@@ -37,7 +45,10 @@ module internal PackageMetadata =
           Tags = 64
           License = 2048
           Link = 2048
-          DeprecationReason = 256 }
+          DeprecationReason = 256
+          AvailableVersions = 512
+          DependencyGroups = 128
+          DependenciesPerGroup = 512 }
 
     let private boundedText limit (value: string) =
         if String.IsNullOrWhiteSpace value then
@@ -103,6 +114,8 @@ module internal PackageMetadata =
             uri.IsAbsoluteUri
             && uri.OriginalString.Length <= limits.Link
             && String.IsNullOrEmpty uri.UserInfo
+            && String.IsNullOrEmpty uri.Query
+            && String.IsNullOrEmpty uri.Fragment
             && (uri.Scheme = Uri.UriSchemeHttps || uri.Scheme = Uri.UriSchemeHttp)
             ->
             Some uri
@@ -115,6 +128,25 @@ module internal PackageMetadata =
             | true, uri -> safeUri uri
             | _ -> None
         | None -> None
+
+    let safeTextOrUri limit value =
+        boundedText limit value
+        |> Option.bind (fun text ->
+            match Uri.TryCreate(text, UriKind.Absolute) with
+            | true, uri -> safeUri uri |> Option.map _.OriginalString
+            | _ -> Some text)
+
+    let availableVersions values =
+        values |> Seq.truncate limits.AvailableVersions
+
+    let dependencyGroups values =
+        values |> Seq.truncate limits.DependencyGroups
+
+    let dependencies values =
+        values |> Seq.truncate limits.DependenciesPerGroup
+
+    let mergeDependencies current additions =
+        Seq.append current additions |> dependencies |> Seq.toList
 
     let summary source (metadata: IPackageSearchMetadata) =
         result {

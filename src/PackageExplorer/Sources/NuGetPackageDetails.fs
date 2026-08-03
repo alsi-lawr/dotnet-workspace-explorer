@@ -54,6 +54,7 @@ module internal NuGetPackageDetails =
             Ok Map.empty
         else
             metadata.DependencySets
+            |> PackageMetadata.dependencyGroups
             |> Seq.fold
                 (fun state group ->
                     result {
@@ -71,6 +72,7 @@ module internal NuGetPackageDetails =
 
                         let! dependencies =
                             group.Packages
+                            |> PackageMetadata.dependencies
                             |> Seq.map (fun dependency ->
                                 result {
                                     let! identity = PackageMetadata.packageId dependency.Id
@@ -92,7 +94,11 @@ module internal NuGetPackageDetails =
                         let existing =
                             accumulated |> Map.tryFind framework |> Option.defaultValue []
 
-                        return accumulated |> Map.add framework (existing @ dependencies)
+                        return
+                            accumulated
+                            |> Map.add
+                                framework
+                                (PackageMetadata.mergeDependencies existing dependencies)
                     })
                 (Ok Map.empty)
 
@@ -197,7 +203,7 @@ module internal NuGetPackageDetails =
                         )
                         |> Async.AwaitTask
 
-                    let available = available |> Seq.toList
+                    let available = available |> PackageMetadata.availableVersions |> Seq.toList
 
                     match selectMetadata request.Version available with
                     | None -> return Ok None
@@ -232,7 +238,7 @@ module internal NuGetPackageDetails =
                                 if isNull selected.LicenseMetadata then
                                     None
                                 else
-                                    PackageMetadata.text
+                                    PackageMetadata.safeTextOrUri
                                         PackageMetadata.limits.License
                                         selected.LicenseMetadata.License
 
