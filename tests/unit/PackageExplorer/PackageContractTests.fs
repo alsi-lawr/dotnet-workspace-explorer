@@ -69,7 +69,11 @@ type PackageContractTests() =
 
         let request =
             { Operation = RequestedPackageOperation.UpdateVersion(package, version)
-              Targets = NonEmptyList.singleton target }
+              Targets = NonEmptyList.singleton target
+              BrowseSource = None
+              Precondition =
+                { WorkspaceRevision = "revision"
+                  FileFingerprints = Map [ "src/Example.csproj", "hash" ] } }
 
         request.Operation
         |> should equal (RequestedPackageOperation.UpdateVersion(package, version))
@@ -85,14 +89,28 @@ type PackageContractTests() =
         let project = PackageContractScenario.project "src/Example.csproj"
         let target = PackageTargetScope.Project project
         let operation = RequestedPackageOperation.InstallVersion(package, version)
-        let changes = NonEmptyList.singleton (PackageStateChange.Add(target, version))
+
+        let impact =
+            { Metadata = PackageMetadataImpact.Unknown
+              SourceMapping = PackageSourceMappingImpact.ApplyAllowed []
+              Restore = PackageRestoreImpact.RequiredWithUnknownOutcome }
+
+        let targets =
+            NonEmptyList.singleton
+                { Target = target
+                  Current = None
+                  Proposed = ProposedPackageState.Direct version
+                  OwnerFiles = NonEmptyList.singleton "src/Example.csproj"
+                  Consolidation = None
+                  Impact = impact }
+
         let owners = NonEmptyList.singleton "src/Example.csproj"
 
-        PackagePreview.create operation changes owners [] "" (Map [ "src/Example.csproj", "hash" ])
+        PackagePreview.create operation targets owners "" (Map [ "src/Example.csproj", "hash" ])
         |> PackageContractScenario.violation
         |> should equal (PackageContractViolation.MissingValue "workspaceRevision")
 
-        PackagePreview.create operation changes owners [] "revision" Map.empty
+        PackagePreview.create operation targets owners "revision" Map.empty
         |> PackageContractScenario.violation
         |> should equal (PackageContractViolation.MissingValue "fileFingerprints")
 

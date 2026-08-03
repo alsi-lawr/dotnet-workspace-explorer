@@ -23,6 +23,9 @@
         <Compile Include="Sources/NuGetSourceFailures.fs" />
         <Compile Include="Sources/NuGetSources.fs" />
         <Compile Include="Installed/InstalledPackageGraphs.fs" />
+        <Compile Include="Operations/PackageOperationEvidence.fs" />
+        <Compile Include="Operations/PackageOwnership.fs" />
+        <Compile Include="Operations/PackageOperationPreviews.fs" />
         <Compile Include="Installed/DotnetInstalledRestore.fs" />
         <Compile Include="Installed/NuGetInstalledPackages.fs" />
         <Compile Include="Sources/NuGetPackageSearch.fs" />

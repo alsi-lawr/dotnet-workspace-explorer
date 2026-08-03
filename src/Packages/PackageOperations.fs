@@ -7,38 +7,78 @@ type RequestedPackageOperation =
     | UpdateLatest of package: PackageId
     | UpdateVersion of package: PackageId * version: NuGetVersion
     | Uninstall of package: PackageId
+    | ConsolidateVersion of package: PackageId * destination: NuGetVersion
+
+type PackagePreviewPrecondition =
+    { WorkspaceRevision: string
+      FileFingerprints: Map<string, string> }
 
 type PackageOperationRequest =
     { Operation: RequestedPackageOperation
-      Targets: NonEmptyList<PackageTargetScope> }
+      Targets: NonEmptyList<PackageTargetScope>
+      BrowseSource: PackageSourceId option
+      Precondition: PackagePreviewPrecondition }
 
 [<RequireQualifiedAccess>]
-type PackageStateChange =
-    | Add of target: PackageTargetScope * proposed: NuGetVersion
-    | Change of target: PackageTargetScope * current: NuGetVersion * proposed: NuGetVersion
-    | Remove of target: PackageTargetScope * current: NuGetVersion
+type ProposedPackageState =
+    | NotInstalled
+    | Direct of version: NuGetVersion
+    | CentrallyManaged of version: NuGetVersion * ownerFile: string
+    | Unchanged
 
 [<RequireQualifiedAccess>]
-type PackageImpact =
-    | DependencyChange of string
-    | DeprecationWarning of string
-    | VulnerabilityWarning of PackageVulnerability
-    | LicenseNotice of string
-    | RestoreRequired
-    | UnsupportedPolicy of string
+type PackageConsolidationPosition =
+    | AlreadyOnDestination
+    | BelowDestination
+    | AboveDestination
+    | Unusable
+
+[<RequireQualifiedAccess>]
+type PackageMetadataImpact =
+    | Known of
+        dependencies: (PackageId * NuGetVersionRange) list *
+        deprecation: PackageDeprecation *
+        vulnerabilities: PackageVulnerability list *
+        license: string option
+    | Unknown
+
+[<RequireQualifiedAccess>]
+type PackageSourceMappingImpact =
+    | ApplyAllowed of sources: PackageSourceId list
+    | BrowseSourceDoesNotConstrainApply of
+        browseSource: PackageSourceId *
+        allowedSources: PackageSourceId list
+    | UnknownTransitiveConsequences of
+        allowedSources: PackageSourceId list *
+        browseSource: PackageSourceId option
+
+[<RequireQualifiedAccess>]
+type PackageRestoreImpact = | RequiredWithUnknownOutcome
+
+type PackageTargetImpact =
+    { Metadata: PackageMetadataImpact
+      SourceMapping: PackageSourceMappingImpact
+      Restore: PackageRestoreImpact }
+
+type PackageTargetPreview =
+    { Target: PackageTargetScope
+      Current: InstalledPackageState option
+      Proposed: ProposedPackageState
+      OwnerFiles: NonEmptyList<string>
+      Consolidation: PackageConsolidationPosition option
+      Impact: PackageTargetImpact }
 
 type PackagePreview =
     private
         { Operation: RequestedPackageOperation
-          Changes: NonEmptyList<PackageStateChange>
+          Targets: NonEmptyList<PackageTargetPreview>
           OwnerFiles: NonEmptyList<string>
-          Impacts: PackageImpact list
           WorkspaceRevision: string
           FileFingerprints: Map<string, string> }
 
 [<RequireQualifiedAccess>]
 module PackagePreview =
-    let create operation changes ownerFiles impacts workspaceRevision fileFingerprints =
+    let create operation targets ownerFiles workspaceRevision fileFingerprints =
         let ownerPaths = ownerFiles |> NonEmptyList.toList
 
         let validFingerprints =
@@ -56,16 +96,14 @@ module PackagePreview =
         else
             Ok
                 { Operation = operation
-                  Changes = changes
+                  Targets = targets
                   OwnerFiles = ownerFiles
-                  Impacts = impacts
                   WorkspaceRevision = workspaceRevision
                   FileFingerprints = fileFingerprints }
 
     let operation preview = preview.Operation
-    let changes preview = preview.Changes
+    let targets preview = preview.Targets
     let ownerFiles preview = preview.OwnerFiles
-    let impacts preview = preview.Impacts
     let workspaceRevision preview = preview.WorkspaceRevision
     let fileFingerprints preview = preview.FileFingerprints
 
