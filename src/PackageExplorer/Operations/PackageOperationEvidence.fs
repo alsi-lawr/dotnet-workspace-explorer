@@ -7,7 +7,7 @@ type internal PackageOperationPreviewEvidence =
     { WorkspaceRoot: string
       Evaluations: ProjectEvaluationSnapshot list
       Installed: InstalledPackageGraph list
-      Details: Map<PackageId * NuGetVersion, PackageDetails>
+      Details: Map<PackageId * PackageProjectId * NuGetVersion, PackageDetails>
       SourceMappings: Map<PackageId * PackageProjectId, PackageSourceMappingPolicy>
       CaseSensitivity: Dotnet.WorkspaceExplorer.Workspaces.FileSystemCaseSensitivity
       WorkspaceRevision: string

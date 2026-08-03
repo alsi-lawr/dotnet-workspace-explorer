@@ -129,9 +129,11 @@ module internal PackageOperationPreviews =
         | _ -> Error(invalid "The restored package graph contains duplicate target entries.")
 
     let private selectedVersion
+        sensitivity
         (operation: RequestedPackageOperation)
         (package: PackageId)
-        (details: Map<PackageId * NuGetVersion, PackageDetails>)
+        (project: PackageProjectId)
+        (details: Map<PackageId * PackageProjectId * NuGetVersion, PackageDetails>)
         =
         match operation with
         | RequestedPackageOperation.InstallVersion(_, version)
@@ -141,11 +143,20 @@ module internal PackageOperationPreviews =
         | RequestedPackageOperation.UpdateLatest _ ->
             details
             |> Map.toList
-            |> List.choose (fun ((candidate, _), value) ->
-                String.Equals(candidate.Value, package.Value, StringComparison.OrdinalIgnoreCase)
-                |> function
-                    | true -> Some value
-                    | false -> None)
+            |> List.choose (fun ((candidate, candidateProject, _), value) ->
+                if
+                    String.Equals(
+                        candidate.Value,
+                        package.Value,
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                    && pathIdentity sensitivity candidateProject.Value = pathIdentity
+                        sensitivity
+                        project.Value
+                then
+                    Some value
+                else
+                    None)
             |> List.sortByDescending (fun value ->
                 NuGet.Versioning.NuGetVersion.Parse(value.Summary.Version.Value))
             |> List.tryHead
@@ -282,15 +293,32 @@ module internal PackageOperationPreviews =
             |> Option.defaultValue []
 
     let private metadataImpact
+        sensitivity
         (package: PackageId)
+        (project: PackageProjectId)
         (effectiveVersion: NuGetVersion option)
         (target: PackageTargetScope)
-        (details: Map<PackageId * NuGetVersion, PackageDetails>)
+        (details: Map<PackageId * PackageProjectId * NuGetVersion, PackageDetails>)
         =
         effectiveVersion
         |> Option.bind (fun version ->
-            Map.tryFind (package, version) details
-            |> Option.map (fun value -> version, value))
+            details
+            |> Map.toList
+            |> List.tryPick (fun ((candidate, candidateProject, candidateVersion), value) ->
+                if
+                    String.Equals(
+                        candidate.Value,
+                        package.Value,
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                    && pathIdentity sensitivity candidateProject.Value = pathIdentity
+                        sensitivity
+                        project.Value
+                    && candidateVersion = version
+                then
+                    Some(version, value)
+                else
+                    None))
         |> Option.filter (fun (version, value) ->
             value.Summary.Version = version
             && String.Equals(
@@ -479,7 +507,9 @@ module internal PackageOperationPreviews =
                             let impact =
                                 { Metadata =
                                     metadataImpact
+                                        evidence.CaseSensitivity
                                         package
+                                        project
                                         effectiveMetadataVersion
                                         target
                                         evidence.Details
@@ -511,51 +541,55 @@ module internal PackageOperationPreviews =
         let targets =
             expandTargets evidence.CaseSensitivity evidence.Installed request.Value.Targets
 
-        match selectedVersion request.Value.Operation package evidence.Details with
-        | Error error -> Error error
-        | Ok version ->
-            match
-                targets
-                |> List.map (
+        match
+            targets
+            |> List.map (fun target ->
+                selectedVersion
+                    evidence.CaseSensitivity
+                    request.Value.Operation
+                    package
+                    (targetProject target)
+                    evidence.Details
+                |> Result.bind (fun version ->
                     planTarget
                         evidence
                         request.Value.Operation
                         request.Value.BrowseSource
                         package
                         version
-                )
-                |> collect
-            with
-            | Error error -> Error error
-            | Ok previews ->
-                match NonEmptyList.tryCreate previews with
-                | None -> Error(invalid "A package preview requires at least one target.")
-                | Some previewTargets ->
-                    let owners =
-                        previews
-                        |> List.collect (PackageTargetPreview.ownerFiles >> NonEmptyList.toList)
-                        |> orderedPaths evidence.CaseSensitivity
+                        target))
+            |> collect
+        with
+        | Error error -> Error error
+        | Ok previews ->
+            match NonEmptyList.tryCreate previews with
+            | None -> Error(invalid "A package preview requires at least one target.")
+            | Some previewTargets ->
+                let owners =
+                    previews
+                    |> List.collect (PackageTargetPreview.ownerFiles >> NonEmptyList.toList)
+                    |> orderedPaths evidence.CaseSensitivity
 
-                    match NonEmptyList.tryCreate owners with
-                    | None -> Error(invalid "A package preview requires an owner file.")
-                    | Some ownerFiles ->
-                        match verifyPrecondition request.Value.Precondition evidence owners with
-                        | Error error -> Error error
-                        | Ok fingerprints ->
-                            PackagePreview.create
-                                (if
-                                     evidence.CaseSensitivity = FileSystemCaseSensitivity.Insensitive
-                                 then
-                                     StringComparison.OrdinalIgnoreCase
-                                 else
-                                     StringComparison.Ordinal)
-                                request.Value.Operation
-                                previewTargets
-                                ownerFiles
-                                evidence.WorkspaceRevision
-                                fingerprints
-                            |> Result.mapError (fun violation ->
-                                invalid $"The package preview is invalid ({violation}).")
+                match NonEmptyList.tryCreate owners with
+                | None -> Error(invalid "A package preview requires an owner file.")
+                | Some ownerFiles ->
+                    match verifyPrecondition request.Value.Precondition evidence owners with
+                    | Error error -> Error error
+                    | Ok fingerprints ->
+                        PackagePreview.create
+                            (if
+                                 evidence.CaseSensitivity = FileSystemCaseSensitivity.Insensitive
+                             then
+                                 StringComparison.OrdinalIgnoreCase
+                             else
+                                 StringComparison.Ordinal)
+                            request.Value.Operation
+                            previewTargets
+                            ownerFiles
+                            evidence.WorkspaceRevision
+                            fingerprints
+                        |> Result.mapError (fun violation ->
+                            invalid $"The package preview is invalid ({violation}).")
 
     let private updateOperation selection =
         match PackageUpdateSelection.requestedVersion selection with
@@ -606,7 +640,12 @@ module internal PackageOperationPreviews =
                     let operation = updateOperation selection
                     let package = PackageUpdateSelection.package selection
 
-                    selectedVersion operation package evidence.Details
+                    selectedVersion
+                        evidence.CaseSensitivity
+                        operation
+                        package
+                        (targetProject target)
+                        evidence.Details
                     |> Result.bind (fun version ->
                         planTarget
                             evidence

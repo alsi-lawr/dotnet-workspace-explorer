@@ -592,3 +592,199 @@ type InstalledPackagePortTests() =
                 PackageFailure.kind failure |> should equal PackageFailureKind.StaleState
         finally
             InstalledPortScenario.delete workspace
+
+    [<Fact>]
+    member _.``latest preview metadata and versions remain isolated to each project effective NuGet source``
+        ()
+        =
+        let workspace = InstalledPortScenario.createWorkspace "project-scoped-metadata"
+
+        try
+            let rootFeed = Path.Combine(workspace.Directory, "feed")
+            let nestedDirectory = Path.Combine(workspace.Directory, "nested")
+            let nestedFeed = Path.Combine(nestedDirectory, "feed")
+            let packageBuild = Path.Combine(workspace.Directory, "package-build")
+            Directory.CreateDirectory nestedFeed |> ignore
+            Directory.CreateDirectory packageBuild |> ignore
+
+            let packageProject = Path.Combine(packageBuild, "Scoped.Package.csproj")
+
+            InstalledPortScenario.write
+                packageProject
+                """
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <PackageId>Scoped.Package</PackageId>
+    <Authors>ALSI</Authors>
+    <Description>Project-scoped package metadata fixture.</Description>
+  </PropertyGroup>
+</Project>
+"""
+
+            let pack version license output =
+                InstalledPortScenario.runDotnet
+                    packageBuild
+                    [ "pack"
+                      packageProject
+                      "--nologo"
+                      "--output"
+                      output
+                      $"-p:PackageVersion={version}"
+                      $"-p:PackageLicenseExpression={license}" ]
+
+            pack "1.0.0" "MIT" rootFeed
+
+            File.Copy(
+                Path.Combine(rootFeed, "Scoped.Package.1.0.0.nupkg"),
+                Path.Combine(nestedFeed, "Scoped.Package.1.0.0.nupkg")
+            )
+
+            pack "2.0.0" "MIT" rootFeed
+            pack "3.0.0" "Apache-2.0" nestedFeed
+            Directory.Delete(packageBuild, true)
+
+            InstalledPortScenario.write
+                (Path.Combine(workspace.Directory, "Directory.Packages.props"))
+                """
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageVersion Include="Scoped.Package" Version="1.0.0" />
+  </ItemGroup>
+</Project>
+"""
+
+            InstalledPortScenario.write
+                workspace.Project
+                """
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Scoped.Package" />
+  </ItemGroup>
+</Project>
+"""
+
+            let nestedProject = Path.Combine(nestedDirectory, "Nested.csproj")
+            let nestedConfig = Path.Combine(nestedDirectory, "NuGet.Config")
+
+            InstalledPortScenario.write
+                nestedProject
+                """
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Scoped.Package" />
+  </ItemGroup>
+</Project>
+"""
+
+            InstalledPortScenario.write
+                nestedConfig
+                $"""
+<configuration>
+  <packageSources>
+    <clear />
+    <add key="nested" value="{nestedFeed}" />
+  </packageSources>
+  <packageSourceMapping>
+    <clear />
+    <packageSource key="nested"><package pattern="*" /></packageSource>
+  </packageSourceMapping>
+</configuration>
+"""
+
+            InstalledPortScenario.runDotnet
+                workspace.Directory
+                [ "restore"; workspace.Project; "--nologo" ]
+
+            InstalledPortScenario.runDotnet nestedDirectory [ "restore"; nestedProject; "--nologo" ]
+
+            let catalog =
+                NuGetPackageCatalog.createWith
+                    InstalledPortScenario.evaluatorFactory
+                    DotnetInstalledRestore.run
+
+            let identity =
+                PackageId.create "Scoped.Package" |> Result.defaultWith (failwithf "%A")
+
+            let projectScope path =
+                PackageProjectId.create path
+                |> Result.map PackageTargetScope.Project
+                |> Result.defaultWith (failwithf "%A")
+
+            let selection =
+                { Id = PackageRequestId.newId ()
+                  Target = InstalledPortScenario.directoryTarget workspace.Directory
+                  Value =
+                    { Operation = RequestedPackageOperation.UpdateLatest identity
+                      Targets =
+                        NonEmptyList.create
+                            (projectScope workspace.Project)
+                            [ projectScope nestedProject ]
+                      BrowseSource = None } }
+
+            let precondition =
+                catalog.PreviewPrecondition selection
+                |> Async.RunSynchronously
+                |> Result.defaultWith (fun failure -> failwith (PackageFailure.message failure))
+
+            let request =
+                { Id = selection.Id
+                  Target = selection.Target
+                  Value =
+                    { Operation = selection.Value.Operation
+                      Targets = selection.Value.Targets
+                      BrowseSource = selection.Value.BrowseSource
+                      Precondition = precondition } }
+
+            let projectEvidence =
+                catalog.Preview request
+                |> Async.RunSynchronously
+                |> Result.defaultWith (fun failure -> failwith (PackageFailure.message failure))
+                |> PackagePreview.targets
+                |> NonEmptyList.toList
+                |> List.map (fun target ->
+                    let project =
+                        match PackageTargetPreview.target target with
+                        | PackageTargetScope.Project project
+                        | PackageTargetScope.Framework(project, _)
+                        | PackageTargetScope.Runtime(project, _, _) -> project.Value
+
+                    let version =
+                        match PackageTargetPreview.change target with
+                        | PackageTargetChange.Update(_, ProposedPackageState.Direct value)
+                        | PackageTargetChange.Update(_,
+                                                     ProposedPackageState.CentrallyManaged(value, _)) ->
+                            value.Value
+                        | change -> failwithf "Expected an update change, got %A." change
+
+                    let license =
+                        match (PackageTargetPreview.impact target).Metadata with
+                        | PackageMetadataImpact.Known(_, _, _, value) -> value
+                        | PackageMetadataImpact.Unknown -> None
+
+                    let sources =
+                        match (PackageTargetPreview.impact target).SourceMapping with
+                        | PackageSourceMappingImpact.ApplyAllowed values
+                        | PackageSourceMappingImpact.BrowseSourceDoesNotConstrainApply(_, values)
+                        | PackageSourceMappingImpact.UnknownTransitiveConsequences(values, _) ->
+                            values |> List.map _.Value
+
+                    project, (version, license, sources))
+                |> Map
+
+            projectEvidence[workspace.Project]
+            |> should equal ("2.0.0", Some "MIT", [ "local" ])
+
+            projectEvidence[nestedProject]
+            |> should equal ("3.0.0", Some "Apache-2.0", [ "nested" ])
+        finally
+            InstalledPortScenario.delete workspace

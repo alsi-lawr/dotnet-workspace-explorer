@@ -221,7 +221,13 @@ module private PackageOperationPreviewScenario =
           Details =
             details
             |> Option.map (fun value ->
-                Map [ (value.Summary.Identity, value.Summary.Version), value ])
+                evaluations
+                |> List.map (fun evaluation ->
+                    (value.Summary.Identity,
+                     project evaluation.ProjectPath.Value,
+                     value.Summary.Version),
+                    value)
+                |> Map)
             |> Option.defaultValue Map.empty
           SourceMappings =
             [ for identity in packages do
@@ -389,8 +395,12 @@ module private PackageOperationPreviewScenario =
                   graph centralTarget [ centralInstalled ] ]
               Details =
                 Map
-                    [ (directPackage, directVersion), details directPackage directVersion feed
-                      (centralPackage, centralVersion), details centralPackage centralVersion feed ]
+                    [ (directPackage, project anotherDirectProject, directVersion),
+                      details directPackage directVersion feed
+                      (directPackage, project directProject, directVersion),
+                      details directPackage directVersion feed
+                      (centralPackage, project centralProject, centralVersion),
+                      details centralPackage centralVersion feed ]
               SourceMappings =
                 Map
                     [ (directPackage, project anotherDirectProject),
@@ -601,6 +611,38 @@ type PackageOperationPreviewTests() =
 
             PackageFailure.kind failure |> should equal PackageFailureKind.InvalidRequest
             PackageFailure.message failure |> should haveSubstring "not installed"
+        finally
+            Directory.Delete(fixture.Root, true)
+
+    [<Fact>]
+    member _.``latest batch update never borrows another project package metadata when one target has none``
+        ()
+        =
+        let fixture = PackageOperationPreviewScenario.updateBatchFixture ()
+
+        try
+            let availableProject =
+                PackageOperationPreviewScenario.project fixture.AnotherDirectProject
+
+            let evidence =
+                { fixture.Evidence with
+                    Details =
+                        fixture.Evidence.Details
+                        |> Map.filter (fun (_, project, _) _ -> project = availableProject) }
+
+            let failure =
+                PackageOperationPreviewScenario.updateBatchRequest
+                    fixture.Root
+                    [ PackageUpdateSelection.latest
+                          fixture.DirectPackage
+                          fixture.AnotherDirectTarget
+                      PackageUpdateSelection.latest fixture.DirectPackage fixture.DirectTarget ]
+                    fixture.Fingerprints
+                |> PackageOperationPreviewScenario.updateBatchPreview evidence
+                |> PackageOperationPreviewScenario.failure
+
+            PackageFailure.kind failure |> should equal PackageFailureKind.Unsupported
+            PackageFailure.message failure |> should haveSubstring "metadata"
         finally
             Directory.Delete(fixture.Root, true)
 
@@ -1607,7 +1649,10 @@ type PackageOperationPreviewTests() =
                     fingerprints
                 |> PackageOperationPreviewScenario.preview
                     { baseline with
-                        Details = Map [ (other, two), wrongDetails ] }
+                        Details =
+                            Map
+                                [ (other, PackageOperationPreviewScenario.project project, two),
+                                  wrongDetails ] }
                 |> PackageOperationPreviewScenario.failure
 
             PackageFailure.kind latestFailure |> should equal PackageFailureKind.Unsupported
@@ -1636,7 +1681,10 @@ type PackageOperationPreviewTests() =
                 |> PackageOperationPreviewScenario.preview
                     { baseline with
                         Installed = [ PackageOperationPreviewScenario.graph target [ installed ] ]
-                        Details = Map [ (identity, one), compatible ] }
+                        Details =
+                            Map
+                                [ (identity, PackageOperationPreviewScenario.project project, one),
+                                  compatible ] }
                 |> PackageOperationPreviewScenario.success
                 |> PackageOperationPreviewScenario.targets
                 |> List.exactlyOne
@@ -1660,7 +1708,7 @@ type PackageOperationPreviewTests() =
                         Installed = [ PackageOperationPreviewScenario.graph target [ installed ] ]
                         Details =
                             Map
-                                [ (identity, two),
+                                [ (identity, PackageOperationPreviewScenario.project project, two),
                                   PackageOperationPreviewScenario.details identity two feed ] }
                 |> PackageOperationPreviewScenario.success
                 |> PackageOperationPreviewScenario.targets

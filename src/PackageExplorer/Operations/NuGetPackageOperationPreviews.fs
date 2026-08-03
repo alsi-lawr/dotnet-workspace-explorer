@@ -262,17 +262,24 @@ module internal NuGetPackageOperationPreviews =
         | PackageSourceMappingPolicy.InsufficientRestoredTransitiveEvidence sources
         | PackageSourceMappingPolicy.KnownConflict(_, sources) -> sources
 
-    let private readDetails
+    let private readProjectDetails
         (requests: ConcurrentDictionary<PackageRequestId, CancellationTokenSource>)
         requestId
-        target
         browseSource
         operation
         (package: PackageId)
         (mapping: PackageSourceMappingPolicy)
-        (evaluations: InstalledPackageEvaluation list)
+        (evaluation: InstalledPackageEvaluation)
         =
         async {
+            let project =
+                PackageProjectId.create evaluation.Snapshot.ProjectPath.Value
+                |> Result.defaultWith (failwithf "%A")
+
+            let target =
+                PackageWorkspaceTarget.file evaluation.Snapshot.ProjectPath.Value
+                |> Result.defaultWith (failwithf "%A")
+
             let source =
                 browseSource
                 |> Option.orElseWith (fun () -> allowedSources mapping |> List.tryHead)
@@ -280,7 +287,7 @@ module internal NuGetPackageOperationPreviews =
             match source with
             | None -> return Ok Map.empty
             | Some source ->
-                let selections = versions operation evaluations
+                let selections = versions operation [ evaluation ]
                 let mutable collected = Ok Map.empty
 
                 for selection in selections do
@@ -299,10 +306,57 @@ module internal NuGetPackageOperationPreviews =
 
                         collected <-
                             match result with
-                            | Ok value -> Ok(Map.add (package, value.Summary.Version) value details)
+                            | Ok value ->
+                                Ok(Map.add (package, project, value.Summary.Version) value details)
                             | Error _ -> Ok details
 
                 return collected
+        }
+
+    let private readDetails
+        (requests: ConcurrentDictionary<PackageRequestId, CancellationTokenSource>)
+        requestId
+        browseSource
+        operation
+        (package: PackageId)
+        (mappings: Map<PackageId * PackageProjectId, PackageSourceMappingPolicy>)
+        (evaluations: InstalledPackageEvaluation list)
+        =
+        async {
+            let mutable collected = Ok Map.empty
+
+            for evaluation in evaluations do
+                match collected with
+                | Error _ -> ()
+                | Ok details ->
+                    let project =
+                        PackageProjectId.create evaluation.Snapshot.ProjectPath.Value
+                        |> Result.defaultWith (failwithf "%A")
+
+                    let mapping =
+                        mappings
+                        |> Map.tryFind (package, project)
+                        |> Option.defaultValue (
+                            PackageSourceMappingPolicy.InsufficientRestoredTransitiveEvidence []
+                        )
+
+                    let! projectDetails =
+                        readProjectDetails
+                            requests
+                            requestId
+                            browseSource
+                            operation
+                            package
+                            mapping
+                            evaluation
+
+                    collected <-
+                        projectDetails
+                        |> Result.map (fun values ->
+                            values
+                            |> Map.fold (fun state key value -> Map.add key value state) details)
+
+            return collected
         }
 
     let createWith
@@ -338,22 +392,14 @@ module internal NuGetPackageOperationPreviews =
                         match mappings with
                         | Error error -> return Error error
                         | Ok policies ->
-                            let detailPolicy =
-                                policies
-                                |> Map.toList
-                                |> List.tryHead
-                                |> Option.map snd
-                                |> Option.defaultValue (PackageSourceMappingPolicy.Allowed [])
-
                             let! details =
                                 readDetails
                                     requests
                                     request.Id
-                                    request.Target
                                     request.Value.BrowseSource
                                     request.Value.Operation
                                     package
-                                    detailPolicy
+                                    policies
                                     evaluated
 
                             return
@@ -419,7 +465,10 @@ module internal NuGetPackageOperationPreviews =
                         let mutable collected =
                             Ok(
                                 Map.empty<PackageId * PackageProjectId, PackageSourceMappingPolicy>,
-                                Map.empty<PackageId * NuGetVersion, PackageDetails>
+                                Map.empty<
+                                    PackageId * PackageProjectId * NuGetVersion,
+                                    PackageDetails
+                                 >
                             )
 
                         for operation in operations do
@@ -438,24 +487,14 @@ module internal NuGetPackageOperationPreviews =
                                 match mappings with
                                 | Error error -> collected <- Error error
                                 | Ok policies ->
-                                    let detailPolicy =
-                                        policies
-                                        |> Map.toList
-                                        |> List.tryHead
-                                        |> Option.map snd
-                                        |> Option.defaultValue (
-                                            PackageSourceMappingPolicy.Allowed []
-                                        )
-
                                     let! details =
                                         readDetails
                                             requests
                                             request.Id
-                                            request.Target
                                             request.Value.BrowseSource
                                             operation
                                             package
-                                            detailPolicy
+                                            policies
                                             evaluated
 
                                     collected <-
