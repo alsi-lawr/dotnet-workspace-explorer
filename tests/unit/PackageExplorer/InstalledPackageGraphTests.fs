@@ -219,7 +219,8 @@ module private InstalledPackageGraphScenario =
     let configuration configPath mapping =
         { Sources = [ source ]
           ConfigFiles = [ Path.GetFullPath configPath ]
-          SourceMappingEnabled = mapping }
+          SourceMappingEnabled = mapping
+          RestoreVerified = false }
 
     let targetFramework graph =
         match graph.Target with
@@ -369,7 +370,8 @@ type InstalledPackageGraphTests() =
             state
                 { Sources = [ InstalledPackageGraphScenario.source ]
                   ConfigFiles = []
-                  SourceMappingEnabled = false }
+                  SourceMappingEnabled = false
+                  RestoreVerified = false }
             |> should equal InstalledPackageGraphState.StaleRestoreGraph
 
             let emptyConfigAssets =
@@ -385,7 +387,8 @@ type InstalledPackageGraphTests() =
             state
                 { Sources = [ InstalledPackageGraphScenario.source ]
                   ConfigFiles = []
-                  SourceMappingEnabled = false }
+                  SourceMappingEnabled = false
+                  RestoreVerified = false }
             |> should equal InstalledPackageGraphState.UnverifiablyFreshRestoreGraph
 
             InstalledPackageGraphScenario.write
@@ -565,10 +568,29 @@ type InstalledPackageGraphTests() =
                 changedFrameworkSnapshot
                 (InstalledPackageGraphScenario.configuration config false)
 
-            assertStale
-                original
+            let unverifiable =
+                InstalledPackageGraphs.readSnapshot
+                    { InstalledPackageGraphScenario.configuration config false with
+                        SourceMappingEnabled = true }
+                    original
+                    assets
+
+            unverifiable
+            |> List.map _.State
+            |> List.distinct
+            |> should equal [ InstalledPackageGraphState.UnverifiablyFreshRestoreGraph ]
+
+            unverifiable |> List.collect _.Packages |> should not' (be Empty)
+
+            InstalledPackageGraphs.readSnapshot
                 { InstalledPackageGraphScenario.configuration config false with
-                    SourceMappingEnabled = true }
+                    SourceMappingEnabled = true
+                    RestoreVerified = true }
+                original
+                assets
+            |> List.map _.State
+            |> List.distinct
+            |> should equal [ InstalledPackageGraphState.Current ]
 
             assertStale
                 original

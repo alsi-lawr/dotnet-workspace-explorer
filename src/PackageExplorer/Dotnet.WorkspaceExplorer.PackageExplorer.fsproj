@@ -23,6 +23,7 @@
         <Compile Include="Sources/NuGetSourceFailures.fs" />
         <Compile Include="Sources/NuGetSources.fs" />
         <Compile Include="Installed/InstalledPackageGraphs.fs" />
+        <Compile Include="Installed/DotnetInstalledRestore.fs" />
         <Compile Include="Installed/NuGetInstalledPackages.fs" />
         <Compile Include="Sources/NuGetPackageSearch.fs" />
         <Compile Include="Sources/NuGetPackageDetails.fs" />

@@ -15,7 +15,8 @@ open NuGet.ProjectModel
 type internal EffectiveRestoreConfiguration =
     { Sources: string list
       ConfigFiles: string list
-      SourceMappingEnabled: bool }
+      SourceMappingEnabled: bool
+      RestoreVerified: bool }
 
 [<RequireQualifiedAccess>]
 module internal InstalledPackageGraphs =
@@ -140,7 +141,8 @@ module internal InstalledPackageGraphs =
             |> List.map normalizedPath
             |> List.distinct
             |> List.sortWith (fun left right -> pathComparer.Compare(left, right))
-          SourceMappingEnabled = catalog.Mapping.IsEnabled }
+          SourceMappingEnabled = catalog.Mapping.IsEnabled
+          RestoreVerified = false }
 
     let private restoredConfiguration root (lockFile: LockFile) =
         let metadata = lockFile.PackageSpec.RestoreMetadata
@@ -164,7 +166,8 @@ module internal InstalledPackageGraphs =
             |> Seq.distinct
             |> Seq.sortWith (fun left right -> pathComparer.Compare(left, right))
             |> Seq.toList
-          SourceMappingEnabled = false }
+          SourceMappingEnabled = false
+          RestoreVerified = false }
 
     let private setEquals
         (comparer: IEqualityComparer<string>)
@@ -336,10 +339,12 @@ module internal InstalledPackageGraphs =
             if
                 not (setEquals StringComparer.Ordinal configuration.Sources restored.Sources)
                 || not (setEquals pathComparer configuration.ConfigFiles restored.ConfigFiles)
-                || configuration.SourceMappingEnabled
             then
                 InstalledPackageGraphState.StaleRestoreGraph
-            elif List.isEmpty configuration.ConfigFiles then
+            elif
+                List.isEmpty configuration.ConfigFiles
+                || (configuration.SourceMappingEnabled && not configuration.RestoreVerified)
+            then
                 InstalledPackageGraphState.UnverifiablyFreshRestoreGraph
             else
                 InstalledPackageGraphState.Current
@@ -557,6 +562,11 @@ module internal InstalledPackageGraphs =
                 else
                     match graphState snapshot configuration lockFile with
                     | InstalledPackageGraphState.Current -> currentGraphs snapshot lockFile
+                    | InstalledPackageGraphState.UnverifiablyFreshRestoreGraph ->
+                        currentGraphs snapshot lockFile
+                        |> List.map (fun graph ->
+                            { graph with
+                                State = InstalledPackageGraphState.UnverifiablyFreshRestoreGraph })
                     | state -> unavailable state snapshot
             with
             | :? IOException

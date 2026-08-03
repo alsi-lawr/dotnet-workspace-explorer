@@ -30,6 +30,7 @@ module Program =
             Console.Out.Write "second"
             0
         | _, Some "failure" ->
+            InvocationSettings.recordInvocation arguments
             Console.Error.Write "\u001b[31mfailure\u001b[0m"
             23
         | _, Some "marker" ->

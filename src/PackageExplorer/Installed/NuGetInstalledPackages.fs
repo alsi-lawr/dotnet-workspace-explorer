@@ -4,7 +4,9 @@ namespace Dotnet.WorkspaceExplorer.PackageExplorer
 #nowarn "3262"
 
 open System
+open System.Collections.Concurrent
 open System.IO
+open System.Threading
 open Dotnet.WorkspaceExplorer.Packages
 open Dotnet.WorkspaceExplorer.ProjectEvaluation
 open Dotnet.WorkspaceExplorer.Solutions
@@ -44,7 +46,7 @@ module internal NuGetInstalledPackages =
         |> Seq.sortWith (fun left right -> StringComparer.Ordinal.Compare(left, right))
         |> Seq.toList
 
-    let private projectPaths target =
+    let projectPaths target =
         async {
             let path = PackageWorkspaceTarget.path target
 
@@ -90,6 +92,12 @@ module internal NuGetInstalledPackages =
                         )
         }
 
+    let private nativeMsBuildPath (value: string) =
+        value
+            .Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar)
+            .Replace('\\', Path.DirectorySeparatorChar)
+            .Replace('/', Path.DirectorySeparatorChar)
+
     let private assetsPath (snapshot: ProjectEvaluationSnapshot) =
         let projectDirectory =
             Path.GetDirectoryName snapshot.ProjectPath.Value
@@ -105,6 +113,7 @@ module internal NuGetInstalledPackages =
                     && not (String.IsNullOrWhiteSpace property.Value))
                 |> Option.map _.Value)
             |> Option.defaultValue "obj"
+            |> nativeMsBuildPath
 
         let directory =
             if Path.IsPathRooted intermediate then
@@ -118,6 +127,7 @@ module internal NuGetInstalledPackages =
         (evaluator: ProjectEvaluator)
         (workspacePath: string)
         (projectPath: string)
+        restoreVerified
         =
         async {
             let! evaluated =
@@ -155,13 +165,47 @@ module internal NuGetInstalledPackages =
 
                         return
                             InstalledPackageGraphs.readSnapshot
-                                configuration
+                                { configuration with
+                                    RestoreVerified = restoreVerified }
                                 snapshot
                                 (assetsPath snapshot)
                             |> Ok
         }
 
-    let read (request: PackageRequest<unit>) =
+    let private readResolved
+        (evaluator: ProjectEvaluator)
+        restoreVerified
+        (request: PackageRequest<unit>)
+        projectPaths
+        =
+        async {
+            let workspacePath = PackageWorkspaceTarget.path request.Target
+
+            let! results =
+                projectPaths
+                |> List.map (fun project ->
+                    evaluateProject evaluator workspacePath project restoreVerified)
+                |> Async.Sequential
+
+            match
+                results
+                |> Array.tryPick (function
+                    | Error error -> Some error
+                    | Ok _ -> None)
+            with
+            | Some error -> return Error error
+            | None ->
+                return
+                    results
+                    |> Array.choose (function
+                        | Ok graphs -> Some graphs
+                        | Error _ -> None)
+                    |> Array.collect List.toArray
+                    |> Array.toList
+                    |> Ok
+        }
+
+    let readWithEvaluator (evaluator: ProjectEvaluator) (request: PackageRequest<unit>) =
         async {
             let! projects = projectPaths request.Target
 
@@ -175,32 +219,92 @@ module internal NuGetInstalledPackages =
                             "The package explorer target contains no supported projects."
                             PackageFailureRetry.AfterUserAction
                     )
-            | Ok projectPaths ->
-                let workspacePath = PackageWorkspaceTarget.path request.Target
-                let evaluator = new ProjectEvaluator()
+            | Ok resolved -> return! readResolved evaluator false request resolved
+        }
 
+    let readWithFactory
+        (evaluatorFactory: unit -> ProjectEvaluator)
+        (request: PackageRequest<unit>)
+        =
+        async {
+            let evaluator = evaluatorFactory ()
+
+            try
+                return! readWithEvaluator evaluator request
+            finally
+                evaluator.DisposeAsync().AsTask().GetAwaiter().GetResult()
+        }
+
+    let read (request: PackageRequest<unit>) =
+        readWithFactory (fun () -> new ProjectEvaluator()) request
+
+    let refreshWith
+        (evaluatorFactory: unit -> ProjectEvaluator)
+        (runRestore: RunInstalledRestore)
+        (requests: ConcurrentDictionary<PackageRequestId, CancellationTokenSource>)
+        (request: PackageRequest<unit>)
+        =
+        async {
+            let! ambient = Async.CancellationToken
+            use cancellation = CancellationTokenSource.CreateLinkedTokenSource ambient
+
+            if not (requests.TryAdd(request.Id, cancellation)) then
+                return
+                    Error(
+                        failure
+                            PackageFailureKind.InvalidRequest
+                            "The package request identifier is already active."
+                            PackageFailureRetry.Never
+                    )
+            else
                 try
-                    let! results =
-                        projectPaths
-                        |> List.map (evaluateProject evaluator workspacePath)
-                        |> Async.Sequential
+                    let! projects = projectPaths request.Target
 
-                    match
-                        results
-                        |> Array.tryPick (function
-                            | Error error -> Some error
-                            | Ok _ -> None)
-                    with
-                    | Some error -> return Error error
-                    | None ->
+                    match projects with
+                    | Error error -> return Error error
+                    | Ok [] ->
                         return
-                            results
-                            |> Array.choose (function
-                                | Ok graphs -> Some graphs
-                                | Error _ -> None)
-                            |> Array.collect List.toArray
-                            |> Array.toList
-                            |> Ok
+                            Error(
+                                failure
+                                    PackageFailureKind.NotFound
+                                    "The package explorer target contains no supported projects."
+                                    PackageFailureRetry.AfterUserAction
+                            )
+                    | Ok resolved ->
+                        let workspacePath = PackageWorkspaceTarget.path request.Target
+
+                        let workingDirectory =
+                            if Directory.Exists workspacePath then
+                                workspacePath
+                            else
+                                Path.GetDirectoryName workspacePath
+                                |> Option.ofObj
+                                |> Option.defaultValue (Directory.GetCurrentDirectory())
+
+                        let rec restoreAll =
+                            function
+                            | [] -> async.Return(Ok())
+                            | project :: remaining ->
+                                async {
+                                    let! restored =
+                                        runRestore workingDirectory project cancellation.Token
+
+                                    match restored with
+                                    | Error error -> return Error error
+                                    | Ok() -> return! restoreAll remaining
+                                }
+
+                        let! restored = restoreAll resolved
+
+                        match restored with
+                        | Error error -> return Error error
+                        | Ok() ->
+                            let evaluator = evaluatorFactory ()
+
+                            try
+                                return! readResolved evaluator true request resolved
+                            finally
+                                evaluator.DisposeAsync().AsTask().GetAwaiter().GetResult()
                 finally
-                    evaluator.DisposeAsync().AsTask().GetAwaiter().GetResult()
+                    requests.TryRemove request.Id |> ignore
         }

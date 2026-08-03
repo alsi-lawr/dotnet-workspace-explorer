@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <IsPackable>false</IsPackable>
+        <IsTestProject>true</IsTestProject>
+        <OutputType>Exe</OutputType>
+        <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
+        <AssemblyName>Dotnet.WorkspaceExplorer.PackageExplorer.IntegrationTests</AssemblyName>
+        <RootNamespace>Dotnet.WorkspaceExplorer.PackageExplorer.IntegrationTests</RootNamespace>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <Compile Include="InstalledPackagePortTests.fs" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../../../src/PackageExplorer/Dotnet.WorkspaceExplorer.PackageExplorer.fsproj" />
+        <ProjectReference Include="../../../src/ProjectEvaluation/Dotnet.WorkspaceExplorer.ProjectEvaluation.csproj" />
+        <ProjectReference Include="../../../src/WorkspaceExplorer/Dotnet.WorkspaceExplorer.fsproj" />
+        <ProjectReference Include="../Support/ScriptedDotnet/Dotnet.WorkspaceExplorer.Testing.ScriptedDotnet.fsproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="FSharp.Core" />
+        <PackageReference Include="FsUnit.Xunit" />
+        <PackageReference Include="xunit.v3" />
+    </ItemGroup>
+</Project>

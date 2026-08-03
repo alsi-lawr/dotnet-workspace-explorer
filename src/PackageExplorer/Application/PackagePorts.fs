@@ -66,6 +66,9 @@ type ReadPackageSourceMapping =
 type ReadInstalledPackages =
     PackageRequest<unit> -> Async<Result<InstalledPackageGraph list, PackageFailure>>
 
+type RefreshInstalledPackages =
+    PackageRequest<unit> -> Async<Result<InstalledPackageGraph list, PackageFailure>>
+
 type ReadPackageUpdates =
     PackageRequest<PrereleaseSelection> -> Async<Result<PackageUpdate list, PackageFailure>>
 
@@ -88,6 +91,7 @@ type PackageExplorerPorts =
       Search: SearchPackages
       Details: ReadPackageDetails
       Installed: ReadInstalledPackages
+      RefreshInstalled: RefreshInstalledPackages
       Updates: ReadPackageUpdates
       Consolidation: ReadPackageConsolidation
       Preview: PreviewPackageOperation

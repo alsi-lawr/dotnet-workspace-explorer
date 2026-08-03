@@ -25,6 +25,10 @@ module internal InvocationSettings =
         | None -> false
 
     let recordInvocation arguments =
+        match setting "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_DOTNET_WORKING_DIRECTORY_PATH" with
+        | Some path -> File.WriteAllText(path, Directory.GetCurrentDirectory())
+        | None -> ()
+
         match setting "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_DOTNET_CAPTURE_PATH" with
         | Some path ->
             let directory = Path.GetDirectoryName path

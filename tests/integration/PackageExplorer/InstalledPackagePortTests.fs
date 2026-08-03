@@ -1,0 +1,397 @@
+namespace Dotnet.WorkspaceExplorer.PackageExplorer.IntegrationTests
+
+#nowarn "3261"
+#nowarn "3262"
+
+open System
+open System.Diagnostics
+open System.IO
+open System.Text.Json
+open System.Threading
+open Dotnet.WorkspaceExplorer.PackageExplorer
+open Dotnet.WorkspaceExplorer.Packages
+open Dotnet.WorkspaceExplorer.ProjectEvaluation
+open FsUnit.Xunit
+open Xunit
+
+module private InstalledPortScenario =
+    type Workspace =
+        { Directory: string
+          Project: string
+          Solution: string }
+
+    let rec private repositoryRoot directory =
+        if File.Exists(Path.Combine(directory, "Directory.Packages.props")) then
+            directory
+        else
+            match Directory.GetParent directory with
+            | null -> failwith "Could not locate the repository root."
+            | parent -> repositoryRoot parent.FullName
+
+    let private root = repositoryRoot AppContext.BaseDirectory
+
+    let private configuration =
+        let parent = DirectoryInfo(AppContext.BaseDirectory).Parent
+
+        if isNull parent then "Debug" else parent.Name
+
+    let private executable directory name =
+        let fileName = if OperatingSystem.IsWindows() then name + ".exe" else name
+
+        Path.Combine(root, directory, "bin", configuration, "net10.0", fileName)
+
+    let product = executable "src/WorkspaceExplorer" "Dotnet.WorkspaceExplorer"
+
+    let private scripted =
+        executable
+            "tests/integration/Support/ScriptedDotnet"
+            "Dotnet.WorkspaceExplorer.Testing.ScriptedDotnet"
+
+    let temporaryDirectory name =
+        let path =
+            Path.Combine(
+                root,
+                ".agent-workspace",
+                "mtp",
+                $"package-installed-{name}-{Guid.NewGuid():N}"
+            )
+
+        Directory.CreateDirectory path |> ignore
+        path
+
+    let write (path: string) (contents: string) = File.WriteAllText(path, contents)
+
+    let private runDotnet directory arguments =
+        let startInfo =
+            ProcessStartInfo(
+                FileName = "dotnet",
+                WorkingDirectory = directory,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            )
+
+        arguments |> List.iter startInfo.ArgumentList.Add
+        use child = Process.Start startInfo
+
+        if isNull child then
+            failwith "The dotnet process did not start."
+
+        let output = child.StandardOutput.ReadToEnd()
+        let error = child.StandardError.ReadToEnd()
+        child.WaitForExit()
+
+        if child.ExitCode <> 0 then
+            failwithf "dotnet failed (%d): %s%s" child.ExitCode output error
+
+    let createWorkspace name =
+        let directory = temporaryDirectory name
+        let feed = Path.Combine(directory, "feed")
+        Directory.CreateDirectory feed |> ignore
+
+        write
+            (Path.Combine(directory, "NuGet.Config"))
+            $"""
+<configuration>
+  <packageSources>
+    <clear />
+    <add key="local" value="{feed}" />
+  </packageSources>
+  <packageSourceMapping>
+    <packageSource key="local"><package pattern="*" /></packageSource>
+  </packageSourceMapping>
+</configuration>
+"""
+
+        let project = Path.Combine(directory, "Example.csproj")
+
+        write
+            project
+            """
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <BaseIntermediateOutputPath>obj\</BaseIntermediateOutputPath>
+  </PropertyGroup>
+</Project>
+"""
+
+        let solution = Path.Combine(directory, "Example.slnx")
+        write solution "<Solution><Project Path=\"Example.csproj\" /></Solution>"
+        runDotnet directory [ "restore"; project; "--nologo" ]
+
+        { Directory = directory
+          Project = project
+          Solution = solution }
+
+    let delete workspace =
+        if Directory.Exists workspace.Directory then
+            Directory.Delete(workspace.Directory, true)
+
+    let evaluatorFactory () =
+        let launch = EvaluationWorkerLaunch(product, null, "dotnet")
+        new ProjectEvaluator(launch)
+
+    let request target =
+        { Id = PackageRequestId.newId ()
+          Target = target
+          Value = () }
+
+    let fileTarget path =
+        PackageWorkspaceTarget.file path |> Result.defaultWith (failwithf "%A")
+
+    let directoryTarget path =
+        PackageWorkspaceTarget.directory path |> Result.defaultWith (failwithf "%A")
+
+    let installed target =
+        let catalog =
+            NuGetPackageCatalog.createWith evaluatorFactory DotnetInstalledRestore.run
+
+        catalog.Installed(request target) |> Async.RunSynchronously
+
+    let requireGraphs =
+        function
+        | Error error ->
+            failwithf "%s: %s" (PackageFailure.code error) (PackageFailure.message error)
+        | Ok graphs -> graphs
+
+    let assertImmediateGraph graphs =
+        graphs
+        |> List.map _.State
+        |> List.distinct
+        |> should equal [ InstalledPackageGraphState.UnverifiablyFreshRestoreGraph ]
+
+        graphs |> List.collect _.Packages |> should not' (be Empty)
+
+    let copyScriptedDotnet directory =
+        let sourceDirectory = Path.GetDirectoryName scripted
+        let destination = Path.Combine(directory, "scripted-dotnet")
+        Directory.CreateDirectory destination |> ignore
+
+        for source in Directory.EnumerateFiles sourceDirectory do
+            let target = Path.Combine(destination, Path.GetFileName source)
+            File.Copy(source, target, true)
+
+            if not (OperatingSystem.IsWindows()) then
+                File.SetUnixFileMode(target, File.GetUnixFileMode source)
+
+        Path.Combine(destination, Path.GetFileName scripted)
+
+    type EnvironmentScope(values: (string * string option) list) =
+        let previous =
+            values
+            |> List.map (fun (name, _) ->
+                name, Environment.GetEnvironmentVariable name |> Option.ofObj)
+
+        do
+            values
+            |> List.iter (fun (name, value) ->
+                Environment.SetEnvironmentVariable(name, value |> Option.toObj))
+
+        interface IDisposable with
+            member _.Dispose() =
+                previous
+                |> List.iter (fun (name, value) ->
+                    Environment.SetEnvironmentVariable(name, value |> Option.toObj))
+
+    let waitForFile path =
+        if not (File.Exists path) then
+            use watcher =
+                new FileSystemWatcher(Path.GetDirectoryName path, Path.GetFileName path)
+
+            watcher.EnableRaisingEvents <- true
+
+            if not (File.Exists path) then
+                let change = WatcherChangeTypes.Created ||| WatcherChangeTypes.Renamed
+                watcher.WaitForChanged(change, 10000).TimedOut |> should equal false
+
+    let capturedArguments path =
+        File.ReadAllLines path
+        |> Array.map (fun line ->
+            use document = JsonDocument.Parse line
+
+            document.RootElement.EnumerateArray()
+            |> Seq.map (fun element -> element.GetString())
+            |> Seq.map (Option.ofObj >> Option.defaultValue "")
+            |> Seq.toList)
+        |> Array.toList
+
+[<CollectionDefinition("Package installed scenarios", DisableParallelization = true)>]
+type PackageInstalledCollection() = class end
+
+[<Collection("Package installed scenarios")>]
+type InstalledPackagePortTests() =
+    [<Fact>]
+    member _.``public installed port evaluates a direct project and finds native assets when MSBuild returns obj backslash``
+        ()
+        =
+        let workspace = InstalledPortScenario.createWorkspace "direct"
+
+        try
+            workspace.Project
+            |> InstalledPortScenario.fileTarget
+            |> InstalledPortScenario.installed
+            |> InstalledPortScenario.requireGraphs
+            |> InstalledPortScenario.assertImmediateGraph
+        finally
+            InstalledPortScenario.delete workspace
+
+    [<Fact>]
+    member _.``public installed port evaluates every supported project under a directory target``
+        ()
+        =
+        let workspace = InstalledPortScenario.createWorkspace "directory"
+
+        try
+            workspace.Directory
+            |> InstalledPortScenario.directoryTarget
+            |> InstalledPortScenario.installed
+            |> InstalledPortScenario.requireGraphs
+            |> InstalledPortScenario.assertImmediateGraph
+        finally
+            InstalledPortScenario.delete workspace
+
+    [<Fact>]
+    member _.``public installed port resolves the supported project set from a solution XML target``
+        ()
+        =
+        let workspace = InstalledPortScenario.createWorkspace "solution-xml"
+
+        try
+            workspace.Solution
+            |> InstalledPortScenario.fileTarget
+            |> InstalledPortScenario.installed
+            |> InstalledPortScenario.requireGraphs
+            |> InstalledPortScenario.assertImmediateGraph
+        finally
+            InstalledPortScenario.delete workspace
+
+    [<Fact>]
+    member _.``successful refresh uses one closed stock restore vector in workspace context and returns a verified mapped graph``
+        ()
+        =
+        let workspace = InstalledPortScenario.createWorkspace "refresh-success"
+
+        try
+            let capture = Path.Combine(workspace.Directory, "restore-arguments.jsonl")
+            let working = Path.Combine(workspace.Directory, "restore-working-directory.txt")
+            let continuePath = Path.Combine(workspace.Directory, "continue")
+            InstalledPortScenario.write continuePath "continue"
+            let fakeHost = InstalledPortScenario.copyScriptedDotnet workspace.Directory
+
+            use _environment =
+                new InstalledPortScenario.EnvironmentScope(
+                    [ "DOTNET_HOST_PATH", Some fakeHost
+                      "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_DOTNET_MODE", Some "workspace-command"
+                      "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_DOTNET_CAPTURE_PATH", Some capture
+                      "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_DOTNET_WORKING_DIRECTORY_PATH",
+                      Some working
+                      "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_DOTNET_CONTINUE_PATH", Some continuePath ]
+                )
+
+            let catalog =
+                NuGetPackageCatalog.createWith
+                    InstalledPortScenario.evaluatorFactory
+                    DotnetInstalledRestore.run
+
+            let result =
+                catalog.RefreshInstalled(
+                    InstalledPortScenario.request (
+                        InstalledPortScenario.fileTarget workspace.Project
+                    )
+                )
+                |> Async.RunSynchronously
+                |> InstalledPortScenario.requireGraphs
+
+            result
+            |> List.map _.State
+            |> List.distinct
+            |> should equal [ InstalledPackageGraphState.Current ]
+
+            result |> List.collect _.Packages |> should not' (be Empty)
+
+            InstalledPortScenario.capturedArguments capture
+            |> should equal [ [ "restore"; workspace.Project; "--nologo" ] ]
+
+            File.ReadAllText working |> should equal workspace.Directory
+        finally
+            InstalledPortScenario.delete workspace
+
+    [<Fact>]
+    member _.``failed refresh returns a stable external-tool failure and leaves the immediate installed read available``
+        ()
+        =
+        let workspace = InstalledPortScenario.createWorkspace "refresh-failure"
+
+        try
+            let fakeHost = InstalledPortScenario.copyScriptedDotnet workspace.Directory
+
+            use _environment =
+                new InstalledPortScenario.EnvironmentScope(
+                    [ "DOTNET_HOST_PATH", Some fakeHost
+                      "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_DOTNET_MODE", Some "failure" ]
+                )
+
+            let catalog =
+                NuGetPackageCatalog.createWith
+                    InstalledPortScenario.evaluatorFactory
+                    DotnetInstalledRestore.run
+
+            let target = InstalledPortScenario.fileTarget workspace.Project
+
+            match
+                catalog.RefreshInstalled(InstalledPortScenario.request target)
+                |> Async.RunSynchronously
+            with
+            | Ok _ -> failwith "The scripted restore failure unexpectedly succeeded."
+            | Error error ->
+                PackageFailure.kind error |> should equal PackageFailureKind.ExternalToolFailed
+
+                PackageFailure.code error |> should equal "DWE-PACKAGE-EXTERNAL-TOOL-FAILED"
+
+            catalog.Installed(InstalledPortScenario.request target)
+            |> Async.RunSynchronously
+            |> InstalledPortScenario.requireGraphs
+            |> InstalledPortScenario.assertImmediateGraph
+        finally
+            InstalledPortScenario.delete workspace
+
+    [<Fact>]
+    member _.``cancelled refresh terminates the scripted restore and returns the stable cancelled failure``
+        ()
+        =
+        let workspace = InstalledPortScenario.createWorkspace "refresh-cancel"
+
+        try
+            let fakeHost = InstalledPortScenario.copyScriptedDotnet workspace.Directory
+            let started = Path.Combine(workspace.Directory, "started")
+            let continuePath = Path.Combine(workspace.Directory, "continue")
+
+            use _environment =
+                new InstalledPortScenario.EnvironmentScope(
+                    [ "DOTNET_HOST_PATH", Some fakeHost
+                      "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_DOTNET_MODE", Some "workspace-command"
+                      "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_DOTNET_STARTED_PATH", Some started
+                      "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_DOTNET_CONTINUE_PATH", Some continuePath ]
+                )
+
+            let catalog =
+                NuGetPackageCatalog.createWith
+                    InstalledPortScenario.evaluatorFactory
+                    DotnetInstalledRestore.run
+
+            let request =
+                InstalledPortScenario.request (InstalledPortScenario.fileTarget workspace.Project)
+
+            let refresh = catalog.RefreshInstalled request |> Async.StartAsTask
+            InstalledPortScenario.waitForFile started
+
+            catalog.Cancel(PackageCancellation.Request request.Id) |> Async.RunSynchronously
+
+            match refresh.GetAwaiter().GetResult() with
+            | Ok _ -> failwith "The cancelled refresh unexpectedly succeeded."
+            | Error error ->
+                PackageFailure.kind error |> should equal PackageFailureKind.Cancelled
+                PackageFailure.code error |> should equal "DWE-PACKAGE-CANCELLED"
+        finally
+            InstalledPortScenario.delete workspace

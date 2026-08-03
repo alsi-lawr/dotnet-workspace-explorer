@@ -26,6 +26,7 @@
         <Project Path="tests/unit/Rpc/Dotnet.WorkspaceExplorer.Rpc.UnitTests.fsproj" />
         <Project Path="tests/unit/Workspaces/Dotnet.WorkspaceExplorer.Workspaces.UnitTests.fsproj" />
         <Project Path="tests/unit/PackageExplorer/Dotnet.WorkspaceExplorer.PackageExplorer.UnitTests.fsproj" />
+        <Project Path="tests/integration/PackageExplorer/Dotnet.WorkspaceExplorer.PackageExplorer.IntegrationTests.fsproj" />
         <Project Path="tests/integration/ProjectEvaluation/Dotnet.WorkspaceExplorer.ProjectEvaluation.IntegrationTests.fsproj" />
         <Project Path="tests/integration/Workspaces/Dotnet.WorkspaceExplorer.Workspaces.IntegrationTests.fsproj" />
         <Project Path="tests/integration/Support/ScriptedDotnet/Dotnet.WorkspaceExplorer.Testing.ScriptedDotnet.fsproj" />

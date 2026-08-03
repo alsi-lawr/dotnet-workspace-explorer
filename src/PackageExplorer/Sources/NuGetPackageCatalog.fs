@@ -10,11 +10,15 @@ type PackageCatalogPorts =
       Search: SearchPackages
       Details: ReadPackageDetails
       Installed: ReadInstalledPackages
+      RefreshInstalled: RefreshInstalledPackages
       Cancel: CancelPackageWork }
 
 [<RequireQualifiedAccess>]
 module NuGetPackageCatalog =
-    let create () =
+    let createWith
+        (evaluatorFactory: unit -> Dotnet.WorkspaceExplorer.ProjectEvaluation.ProjectEvaluator)
+        (runRestore: RunInstalledRestore)
+        =
         let requests = ConcurrentDictionary<PackageRequestId, CancellationTokenSource>()
 
         let cancel cancellation =
@@ -27,9 +31,17 @@ module NuGetPackageCatalog =
                 | PackageCancellation.Operation _ -> ()
             }
 
-        { ConfiguredSources = NuGetSources.configuredSources
-          SourceMapping = NuGetSources.sourceMapping
-          Search = NuGetPackageSearch.search requests
-          Details = NuGetPackageDetails.details requests
-          Installed = NuGetInstalledPackages.read
-          Cancel = cancel }
+        ({ ConfiguredSources = NuGetSources.configuredSources
+           SourceMapping = NuGetSources.sourceMapping
+           Search = NuGetPackageSearch.search requests
+           Details = NuGetPackageDetails.details requests
+           Installed = NuGetInstalledPackages.readWithFactory evaluatorFactory
+           RefreshInstalled =
+             NuGetInstalledPackages.refreshWith evaluatorFactory runRestore requests
+           Cancel = cancel }
+        : PackageCatalogPorts)
+
+    let create () =
+        createWith
+            (fun () -> new Dotnet.WorkspaceExplorer.ProjectEvaluation.ProjectEvaluator())
+            DotnetInstalledRestore.run
