@@ -7,5 +7,5 @@ type RpcError =
 
 type RpcFrame =
     | Request of messageId: uint32 * methodName: string * parameters: RpcValue
-    | Response of messageId: uint32 * error: RpcError option * result: RpcValue
+    | Response of messageId: uint32 * outcome: Result<RpcValue, RpcError>
     | Notification of methodName: string * parameters: RpcValue

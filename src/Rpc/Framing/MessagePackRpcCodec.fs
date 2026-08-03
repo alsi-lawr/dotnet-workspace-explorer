@@ -332,7 +332,12 @@ module MessagePackRpcCodec =
                                     | Some messageId, Ok rpcError ->
                                         Ok(
                                             RpcFrameDecodeResult.Frame(
-                                                Response(messageId, rpcError, resultValue)
+                                                Response(
+                                                    messageId,
+                                                    match rpcError with
+                                                    | Some error -> Error error
+                                                    | None -> Ok resultValue
+                                                )
                                             )
                                         )
                                     | None, _ ->
@@ -398,14 +403,11 @@ module MessagePackRpcCodec =
         buffer.WrittenSpan.ToArray()
 
     let encodeFrame frame =
-        let errorValue (error: RpcError option) =
-            match error with
-            | None -> RpcValue.Nil
-            | Some value ->
-                RpcValue.map
-                    [ "code", RpcValue.String value.Code
-                      "message", RpcValue.String value.Message
-                      "data", value.Data |> Option.defaultValue RpcValue.Nil ]
+        let errorValue (error: RpcError) =
+            RpcValue.map
+                [ "code", RpcValue.String error.Code
+                  "message", RpcValue.String error.Message
+                  "data", error.Data |> Option.defaultValue RpcValue.Nil ]
 
         match frame with
         | Request(id, methodName, parameters) ->
@@ -414,12 +416,13 @@ module MessagePackRpcCodec =
                   RpcValue.Unsigned(uint64 id)
                   RpcValue.String methodName
                   parameters ]
-        | Response(id, error, result) ->
-            RpcValue.array
-                [ RpcValue.Unsigned 1UL
-                  RpcValue.Unsigned(uint64 id)
-                  errorValue error
-                  result ]
+        | Response(id, outcome) ->
+            let error, result =
+                match outcome with
+                | Ok result -> RpcValue.Nil, result
+                | Error error -> errorValue error, RpcValue.Nil
+
+            RpcValue.array [ RpcValue.Unsigned 1UL; RpcValue.Unsigned(uint64 id); error; result ]
         | Notification(methodName, parameters) ->
             RpcValue.array [ RpcValue.Unsigned 2UL; RpcValue.String methodName; parameters ]
         |> encodeValue

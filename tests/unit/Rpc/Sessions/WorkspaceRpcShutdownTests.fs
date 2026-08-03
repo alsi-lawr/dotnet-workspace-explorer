@@ -44,11 +44,7 @@ type WorkspaceRpcShutdownTests() =
                                 )
                     }
 
-                Task.FromResult(
-                    Ok
-                        { Test.dispatchResult Test.empty false with
-                            BackgroundWork = Some background }
-                )
+                Task.FromResult(Ok(Test.dispatchResultWithBackground Test.empty background))
             else
                 Task.FromResult(Ok(Test.dispatchResult Test.empty true))
 
@@ -66,8 +62,8 @@ type WorkspaceRpcShutdownTests() =
         (stderr) |> should equal (String.Empty)
 
         match Test.frames stdout with
-        | [ Response(1u, None, _)
-            Response(2u, None, _)
+        | [ Response(1u, Ok _)
+            Response(2u, Ok _)
             Notification("workspace/operations/completed", RpcValue.Map fields)
-            Response(3u, None, _) ] -> (fields) |> should be Empty
+            Response(3u, Ok _) ] -> (fields) |> should be Empty
         | frames -> failwithf "Shutdown ordering changed: %A" frames

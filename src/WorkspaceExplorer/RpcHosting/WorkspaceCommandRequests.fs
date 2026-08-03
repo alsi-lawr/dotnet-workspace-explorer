@@ -111,8 +111,8 @@ module internal WorkspaceCommandRequests =
                   { Operation = "modify"
                     Target = destination
                     Recursive = false } ]
-            | WorkspaceEditAction.Delete(path, _, recursive) ->
-                [ { Operation = "trash"
+            | WorkspaceEditAction.PermanentDelete(path, recursive) ->
+                [ { Operation = "delete"
                     Target = path
                     Recursive = recursive } ]
             | WorkspaceEditAction.Trash path ->
@@ -287,21 +287,21 @@ module internal WorkspaceCommandRequests =
                         return
                             catalog
                             |> Result.map (fun catalog ->
-                                { Result =
-                                    WorkspaceTemplateCatalog.options
-                                        target
-                                        (context.AddExistingNegotiated())
-                                        catalog
-                                    |> Seq.filter (fun option ->
-                                        not workspace.Descriptor.IsReadOnly
-                                        || (option.Kind <> WorkspaceCreateKind.SolutionFolder
-                                            && option.Kind <> WorkspaceCreateKind.AddExisting))
-                                    |> Seq.map createOption
-                                    |> WorkspaceRpcResponses.createOptionsResult revision
-                                  Notifications = []
-                                  BackgroundWork = None
-                                  AfterResponse = None
-                                  StopAfterResponse = false })
+                                RpcRequestResult.Continue
+                                    { Result =
+                                        WorkspaceTemplateCatalog.options
+                                            target
+                                            (context.AddExistingNegotiated())
+                                            catalog
+                                        |> Seq.filter (fun option ->
+                                            not workspace.Descriptor.IsReadOnly
+                                            || (option.Kind <> WorkspaceCreateKind.SolutionFolder
+                                                && option.Kind <> WorkspaceCreateKind.AddExisting))
+                                        |> Seq.map createOption
+                                        |> WorkspaceRpcResponses.createOptionsResult revision
+                                      Notifications = []
+                                      BackgroundWork = None
+                                      AfterResponse = None })
                     | _ ->
                         return
                             Error(
@@ -316,14 +316,15 @@ module internal WorkspaceCommandRequests =
                 | Error rpcError -> return Error rpcError
                 | Ok(_, target) ->
                     return
-                        Ok
-                            { Result =
-                                availableCommands context workspace target
-                                |> WorkspaceRpcResponses.commandListResult
-                              Notifications = []
-                              BackgroundWork = None
-                              AfterResponse = None
-                              StopAfterResponse = false }
+                        Ok(
+                            RpcRequestResult.Continue
+                                { Result =
+                                    availableCommands context workspace target
+                                    |> WorkspaceRpcResponses.commandListResult
+                                  Notifications = []
+                                  BackgroundWork = None
+                                  AfterResponse = None }
+                        )
             | WorkspaceRpcRequest.CommandDescribe(commandId, targetNodeId) ->
                 let! resolved =
                     resolveTarget context workspace targetNodeId requestCancellationToken
@@ -337,12 +338,13 @@ module internal WorkspaceCommandRequests =
                     |> Seq.exists (fun candidate -> candidate.Id = descriptor.Id)
                     ->
                     return
-                        Ok
-                            { Result = WorkspaceRpcResponses.commandDescribeResult descriptor
-                              Notifications = []
-                              BackgroundWork = None
-                              AfterResponse = None
-                              StopAfterResponse = false }
+                        Ok(
+                            RpcRequestResult.Continue
+                                { Result = WorkspaceRpcResponses.commandDescribeResult descriptor
+                                  Notifications = []
+                                  BackgroundWork = None
+                                  AfterResponse = None }
+                        )
                 | _ ->
                     return
                         Error(
@@ -402,20 +404,21 @@ module internal WorkspaceCommandRequests =
                                     return Error(WorkspaceRpcResponses.failureError failure)
                                 | Success preview ->
                                     return
-                                        Ok
-                                            { Result =
-                                                WorkspaceRpcResponses.commandPreviewResult
-                                                    preview
-                                                    prepared.Summary
-                                                    (prepared.Effects
-                                                     |> Seq.map (fun effect ->
-                                                         effect.Operation,
-                                                         effect.Target,
-                                                         effect.Recursive))
-                                              Notifications = []
-                                              BackgroundWork = None
-                                              AfterResponse = None
-                                              StopAfterResponse = false }
+                                        Ok(
+                                            RpcRequestResult.Continue
+                                                { Result =
+                                                    WorkspaceRpcResponses.commandPreviewResult
+                                                        preview
+                                                        prepared.Summary
+                                                        (prepared.Effects
+                                                         |> Seq.map (fun effect ->
+                                                             effect.Operation,
+                                                             effect.Target,
+                                                             effect.Recursive))
+                                                  Notifications = []
+                                                  BackgroundWork = None
+                                                  AfterResponse = None }
+                                        )
             | WorkspaceRpcRequest.CommandExecute(commandId,
                                                  targetNodeId,
                                                  arguments,
@@ -529,17 +532,7 @@ module internal WorkspaceCommandRequests =
                                     | Some templateDescriptor, Ok argv ->
                                         return!
                                             DotnetCommandOperation.start
-                                                { Workspace = workspace
-                                                  State = context.State
-                                                  Watcher = context.Watcher
-                                                  Coordinator = context.Coordinator
-                                                  PublicationGate = context.PublicationGate
-                                                  ActiveOperations = context.ActiveOperations
-                                                  WorkspaceRoot = context.WorkspaceRoot
-                                                  MaximumFrameBytes = context.MaximumFrameBytes
-                                                  RebuildWatcher = context.RebuildWatcher
-                                                  MutationNotifications =
-                                                    context.MutationNotifications }
+                                                (WorkspaceCommandContext.operation workspace context)
                                                 templateDescriptor
                                                 request
                                                 (Some prepared.Plan)
@@ -579,14 +572,15 @@ module internal WorkspaceCommandRequests =
                                                 CancellationToken.None
 
                                         return
-                                            Ok
-                                                { Result =
-                                                    WorkspaceRpcResponses.commandExecuteResult
-                                                        context.State.Revision
-                                                  Notifications = notifications
-                                                  BackgroundWork = None
-                                                  AfterResponse = None
-                                                  StopAfterResponse = false }
+                                            Ok(
+                                                RpcRequestResult.Continue
+                                                    { Result =
+                                                        WorkspaceRpcResponses.commandExecuteResult
+                                                            context.State.Revision
+                                                      Notifications = notifications
+                                                      BackgroundWork = None
+                                                      AfterResponse = None }
+                                            )
                         | Ok(_, targetContext), Some descriptor, confirmationToken when
                             DotnetCommandCatalog.tryDescribe descriptor.Id |> Option.isSome
                             && (not (DotnetCommandCatalog.isMutation descriptor.Id.Value)
@@ -679,21 +673,11 @@ module internal WorkspaceCommandRequests =
                                         | Error message ->
                                             return Error(RpcErrors.invalidParams message)
                                         | Ok argv ->
-                                            let mutationNotifications =
-                                                context.MutationNotifications
-
                                             return!
                                                 DotnetCommandOperation.start
-                                                    { Workspace = workspace
-                                                      State = context.State
-                                                      Watcher = context.Watcher
-                                                      Coordinator = context.Coordinator
-                                                      PublicationGate = context.PublicationGate
-                                                      ActiveOperations = context.ActiveOperations
-                                                      WorkspaceRoot = context.WorkspaceRoot
-                                                      MaximumFrameBytes = context.MaximumFrameBytes
-                                                      RebuildWatcher = context.RebuildWatcher
-                                                      MutationNotifications = mutationNotifications }
+                                                    (WorkspaceCommandContext.operation
+                                                        workspace
+                                                        context)
                                                     descriptor
                                                     mutationRequest
                                                     plannedCommand
@@ -728,16 +712,7 @@ module internal WorkspaceCommandRequests =
                                 | Success(CompositePlan plan) ->
                                     return!
                                         WorkspaceEditOperation.Start(
-                                            { Workspace = workspace
-                                              State = context.State
-                                              Watcher = context.Watcher
-                                              Coordinator = context.Coordinator
-                                              PublicationGate = context.PublicationGate
-                                              ActiveOperations = context.ActiveOperations
-                                              WorkspaceRoot = context.WorkspaceRoot
-                                              MaximumFrameBytes = context.MaximumFrameBytes
-                                              RebuildWatcher = context.RebuildWatcher
-                                              MutationNotifications = context.MutationNotifications },
+                                            WorkspaceCommandContext.operation workspace context,
                                             CompositePlan plan,
                                             confirmationToken,
                                             "Starting project relocation.",
@@ -798,14 +773,15 @@ module internal WorkspaceCommandRequests =
                                                 CancellationToken.None
 
                                         return
-                                            Ok
-                                                { Result =
-                                                    WorkspaceRpcResponses.commandExecuteResult
-                                                        context.State.Revision
-                                                  Notifications = notifications
-                                                  BackgroundWork = None
-                                                  AfterResponse = None
-                                                  StopAfterResponse = false }
+                                            Ok(
+                                                RpcRequestResult.Continue
+                                                    { Result =
+                                                        WorkspaceRpcResponses.commandExecuteResult
+                                                            context.State.Revision
+                                                      Notifications = notifications
+                                                      BackgroundWork = None
+                                                      AfterResponse = None }
+                                            )
             | _ -> return invalidArg "request" "A command request is required."
         }
 

@@ -6,7 +6,6 @@ open System.IO
 open System.Text
 open System.Threading
 open System.Threading.Tasks
-open Dotnet.WorkspaceExplorer.CommandLine
 open Dotnet.WorkspaceExplorer.Rpc
 open Dotnet.WorkspaceExplorer.ProjectEvaluation
 open Dotnet.WorkspaceExplorer.Solutions
@@ -111,103 +110,77 @@ module internal ContextWorkspaceActions =
                   )) ]
 
     let private templatePreflightAsync
-        (entry: WorkspaceTemplateEntry)
-        (name: string)
-        (output: WorkspaceArtifactPath)
-        (projectPath: WorkspaceArtifactPath option)
+        (workspace: SolutionWorkspace)
+        (request: CommandMutationRequest)
         (cancellationToken: CancellationToken)
         =
         task {
             use standardOutput = new StringWriter()
             use standardError = new StringWriter()
 
-            let arguments =
-                [ yield "new"
-                  yield entry.ShortName
-                  yield "--name"
-                  yield name
-                  yield "--type"
+            let dryRun =
+                { request with
+                    Arguments =
+                        CommandArguments.Create(
+                            Seq.append
+                                request.Arguments.Values
+                                [ parameter "dryRun" (Boolean true) ]
+                        ) }
 
-                  yield
-                      match entry.Kind with
-                      | WorkspaceCreateKind.ItemTemplate -> "item"
-                      | WorkspaceCreateKind.ProjectTemplate -> "project"
-                      | WorkspaceCreateKind.Empty
-                      | WorkspaceCreateKind.SolutionFolder
-                      | WorkspaceCreateKind.AddExisting ->
-                          invalidArg (nameof entry) "An empty creation is not a dotnet template."
+            match DotnetCommandCatalog.argv workspace dryRun with
+            | Error message -> return Error(RpcErrors.invalidParams message)
+            | Ok arguments ->
+                let! result =
+                    WorkspaceCommandExecution.execute
+                        (arguments |> List.toArray)
+                        standardOutput
+                        standardError
+                        cancellationToken
 
-                  if entry.Kind = WorkspaceCreateKind.ProjectTemplate then
-                      yield "--no-restore"
-
-                  match entry.Language with
-                  | Some language ->
-                      yield "--language"
-                      yield language
-                  | None -> ()
-
-                  match projectPath with
-                  | Some project ->
-                      yield "--project"
-                      yield project.Value
-                  | None -> ()
-
-                  yield "--output"
-                  yield output.Value
-                  yield "--dry-run" ]
-
-            let! result =
-                DirectCommandRunner.ExecuteAsync(
-                    arguments |> List.toArray,
-                    Human(standardOutput, standardError, false, false),
-                    cancellationToken
-                )
-
-            if not result.Success then
-                let message =
-                    result.Diagnostics
-                    |> List.tryHead
-                    |> Option.map _.Message
-                    |> Option.defaultValue "The template preflight failed."
-
-                return Error(RpcErrors.create "template_preflight_failed" message None)
-            else
-                let prefix = "Create:"
-
-                let paths =
-                    standardOutput
-                        .ToString()
-                        .Split([| '\r'; '\n' |], StringSplitOptions.RemoveEmptyEntries)
-                    |> Seq.map _.Trim()
-                    |> Seq.choose (fun line ->
-                        if line.StartsWith(prefix, StringComparison.Ordinal) then
-                            let value = line[prefix.Length ..].Trim()
-
-                            if String.IsNullOrWhiteSpace value then
-                                None
-                            else
-                                Some(
-                                    if Path.IsPathRooted value then
-                                        Path.GetFullPath value
-                                    else
-                                        Path.GetFullPath(value, Directory.GetCurrentDirectory())
-                                )
-                        else
-                            None)
-                    |> Seq.distinct
-                    |> Seq.sort
-                    |> Seq.toArray
-
-                if paths.Length = 0 then
+                match result with
+                | Error diagnostic ->
                     return
-                        Error(
-                            RpcErrors.create
-                                "template_preflight_failed"
-                                "The template preflight did not report any output artifacts."
-                                None
-                        )
-                else
-                    return Ok paths
+                        Error(RpcErrors.create "template_preflight_failed" diagnostic.Message None)
+                | Ok() ->
+                    let prefix = "Create:"
+
+                    let paths =
+                        standardOutput
+                            .ToString()
+                            .Split([| '\r'; '\n' |], StringSplitOptions.RemoveEmptyEntries)
+                        |> Seq.map _.Trim()
+                        |> Seq.choose (fun line ->
+                            if line.StartsWith(prefix, StringComparison.Ordinal) then
+                                let value = line[prefix.Length ..].Trim()
+
+                                if String.IsNullOrWhiteSpace value then
+                                    None
+                                else
+                                    Some(
+                                        if Path.IsPathRooted value then
+                                            Path.GetFullPath value
+                                        else
+                                            Path.GetFullPath(
+                                                value,
+                                                Directory.GetCurrentDirectory()
+                                            )
+                                    )
+                            else
+                                None)
+                        |> Seq.distinct
+                        |> Seq.sort
+                        |> Seq.toArray
+
+                    if paths.Length = 0 then
+                        return
+                            Error(
+                                RpcErrors.create
+                                    "template_preflight_failed"
+                                    "The template preflight did not report any output artifacts."
+                                    None
+                            )
+                    else
+                        return Ok paths
         }
 
     let private planLowLevel
@@ -378,28 +351,19 @@ module internal ContextWorkspaceActions =
                     | Some entry when entry.Kind = WorkspaceCreateKind.ItemTemplate ->
                         match context.ProjectId, context.ProjectPath, context.PhysicalDirectory with
                         | Some _, Some projectPath, Some outputDirectory ->
+                            let request =
+                                { CommandId = CommandId.Create "template.create"
+                                  TargetWorkspaceNodeId = None
+                                  Arguments =
+                                    templateArguments entry name outputDirectory (Some projectPath)
+                                  ExpectedRevision = WorkspaceRevision.Create expectedRevision }
+
                             let! preflight =
-                                templatePreflightAsync
-                                    entry
-                                    name
-                                    outputDirectory
-                                    (Some projectPath)
-                                    cancellationToken
+                                templatePreflightAsync workspace request cancellationToken
 
                             match preflight with
                             | Error rpcError -> return Error rpcError
                             | Ok outputs ->
-                                let request =
-                                    { CommandId = CommandId.Create "template.create"
-                                      TargetWorkspaceNodeId = None
-                                      Arguments =
-                                        templateArguments
-                                            entry
-                                            name
-                                            outputDirectory
-                                            (Some projectPath)
-                                      ExpectedRevision = WorkspaceRevision.Create expectedRevision }
-
                                 let! planned =
                                     planLowLevel workspace state request cancellationToken
 
@@ -444,18 +408,17 @@ module internal ContextWorkspaceActions =
 
                         let output = WorkspaceArtifactPath.Create(Path.Combine(solutionRoot, name))
 
-                        let! preflight =
-                            templatePreflightAsync entry name output None cancellationToken
+                        let request =
+                            { CommandId = CommandId.Create "template.create"
+                              TargetWorkspaceNodeId = context.LogicalFolderId
+                              Arguments = templateArguments entry name output None
+                              ExpectedRevision = WorkspaceRevision.Create expectedRevision }
+
+                        let! preflight = templatePreflightAsync workspace request cancellationToken
 
                         match preflight with
                         | Error rpcError -> return Error rpcError
                         | Ok outputs ->
-                            let request =
-                                { CommandId = CommandId.Create "template.create"
-                                  TargetWorkspaceNodeId = context.LogicalFolderId
-                                  Arguments = templateArguments entry name output None
-                                  ExpectedRevision = WorkspaceRevision.Create expectedRevision }
-
                             let! planned = planLowLevel workspace state request cancellationToken
 
                             return

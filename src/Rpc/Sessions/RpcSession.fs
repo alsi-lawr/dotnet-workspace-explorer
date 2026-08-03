@@ -35,15 +35,14 @@ module RpcSession =
                 do! output.FlushAsync cancellationToken
             }
 
-        member _.WriteResponseAsync(messageId: uint32, error: RpcError option, result: RpcValue) =
+        member _.WriteResponseAsync(messageId: uint32, outcome: Result<RpcValue, RpcError>) =
             task {
                 do! gate.WaitAsync cancellationToken
 
                 try
                     let limit = outboundLimit ()
 
-                    let encoded =
-                        MessagePackRpcCodec.encodeFrame (Response(messageId, error, result))
+                    let encoded = MessagePackRpcCodec.encodeFrame (Response(messageId, outcome))
 
                     if encoded.Length <= limit then
                         do! writeBytes encoded
@@ -51,7 +50,7 @@ module RpcSession =
                     else
                         let fallback =
                             MessagePackRpcCodec.encodeFrame (
-                                Response(messageId, Some RpcErrors.responseTooLarge, RpcValue.Nil)
+                                Response(messageId, Error RpcErrors.responseTooLarge)
                             )
 
                         if fallback.Length > limit then
@@ -183,7 +182,7 @@ module RpcSession =
                 }
 
             let writeError id rpcError =
-                writer.WriteResponseAsync(id, Some rpcError, RpcValue.Nil)
+                writer.WriteResponseAsync(id, Error rpcError)
 
             let reportBackgroundFault exceptionValue =
                 if backgroundFault.TrySetResult exceptionValue then
@@ -278,7 +277,7 @@ module RpcSession =
                                             match initialization with
                                             | Ok result ->
                                                 let! outcome =
-                                                    writer.WriteResponseAsync(id, None, result)
+                                                    writer.WriteResponseAsync(id, Ok result)
 
                                                 if outcome = OriginalResponse then
                                                     initialized <- true
@@ -303,21 +302,20 @@ module RpcSession =
                                         | Error rpcError ->
                                             let! _ = writeError id rpcError
                                             ()
-                                        | Ok result when result.StopAfterResponse ->
+                                        | Ok(RpcRequestResult.Stop result) ->
                                             backgroundCancellation.Cancel()
                                             do! awaitBackground ()
 
                                             if backgroundFault.Task.IsCompleted then
                                                 raise (OperationCanceledException())
 
-                                            let! _ =
-                                                writer.WriteResponseAsync(id, None, result.Result)
+                                            let! _ = writer.WriteResponseAsync(id, Ok result)
 
                                             ()
                                             stopping <- true
-                                        | Ok result ->
+                                        | Ok(RpcRequestResult.Continue result) ->
                                             let! outcome =
-                                                writer.WriteResponseAsync(id, None, result.Result)
+                                                writer.WriteResponseAsync(id, Ok result.Result)
 
                                             try
                                                 if outcome = OriginalResponse then

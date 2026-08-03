@@ -38,8 +38,7 @@ type ExportCancellationTests() =
                 while completions = 0 do
                     match Test.readFrame app with
                     | Notification("workspace/export/chunk", _) -> ()
-                    | Response(3u, error, result) ->
-                        (error.IsNone) |> should equal true
+                    | Response(3u, Ok result) ->
                         (Test.field "accepted" result) |> should equal (RpcValue.Boolean true)
                         cancelAccepted <- true
                     | Notification("workspace/operations/completed", parameters) ->

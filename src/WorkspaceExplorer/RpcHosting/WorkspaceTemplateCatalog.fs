@@ -6,7 +6,6 @@ open System.Security.Cryptography
 open System.Text
 open System.Text.Json
 open System.Threading
-open Dotnet.WorkspaceExplorer.CommandLine
 open Dotnet.WorkspaceExplorer.ProjectEvaluation
 open Dotnet.WorkspaceExplorer.Rpc
 open Dotnet.WorkspaceExplorer.Solutions
@@ -167,17 +166,17 @@ module internal WorkspaceTemplateCatalog =
                 | Unavailable -> return Error()
                 | Missing ->
                     let! initialized =
-                        DirectCommandRunner.ExecuteAsync(
-                            [| "new"; "list" |],
-                            Human(TextWriter.Null, TextWriter.Null, false, false),
+                        WorkspaceCommandExecution.execute
+                            [| "new"; "list" |]
+                            TextWriter.Null
+                            TextWriter.Null
                             cancellationToken
-                        )
 
                     cancellationToken.ThrowIfCancellationRequested()
 
-                    if not initialized.Success then
-                        return Error()
-                    else
+                    match initialized with
+                    | Error _ -> return Error()
+                    | Ok() ->
                         match! readCacheAsync path cancellationToken with
                         | Found bytes -> return Ok bytes
                         | Missing

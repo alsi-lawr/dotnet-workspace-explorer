@@ -8,7 +8,7 @@ type WorkspaceEditAction =
     | Rename of source: string * destination: string
     | Move of source: string * destination: string
     | Copy of source: string * destination: string
-    | Delete of path: string * permanent: bool * recursive: bool
+    | PermanentDelete of path: string * recursive: bool
     | Trash of path: string
 
 type ArtifactTrashFailure = { Message: string }

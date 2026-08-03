@@ -249,7 +249,7 @@ type WorkspaceEditConfirmationTests() =
 
             coordinator.Prepare(
                 WorkspaceEditScenario.request [] [ target ] [] 0L,
-                [ WorkspaceEditAction.Delete(target, true, false) ]
+                [ WorkspaceEditAction.PermanentDelete(target, false) ]
             )
             |> WorkspaceEditScenario.assertInvalid
 
@@ -288,7 +288,7 @@ type WorkspaceEditConfirmationTests() =
                     [ nonEmpty ]
                     [ WorkspaceEditIntent.PermanentDelete ]
                     0L,
-                [ WorkspaceEditAction.Delete(nonEmpty, true, false) ]
+                [ WorkspaceEditAction.PermanentDelete(nonEmpty, false) ]
             )
             |> WorkspaceEditScenario.assertInvalid
 
@@ -298,7 +298,7 @@ type WorkspaceEditConfirmationTests() =
                     [ nonEmpty ]
                     [ WorkspaceEditIntent.PermanentDelete ]
                     0L,
-                [ WorkspaceEditAction.Delete(nonEmpty, true, true) ]
+                [ WorkspaceEditAction.PermanentDelete(nonEmpty, true) ]
             )
             |> WorkspaceEditScenario.assertInvalid
 

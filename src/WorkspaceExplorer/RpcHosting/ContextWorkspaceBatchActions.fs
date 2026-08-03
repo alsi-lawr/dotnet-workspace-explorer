@@ -40,7 +40,7 @@ module internal ContextWorkspaceBatchActions =
                 | WorkspaceEditAction.CreateDirectory path
                 | WorkspaceEditAction.ReplaceFile(path, _)
                 | WorkspaceEditAction.ReplaceGeneratedDocument(path, _)
-                | WorkspaceEditAction.Delete(path, _, _)
+                | WorkspaceEditAction.PermanentDelete(path, _)
                 | WorkspaceEditAction.Trash path -> [ path ]
                 | WorkspaceEditAction.Rename(source, destination)
                 | WorkspaceEditAction.Move(source, destination)

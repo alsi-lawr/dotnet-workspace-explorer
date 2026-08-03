@@ -19,7 +19,10 @@ type SolutionProjectionTests() =
         let path = SolutionScenario.fixturePath $"Canonical{extension}"
         let workspace = SolutionScenario.openWorkspace path
         let root = workspace.Contents
-        let externalProject = root.Projects |> Seq.find _.Path.IsExternal
+
+        let externalProject =
+            root.Projects |> Seq.find (fun project -> project.Node.Name = "External")
+
         let folder = (root.Folders) |> Seq.exactlyOne
 
         let included =

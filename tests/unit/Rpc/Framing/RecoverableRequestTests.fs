@@ -111,5 +111,5 @@ type RecoverableRequestTests() =
         |> should equal (recoverable |> List.map (fun (_, _, id, code) -> id, code))
 
         match Test.frames stdout |> List.last with
-        | Response(2u, None, _) -> ()
+        | Response(2u, Ok _) -> ()
         | frame -> failwithf "Session did not continue to shutdown: %A" frame

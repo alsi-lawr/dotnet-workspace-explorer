@@ -102,7 +102,7 @@ type WorkspaceEditTransaction
         | WorkspaceEditAction.CreateDirectory path
         | WorkspaceEditAction.ReplaceFile(path, _)
         | WorkspaceEditAction.ReplaceGeneratedDocument(path, _)
-        | WorkspaceEditAction.Delete(path, _, _)
+        | WorkspaceEditAction.PermanentDelete(path, _)
         | WorkspaceEditAction.Trash path -> [ path ]
         | WorkspaceEditAction.Rename(source, destination)
         | WorkspaceEditAction.Move(source, destination)
@@ -260,10 +260,9 @@ type WorkspaceEditTransaction
                                 WorkspaceEditFingerprint.writeValue writer "copy"
                                 WorkspaceEditFingerprint.writeValue writer (nextPath ())
                                 WorkspaceEditFingerprint.writeValue writer (nextPath ())
-                            | WorkspaceEditAction.Delete(_path, permanent, recursive) ->
-                                WorkspaceEditFingerprint.writeValue writer "delete"
+                            | WorkspaceEditAction.PermanentDelete(_path, recursive) ->
+                                WorkspaceEditFingerprint.writeValue writer "permanent-delete"
                                 WorkspaceEditFingerprint.writeValue writer (nextPath ())
-                                writer.Write permanent
                                 writer.Write recursive
                             | WorkspaceEditAction.Trash _path ->
                                 WorkspaceEditFingerprint.writeValue writer "trash"
@@ -295,7 +294,7 @@ type WorkspaceEditTransaction
         let irreversible =
             function
             | WorkspaceEditAction.Trash _
-            | WorkspaceEditAction.Delete _ -> true
+            | WorkspaceEditAction.PermanentDelete _ -> true
             | _ -> false
 
         let trailing =
@@ -330,11 +329,11 @@ type WorkspaceEditTransaction
                    ArtifactFiles.exists source
                    && not (ArtifactFiles.exists destination)
                    && not repeated
-               | WorkspaceEditAction.Delete(path, permanent, recursive) ->
+               | WorkspaceEditAction.PermanentDelete(path, recursive) ->
                    ArtifactFiles.exists path
-                   && (not permanent || intents.Contains WorkspaceEditIntent.PermanentDelete)
+                   && intents.Contains WorkspaceEditIntent.PermanentDelete
                    && (not recursive || intents.Contains WorkspaceEditIntent.RecursiveDelete)
-                   && (not permanent || recursive || not (ArtifactFiles.nonEmptyDirectory path))
+                   && (recursive || not (ArtifactFiles.nonEmptyDirectory path))
                | WorkspaceEditAction.Trash path -> ArtifactFiles.exists path)
 
     let reverseAll reversals =
@@ -720,7 +719,6 @@ type WorkspaceEditTransaction
                                         expected
                                         destination
                                         "The copied artifact did not verify."
-                                | WorkspaceEditAction.Delete(path, false, _)
                                 | WorkspaceEditAction.Trash path ->
                                     match trash.MoveToTrash path with
                                     | Ok() -> irreversible.Add $"moved to trash: {path}"
@@ -730,7 +728,7 @@ type WorkspaceEditTransaction
                                                 unsupported $"Trash refused: {error.Message}"
                                             )
                                         )
-                                | WorkspaceEditAction.Delete(path, true, recursive) ->
+                                | WorkspaceEditAction.PermanentDelete(path, recursive) ->
                                     ArtifactFiles.deletePermanent path recursive
                                     irreversible.Add $"permanently deleted: {path}"
 

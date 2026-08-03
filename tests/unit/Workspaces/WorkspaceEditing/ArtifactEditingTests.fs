@@ -323,7 +323,7 @@ type ArtifactEditingTests() =
                         [ WorkspaceEditIntent.PermanentDelete ]
                         0L
 
-                let brokenDelete = [ WorkspaceEditAction.Delete(broken, true, false) ]
+                let brokenDelete = [ WorkspaceEditAction.PermanentDelete(broken, false) ]
 
                 let brokenPreview =
                     WorkspaceEditScenario.preview coordinator brokenRequest brokenDelete

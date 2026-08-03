@@ -30,14 +30,13 @@ type WorkspaceRpcSerializationBenchmarks() =
         frame <-
             Response(
                 2u,
-                None,
-                RpcValue.map [ "revision", RpcValue.Integer 1L; "nodes", RpcValue.array nodes ]
+                Ok(RpcValue.map [ "revision", RpcValue.Integer 1L; "nodes", RpcValue.array nodes ])
             )
 
         encoded <- MessagePackRpcCodec.encodeFrame frame
 
         match MessagePackRpcCodec.decodeFrame MessagePackRpcCodec.secureLimits encoded with
-        | Ok(RpcFrameDecodeResult.Frame(Response(2u, None, _))) -> ()
+        | Ok(RpcFrameDecodeResult.Frame(Response(2u, Ok _))) -> ()
         | value -> invalidOp $"The benchmark payload did not round-trip: {value}"
 
     [<Benchmark>]

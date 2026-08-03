@@ -145,12 +145,14 @@ module internal WorkspaceExportRequests =
                     }
 
                 return
-                    Ok
-                        { Result = WorkspaceRpcResponses.exportResult operationId snapshotRevision
-                          Notifications = []
-                          BackgroundWork = Some background
-                          AfterResponse = None
-                          StopAfterResponse = false }
+                    Ok(
+                        RpcRequestResult.Continue
+                            { Result =
+                                WorkspaceRpcResponses.exportResult operationId snapshotRevision
+                              Notifications = []
+                              BackgroundWork = Some background
+                              AfterResponse = None }
+                    )
         }
 
 

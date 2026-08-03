@@ -3,12 +3,11 @@ namespace Dotnet.WorkspaceExplorer.Workspaces.IntegrationTests
 #nowarn "3261"
 
 open System.IO
-open System.Text.Json
 open Dotnet.WorkspaceExplorer.Solutions
 open FsUnit.Xunit
 open Xunit
 
-[<Collection("Delegated dotnet processes")>]
+[<Collection("Launch-profile scenarios")>]
 type LegacyDirectoryImportTests() =
     [<Theory>]
     [<InlineData(".sln", "directory")>]
@@ -58,10 +57,6 @@ type LegacyDirectoryImportTests() =
                     [ "DOTNET_WORKSPACE_EXPLORER_SCRIPTED_DOTNET_STARTED_PATH", marker ]
 
             (DirectCommandProcess.success refused) |> should equal false
-            use document = DirectCommandProcess.json refused
-
-            (document.RootElement.GetProperty("externalExitCode").ValueKind)
-            |> should equal (JsonValueKind.Null)
 
             (File.Exists marker) |> should equal false
         finally

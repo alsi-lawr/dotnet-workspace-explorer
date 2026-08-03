@@ -25,13 +25,6 @@ module internal DirectCommandFailures =
             diagnostic WorkspaceErrorCode.UnsupportedCapability.Value message false
         )
 
-    let external exitCode =
-        ExternalToolFailed(
-            "dotnet",
-            exitCode,
-            diagnostic WorkspaceErrorCode.ExternalToolFailed.Value "The dotnet command failed." true
-        )
-
     let verification message =
         Internal(diagnostic WorkspaceErrorCode.InternalError.Value message false)
 
@@ -39,16 +32,6 @@ module internal DirectCommandFailures =
         Cancelled(
             WorkspaceOperationId.New(),
             diagnostic WorkspaceErrorCode.Cancelled.Value "The dotnet command was cancelled." true
-        )
-
-    let terminationIncomplete () =
-        PartialRecoveryRequired(
-            "Terminate remaining descendant processes manually.",
-            diagnostic
-                WorkspaceErrorCode.PartialRecoveryRequired.Value
-                ("The command process exited, but the full descendant process tree "
-                 + "could not be confirmed terminated.")
-                false
         )
 
     let internalFailure message =

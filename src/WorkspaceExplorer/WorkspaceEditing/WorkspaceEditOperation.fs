@@ -190,13 +190,14 @@ type internal WorkspaceEditOperation =
                     }
 
                 return
-                    Ok
-                        { Result =
-                            WorkspaceRpcResponses.commandOperationResult
-                                operationId
-                                context.State.Revision
-                          Notifications = []
-                          BackgroundWork = Some background
-                          AfterResponse = None
-                          StopAfterResponse = false }
+                    Ok(
+                        RpcRequestResult.Continue
+                            { Result =
+                                WorkspaceRpcResponses.commandOperationResult
+                                    operationId
+                                    context.State.Revision
+                              Notifications = []
+                              BackgroundWork = Some background
+                              AfterResponse = None }
+                    )
         }

@@ -224,9 +224,7 @@ type WorkspaceCommandLifecycleTests() =
 
             while not accepted || completions = 0 do
                 match WorkspaceRpcScenario.readFrame session.Child with
-                | Response(5u, error, result) ->
-                    error |> should equal None
-
+                | Response(5u, Ok result) ->
                     WorkspaceRpcScenario.field "accepted" result
                     |> should equal (RpcValue.Boolean true)
 

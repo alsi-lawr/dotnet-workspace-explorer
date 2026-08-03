@@ -10,18 +10,6 @@ open Dotnet.WorkspaceExplorer.WorkspaceCommands
 open WorkspaceCommandArguments
 
 module internal DotnetLifecycleRequests =
-    let private operationContext (context: WorkspaceCommandContext) workspace =
-        { Workspace = workspace
-          State = context.State
-          Watcher = context.Watcher
-          Coordinator = context.Coordinator
-          PublicationGate = context.PublicationGate
-          ActiveOperations = context.ActiveOperations
-          WorkspaceRoot = context.WorkspaceRoot
-          MaximumFrameBytes = context.MaximumFrameBytes
-          RebuildWatcher = context.RebuildWatcher
-          MutationNotifications = context.MutationNotifications }
-
     let tryExecute
         (context: WorkspaceCommandContext)
         (workspace: SolutionWorkspace)
@@ -68,7 +56,7 @@ module internal DotnetLifecycleRequests =
                     | Ok argv ->
                         let! result =
                             DotnetCommandOperation.start
-                                (operationContext context workspace)
+                                (WorkspaceCommandContext.operation workspace context)
                                 descriptor
                                 request
                                 None

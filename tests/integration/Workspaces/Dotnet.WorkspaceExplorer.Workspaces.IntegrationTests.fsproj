@@ -9,16 +9,12 @@
     </PropertyGroup>
     <ItemGroup>
         <Compile Include="Testing/IntegrationTestCollections.fs" />
-        <Compile Include="Testing/FixtureScenario.fs" />
+        <Compile Include="../Support/WorkspaceRpcTransport.fs" Link="Testing/WorkspaceRpcTransport.fs" />
         <Compile Include="Testing/DirectCommandProcess.fs" />
         <Compile Include="Testing/WorkspaceRpcScenario.fs" />
         <Compile Include="Testing/WorkspaceCommandScenario.fs" />
         <Compile Include="Testing/LaunchProfileScenario.fs" />
-        <Compile Include="Fixtures/SharedFixtureReproducibilityTests.fs" />
-        <Compile Include="DotnetCommands/DotnetArgumentForwardingTests.fs" />
-        <Compile Include="DotnetCommands/DelegatedEditBoundaryTests.fs" />
         <Compile Include="DotnetCommands/LegacyDirectoryImportTests.fs" />
-        <Compile Include="DotnetCommands/DotnetProcessLifecycleTests.fs" />
         <Compile Include="WorkspaceIndex/WorkspaceInvalidationTests.fs" />
         <Compile Include="WorkspaceIndex/WorkspaceWatchPlanTests.fs" />
         <Compile Include="WorkspaceIndex/SemanticWorkspaceTreeTests.fs" />

@@ -426,9 +426,7 @@ type ExportWorkerLifecycleTests() =
                         |> should equal (sequence)
 
                         sequence <- sequence + 1L
-                    | Response(3u, error, result) ->
-                        (error.IsNone) |> should equal true
-                        cancelResult <- Some result
+                    | Response(3u, Ok result) -> cancelResult <- Some result
                     | frame -> failwithf "Unexpected frame before cancellation response: %A" frame
 
                 (WorkspaceRpcScenario.field "accepted" cancelResult.Value)

@@ -47,11 +47,14 @@ type internal RpcHost private () =
         let convertDispatch result stopAfterResponse =
             result
             |> Result.map (fun value ->
-                { Result = value
-                  Notifications = []
-                  BackgroundWork = None
-                  AfterResponse = None
-                  StopAfterResponse = stopAfterResponse })
+                if stopAfterResponse then
+                    RpcRequestResult.Stop value
+                else
+                    RpcRequestResult.Continue
+                        { Result = value
+                          Notifications = []
+                          BackgroundWork = None
+                          AfterResponse = None })
 
         let configuration =
             { Profile = profile

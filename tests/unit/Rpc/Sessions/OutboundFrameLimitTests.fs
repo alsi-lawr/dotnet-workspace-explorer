@@ -93,11 +93,7 @@ type OutboundFrameLimitTests() =
                                 )
                     }
 
-                Task.FromResult(
-                    Ok
-                        { Test.dispatchResult Test.empty false with
-                            BackgroundWork = Some background }
-                )
+                Task.FromResult(Ok(Test.dispatchResultWithBackground Test.empty background))
             else
                 Task.FromResult(Ok(Test.dispatchResult Test.empty true))
 
@@ -172,11 +168,7 @@ type OutboundFrameLimitTests() =
                     completed.TrySetResult() |> ignore
                 }
 
-            Task.FromResult(
-                Ok
-                    { Test.dispatchResult Test.empty false with
-                        BackgroundWork = Some background }
-            )
+            Task.FromResult(Ok(Test.dispatchResultWithBackground Test.empty background))
 
         let input =
             Array.concat
@@ -246,11 +238,7 @@ type OutboundFrameLimitTests() =
                 |> EncodedRpcNotification.Create
                 |> sink.WriteEncodedAsync
 
-            Task.FromResult(
-                Ok
-                    { Test.dispatchResult Test.empty false with
-                        BackgroundWork = Some background }
-            )
+            Task.FromResult(Ok(Test.dispatchResultWithBackground Test.empty background))
 
         let input =
             Array.concat
@@ -272,5 +260,5 @@ type OutboundFrameLimitTests() =
         (errors.ToString()) |> should equal (String.Empty)
 
         match Test.frames (output.ToArray()) with
-        | [ Response(1u, None, _); Response(2u, None, _) ] -> ()
+        | [ Response(1u, Ok _); Response(2u, Ok _) ] -> ()
         | frames -> failwithf "A cancelled prepared write produced partial output: %A" frames

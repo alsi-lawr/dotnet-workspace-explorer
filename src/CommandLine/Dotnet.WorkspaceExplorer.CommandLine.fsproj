@@ -14,19 +14,8 @@
     <ItemGroup>
         <Compile Include="AssemblyInfo.fs" />
         <Compile Include="Commands/DirectCommandModels.fs" />
-        <Compile Include="Rendering/TerminalOutputSanitizer.fs" />
         <Compile Include="DirectCommandFailures.fs" />
-        <Compile Include="Parsing/CommandOptionScanner.fs" />
         <Compile Include="Parsing/DirectCommandParser.fs" />
-        <Compile Include="Targets/CommandTargetDiscovery.fs" />
-        <Compile Include="Packages/FilePackageDirectives.fs" />
-        <Compile Include="Packages/PackageUpdateTargets.fs" />
-        <Compile Include="Templates/TemplateEngineInstallation.fs" />
-        <Compile Include="Verification/SolutionPostconditions.fs" />
-        <Compile Include="Verification/PackagePostconditions.fs" />
-        <Compile Include="Verification/ReferencePostconditions.fs" />
-        <Compile Include="Verification/TemplatePostconditions.fs" />
-        <Compile Include="Execution/DotnetProcess.fs" />
         <Compile Include="Solutions/CommandLineLaunchProfiles.fs" />
         <Compile Include="Solutions/LegacyDirectoryImport.fs" />
         <Compile Include="DirectCommandRunner.fs" />

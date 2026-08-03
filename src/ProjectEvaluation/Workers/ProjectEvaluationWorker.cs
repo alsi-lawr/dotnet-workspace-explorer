@@ -401,9 +401,9 @@ internal sealed class ProjectEvaluationWorker : IAsyncDisposable
             return new EvaluationWorkerAttempt.TransportFailed();
         }
 
-        return response.error is { } error
-            ? new EvaluationWorkerAttempt.RpcFailed(error.Value)
-            : new EvaluationWorkerAttempt.Received(response.result);
+        return response.outcome.IsError
+            ? new EvaluationWorkerAttempt.RpcFailed(response.outcome.ErrorValue)
+            : new EvaluationWorkerAttempt.Received(response.outcome.ResultValue);
     }
 
     private async Task GracefulStopAsync()

@@ -12,12 +12,12 @@ open System.Threading
 open Microsoft.VisualStudio.SolutionPersistence.Model
 open Microsoft.VisualStudio.SolutionPersistence.Serializer
 open Dotnet.WorkspaceExplorer.Rpc
+open Dotnet.WorkspaceExplorer.Testing
 open FsUnit.Xunit
 open Xunit
 
 module internal WorkspaceRpcScenario =
-    let request id name parameters =
-        MessagePackRpcCodec.encodeFrame (Request(id, name, parameters))
+    let request = WorkspaceRpcTransport.request
 
     let map values = RpcValue.map values
 
@@ -196,46 +196,12 @@ module internal WorkspaceRpcScenario =
         startPipeWithDataHome alias solution None
 
     let send (child: Process) fragmented bytes =
-        if fragmented then
-            for value in bytes do
-                child.StandardInput.BaseStream.WriteByte value
-                child.StandardInput.BaseStream.Flush()
-        else
-            child.StandardInput.BaseStream.Write(bytes, 0, bytes.Length)
-            child.StandardInput.BaseStream.Flush()
+        WorkspaceRpcTransport.send child.StandardInput.BaseStream fragmented bytes
 
     let readFrameWithSize (child: Process) =
-        let pending = ResizeArray<byte>()
-        let mutable frame = None
-
-        while frame.IsNone do
-            let next = child.StandardOutput.BaseStream.ReadByte()
-
-            if next < 0 then
-                failwith "The executable stdout ended before a complete frame was received."
-
-            pending.Add(byte next)
-
-            match
-                MessagePackRpcCodec.tryReadValueLength
-                    MessagePackRpcCodec.secureLimits
-                    (pending.ToArray())
-            with
-            | Error RpcFrameDecodeError.Incomplete -> ()
-            | Error error -> failwithf "Invalid executable stdout: %A" error
-            | Ok length when length = pending.Count ->
-                match
-                    MessagePackRpcCodec.decodeFrame
-                        MessagePackRpcCodec.secureLimits
-                        (pending.ToArray())
-                with
-                | Ok(RpcFrameDecodeResult.Frame value) -> frame <- Some(value, length)
-                | Ok(RpcFrameDecodeResult.RecoverableError _) ->
-                    failwith "Server stdout contained a request error."
-                | Error error -> failwithf "Invalid executable frame: %A" error
-            | Ok _ -> failwith "The frame reader consumed an unexpected byte count."
-
-        frame.Value
+        match WorkspaceRpcTransport.readFrameWithSize child.StandardOutput.BaseStream with
+        | Ok frame -> frame
+        | Error message -> failwith message
 
     let readFrame child = readFrameWithSize child |> fst
 
@@ -246,8 +212,11 @@ module internal WorkspaceRpcScenario =
 
     let response id =
         function
-        | Response(actual, error, result) when actual = id -> error, result
-        | frame -> failwithf "Expected response %d, got %A" id frame
+        | frame ->
+            match WorkspaceRpcTransport.response id frame with
+            | Ok(Ok result) -> None, result
+            | Ok(Error error) -> Some error, RpcValue.Nil
+            | Error message -> failwith message
 
     let fields value = RpcValue.requireMap "value" value
 
@@ -299,7 +268,9 @@ module internal WorkspaceRpcScenario =
                 (nextRevision > revision) |> should equal true
                 revision <- nextRevision
                 notifications.Add(Notification("workspace/reset", parameters))
-            | Response(actual, error, value) when actual = id -> result <- Some(error, value)
+            | Response(actual, Ok value) when actual = id -> result <- Some(None, value)
+            | Response(actual, Error error) when actual = id ->
+                result <- Some(Some error, RpcValue.Nil)
             | frame -> failwithf "Expected workspace notification or response %d, got %A" id frame
 
         result.Value, revision, notifications |> Seq.toList
@@ -314,9 +285,15 @@ module internal WorkspaceRpcScenario =
             match frame with
             | Notification("workspace/delta", _)
             | Notification("workspace/reset", _) -> ()
-            | Response(actual, error, result) when actual = id ->
+            | Response(actual, outcome) when actual = id ->
                 (size <= 1024) |> should equal true
-                completed <- Some(error, result)
+
+                completed <-
+                    Some(
+                        match outcome with
+                        | Ok result -> None, result
+                        | Error error -> Some error, RpcValue.Nil
+                    )
             | Response _ -> ()
             | value -> failwithf "Expected shutdown response %d, got %A" id value
 

@@ -596,9 +596,7 @@ type ContextWorkspaceCommandTests() =
 
                         while not accepted || completed.IsNone do
                             match WorkspaceRpcScenario.readFrame child with
-                            | Response(70u, error, result) ->
-                                (error.IsNone) |> should equal true
-
+                            | Response(70u, Ok result) ->
                                 (WorkspaceRpcScenario.field "accepted" result)
                                 |> should equal (RpcValue.Boolean true)
 

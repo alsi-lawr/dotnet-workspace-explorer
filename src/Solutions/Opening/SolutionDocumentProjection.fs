@@ -14,11 +14,6 @@ open SolutionTargetResolution
 open SolutionFilterReader
 
 module internal SolutionDocumentProjection =
-    let isExternal relativePath =
-        relativePath = ".."
-        || relativePath.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
-        || relativePath.StartsWith($"..{Path.AltDirectorySeparatorChar}", StringComparison.Ordinal)
-
     let parentFolderPath (folder: SolutionFolderModel) =
         folder.Parent
         |> Option.ofObj
@@ -187,13 +182,11 @@ module internal SolutionDocumentProjection =
                         filteredOut
                   Path =
                     { AbsolutePath = WorkspaceArtifactPath.Create absolutePath
-                      SolutionRelativePath = relativePath
-                      IsExternal = isExternal relativePath }
+                      SolutionRelativePath = relativePath }
                   ParentFolderPath =
                     project.Parent
                     |> Option.ofObj
                     |> Option.map (fun parent -> text (box parent.Path))
-                  IsFilteredOut = filteredOut
                   ConfigurationRules =
                     project.ProjectConfigurationRules
                     |> Option.ofObj

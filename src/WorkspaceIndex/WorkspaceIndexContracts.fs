@@ -45,12 +45,10 @@ type internal WorkspacePageResult =
       NextToken: WorkspacePageToken option
       Delta: WorkspaceDelta option }
 
+[<RequireQualifiedAccess>]
 type internal WorkspaceRefreshResult =
-    { Revision: int64
-      Reset: bool
-      Delta: WorkspaceDelta option
-      ResetEvent: WorkspaceReset option
-      Diagnostics: ImmutableArray<WorkspaceDiagnostic> }
+    | Refreshed of revision: int64 * delta: WorkspaceDelta option
+    | Reset of WorkspaceReset
 
 type internal WorkspaceExportBatch =
     { Nodes: WorkspaceNode array

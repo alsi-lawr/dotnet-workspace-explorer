@@ -240,9 +240,9 @@ type ProjectItemCommandTests() =
             props,
             encoding.GetBytes(
                 "<?xml version=\"1.0\" encoding=\"iso-8859-1\"?>\r\n"
-                + "<Project>\r\n  <!-- café shared -->\r\n"
+                + "<Project>\r\n  <!-- caf\u00E9 shared -->\r\n"
                 + "  <PropertyGroup Condition=\"'$(MSBuildProjectName)' == 'Demo'\">"
-                + "<AssemblyName>Café</AssemblyName></PropertyGroup>\r\n"
+                + "<AssemblyName>Caf\u00E9</AssemblyName></PropertyGroup>\r\n"
                 + "</Project>\r\n"
             )
         )
@@ -269,7 +269,7 @@ type ProjectItemCommandTests() =
 
             let contents = File.ReadAllText(props, encoding)
             (contents) |> should haveSubstring ("encoding=\"iso-8859-1\"")
-            (contents) |> should haveSubstring ("<!-- café shared -->")
+            (contents) |> should haveSubstring ("<!-- caf\u00E9 shared -->")
             (contents) |> should haveSubstring ("\r\n")
 
             (contents)

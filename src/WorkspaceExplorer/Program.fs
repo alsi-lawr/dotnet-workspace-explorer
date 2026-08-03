@@ -41,24 +41,9 @@ module Program =
                 let jsonMode = arguments |> Array.tryHead = Some "--json"
 
                 let result =
-                    try
-                        DirectCommandRunner
-                            .ExecuteAsync(
-                                arguments,
-                                (if jsonMode then
-                                     Json
-                                 else
-                                     Human(
-                                         Console.Out,
-                                         Console.Error,
-                                         not Console.IsOutputRedirected,
-                                         not Console.IsErrorRedirected
-                                     )),
-                                cancellation.Token
-                            )
-                            .GetAwaiter()
-                            .GetResult()
-                    with _ ->
-                        DirectCommandRunner.InternalFailure()
+                    DirectCommandRunner
+                        .ExecuteAsync(arguments, cancellation.Token)
+                        .GetAwaiter()
+                        .GetResult()
 
                 DirectCommandRendering.render result jsonMode Console.Out Console.Error

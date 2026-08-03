@@ -90,16 +90,17 @@ module internal WorkspaceNavigationRequests =
                 | Error rpcError -> return Error rpcError
                 | Ok(revision, nodes) ->
                     return
-                        Ok
-                            { Result =
-                                WorkspaceRpcResponses.rootResult
-                                    context.State.Descriptor
-                                    revision
-                                    nodes
-                              Notifications = []
-                              BackgroundWork = context.StartWatcher true
-                              AfterResponse = None
-                              StopAfterResponse = false }
+                        Ok(
+                            RpcRequestResult.Continue
+                                { Result =
+                                    WorkspaceRpcResponses.rootResult
+                                        context.State.Descriptor
+                                        revision
+                                        nodes
+                                  Notifications = []
+                                  BackgroundWork = context.StartWatcher true
+                                  AfterResponse = None }
+                        )
         }
 
     let private dispatchChildren context parentNodeId pageSize continuation cancellationToken =
@@ -151,18 +152,20 @@ module internal WorkspaceNavigationRequests =
                             ()
 
                         return
-                            Ok
-                                { Result =
-                                    WorkspaceRpcResponses.childrenResult
-                                        context.State.Descriptor
-                                        result.Revision
-                                        result.ParentWorkspaceNodeId
-                                        result.Nodes
-                                        result.NextToken
-                                  Notifications = stateNotifications
-                                  BackgroundWork = if reset then None else context.StartWatcher true
-                                  AfterResponse = None
-                                  StopAfterResponse = false }
+                            Ok(
+                                RpcRequestResult.Continue
+                                    { Result =
+                                        WorkspaceRpcResponses.childrenResult
+                                            context.State.Descriptor
+                                            result.Revision
+                                            result.ParentWorkspaceNodeId
+                                            result.Nodes
+                                            result.NextToken
+                                      Notifications = stateNotifications
+                                      BackgroundWork =
+                                        if reset then None else context.StartWatcher true
+                                      AfterResponse = None }
+                            )
         }
 
     let private dispatchRefresh context expectedRevision cancellationToken =
@@ -178,50 +181,49 @@ module internal WorkspaceNavigationRequests =
                 | Error rpcError -> return Error rpcError
                 | Ok result ->
                     let! effective =
-                        match
-                            result.Delta |> Option.map WorkspaceRpcNotifications.workspaceDelta
-                        with
-                        | Some notification when
-                            (MessagePackRpcCodec.encodeFrame notification).Length > context
-                                .MaximumFrameBytes()
+                        match result with
+                        | WorkspaceRefreshResult.Refreshed(_, Some delta) when
+                            (MessagePackRpcCodec.encodeFrame (
+                                WorkspaceRpcNotifications.workspaceDelta delta
+                            ))
+                                .Length > context.MaximumFrameBytes()
                             ->
                             task {
                                 let! reset = resetForFramePressure context.State cancellationToken
-
-                                return
-                                    { Revision = reset.Revision.Value
-                                      Reset = true
-                                      Delta = None
-                                      ResetEvent = Some reset
-                                      Diagnostics = reset.Diagnostics }
+                                return WorkspaceRefreshResult.Reset reset
                             }
                         | _ -> Task.FromResult result
 
-                    let stateNotifications =
-                        [ effective.Delta |> Option.map WorkspaceRpcNotifications.workspaceDelta
-                          effective.ResetEvent
-                          |> Option.map WorkspaceRpcNotifications.workspaceReset ]
-                        |> List.choose id
+                    let revision, reset, stateNotifications =
+                        match effective with
+                        | WorkspaceRefreshResult.Refreshed(revision, delta) ->
+                            revision,
+                            false,
+                            (delta
+                             |> Option.map WorkspaceRpcNotifications.workspaceDelta
+                             |> Option.toList)
+                        | WorkspaceRefreshResult.Reset reset ->
+                            reset.Revision.Value,
+                            true,
+                            [ WorkspaceRpcNotifications.workspaceReset reset ]
 
-                    if effective.Reset then
+                    if reset then
                         context.Watcher.Pause()
 
                     let! handoffNotifications =
-                        if effective.Reset then
+                        if reset then
                             Task.FromResult []
                         else
                             rebuildWatcher context cancellationToken
 
                     return
-                        Ok
-                            { Result =
-                                WorkspaceRpcResponses.refreshResult
-                                    effective.Revision
-                                    effective.Reset
-                              Notifications = stateNotifications @ handoffNotifications
-                              BackgroundWork = None
-                              AfterResponse = None
-                              StopAfterResponse = false }
+                        Ok(
+                            RpcRequestResult.Continue
+                                { Result = WorkspaceRpcResponses.refreshResult revision reset
+                                  Notifications = stateNotifications @ handoffNotifications
+                                  BackgroundWork = None
+                                  AfterResponse = None }
+                        )
         }
 
     let private dispatchResolveFile
@@ -252,16 +254,17 @@ module internal WorkspaceNavigationRequests =
                     File.Exists path.Value
                     ->
                     return
-                        Ok
-                            { Result =
-                                WorkspaceRpcResponses.fileResolveResult
-                                    revision
-                                    target.Node.Id.Value
-                                    path.Value
-                              Notifications = []
-                              BackgroundWork = None
-                              AfterResponse = None
-                              StopAfterResponse = false }
+                        Ok(
+                            RpcRequestResult.Continue
+                                { Result =
+                                    WorkspaceRpcResponses.fileResolveResult
+                                        revision
+                                        target.Node.Id.Value
+                                        path.Value
+                                  Notifications = []
+                                  BackgroundWork = None
+                                  AfterResponse = None }
+                        )
                 | (WorkspaceNodeKind.Project | WorkspaceNodeKind.ProjectFile | WorkspaceNodeKind.SolutionItem),
                   _ ->
                     return
@@ -301,11 +304,11 @@ module internal WorkspaceNavigationRequests =
                 return
                     result
                     |> Result.map (fun value ->
-                        { Result = value
-                          Notifications = []
-                          BackgroundWork = None
-                          AfterResponse = None
-                          StopAfterResponse = false })
+                        RpcRequestResult.Continue
+                            { Result = value
+                              Notifications = []
+                              BackgroundWork = None
+                              AfterResponse = None })
         }
 
     let private dispatchCancel (context: WorkspaceRpcContext) operationId =
@@ -315,11 +318,11 @@ module internal WorkspaceNavigationRequests =
                 true, Some operation.CommitCancellationAfterResponse
             | _ -> false, None
 
-        { Result = WorkspaceRpcResponses.cancelResult accepted
-          Notifications = []
-          BackgroundWork = None
-          AfterResponse = afterResponse
-          StopAfterResponse = false }
+        RpcRequestResult.Continue
+            { Result = WorkspaceRpcResponses.cancelResult accepted
+              Notifications = []
+              BackgroundWork = None
+              AfterResponse = afterResponse }
         |> Ok
         |> Task.FromResult
 
@@ -327,11 +330,7 @@ module internal WorkspaceNavigationRequests =
         for operation in context.ActiveOperations.Values do
             operation.CancelForShutdown()
 
-        { Result = WorkspaceRpcResponses.shutdownResult
-          Notifications = []
-          BackgroundWork = None
-          AfterResponse = None
-          StopAfterResponse = true }
+        RpcRequestResult.Stop WorkspaceRpcResponses.shutdownResult
         |> Ok
         |> Task.FromResult
 

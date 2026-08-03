@@ -50,7 +50,6 @@ module internal WorkspaceWatchPlan =
                         |> Option.ofObj
                         |> Option.defaultValue "*"
                         |> ImmutableArray.Create
-                      IncludeSubdirectories = false
                       Kind = WorkspaceWatchKind.ExactFile })
 
         exact projectPath.Value
@@ -61,7 +60,6 @@ module internal WorkspaceWatchPlan =
             specs.Add
                 { Directory = Path.GetFullPath projectDirectory
                   Filters = ImmutableArray.Create "*"
-                  IncludeSubdirectories = true
                   Kind = WorkspaceWatchKind.RecursiveGlob }
 
             let mutable directory = Some(DirectoryInfo projectDirectory)
@@ -99,7 +97,6 @@ module internal WorkspaceWatchPlan =
                         |> Option.ofObj
                         |> Option.defaultValue "*"
                         |> ImmutableArray.Create
-                      IncludeSubdirectories = false
                       Kind = WorkspaceWatchKind.ExactFile })
 
         exact data.Workspace.Descriptor.Path.Value
@@ -137,7 +134,6 @@ module internal WorkspaceWatchPlan =
                     specs.Add
                         { Directory = root.Value
                           Filters = ImmutableArray.Create "*"
-                          IncludeSubdirectories = true
                           Kind = WorkspaceWatchKind.RecursiveGlob }
 
             for dimension in snapshot.Dimensions do
@@ -177,8 +173,7 @@ module internal WorkspaceWatchPlan =
 
         specs
         |> Seq.filter (fun value -> Directory.Exists value.Directory && not value.Filters.IsEmpty)
-        |> Seq.groupBy (fun value ->
-            pathIdentity insensitive value.Directory, value.IncludeSubdirectories, value.Kind)
+        |> Seq.groupBy (fun value -> pathIdentity insensitive value.Directory, value.Kind)
         |> Seq.map (fun (_, values) ->
             let first = Seq.head values
 
@@ -196,11 +191,5 @@ module internal WorkspaceWatchPlan =
             if directory <> 0 then
                 directory
             else
-                let includeChildren =
-                    compare left.IncludeSubdirectories right.IncludeSubdirectories
-
-                if includeChildren <> 0 then
-                    includeChildren
-                else
-                    compare left.Kind right.Kind)
+                compare left.Kind right.Kind)
         |> ImmutableArray.CreateRange

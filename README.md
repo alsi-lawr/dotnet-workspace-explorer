@@ -8,7 +8,7 @@
 
 # dotnet-workspace-explorer
 
-**A .NET solution explorer for the command line and editors.**
+**The shared .NET core for terminal and editor solution explorers.**
 
 <a
   href="https://github.com/alsi-lawr/dotnet-workspace-explorer/blob/master/CONTRIBUTING.md">
@@ -25,8 +25,10 @@
 
 </div>
 
-Workspace Explorer reads and edits .NET solutions. It works with `.sln` and `.slnx` files across
-C#, F#, and Visual Basic projects. Solution filters (`.slnf`) are available as read-only views.
+Workspace Explorer reads and edits `.sln` and `.slnx` workspaces containing C#, F#, and Visual
+Basic projects. It provides the workspace tree, contextual edits, dependency details, launch
+profiles, and change notifications used by editor integrations. Solution filters (`.slnf`) are
+available as read-only views.
 
 ## Install
 
@@ -34,101 +36,62 @@ C#, F#, and Visual Basic projects. Solution filters (`.slnf`) are available as r
 dotnet tool install --global ALSI.WorkspaceExplorer
 ```
 
-Or install it directly from this flake:
+Or install it from the Nix flake:
 
 ```console
 nix profile install github:alsi-lawr/dotnet-workspace-explorer
 ```
 
-Run it as either `dotnet-we` or `dotnet we`:
+Both command forms work:
 
 ```console
-dotnet-we solution ./Demo.slnx list
-dotnet we solution ./Demo.slnx list
+dotnet-we workspace ./Demo.slnx --pipe
+dotnet we workspace ./Demo.slnx --pipe
 ```
 
-## Use
+The Neovim integration is
+[`dotnet-workspace-explorer.nvim`](https://github.com/alsi-lawr/dotnet-workspace-explorer.nvim).
+It starts the workspace service automatically.
 
-Add a project:
+## Commands
+
+Workspace Explorer only provides commands that add behavior beyond the .NET SDK.
+
+Manage `.slnLaunch` profiles:
 
 ```console
-dotnet-we solution ./Demo.slnx add ./src/Demo.Core/Demo.Core.csproj
+dotnet-we solution ./Demo.slnx launch list
+dotnet-we solution ./Demo.slnx launch set Web ./src/Web/Web.csproj
+dotnet-we solution ./Demo.slnx launch remove Web
 ```
 
-List the projects in a solution or read-only solution filter:
+Import an existing directory as nested solution folders:
 
 ```console
-dotnet-we solution ./Demo.sln list
-dotnet-we solution ./Demo.slnf list
+dotnet-we solution ./Demo.slnx add directory ./src
 ```
 
-Run normal .NET commands against a selected workspace:
-
-```console
-dotnet-we build ./Demo.slnx --configuration Release
-dotnet-we test ./Demo.slnx
-```
-
-Workspace Explorer checks changes before it writes them. Editor clients preview changes first and
-send the expected workspace revision when they apply them.
-
-## JSON output
+Use the normal `dotnet` commands for packages, references, templates, builds, tests, restores,
+runs, and ordinary solution changes. Workspace Explorer does not wrap those commands.
 
 Add `--json` when another program needs the result:
 
-```console
-dotnet-we --json solution ./Demo.slnx list
-```
-
-A successful command returns JSON like this:
-
 ```json
 {
-  "commandId": "solution",
-  "diagnostics": [],
-  "externalExitCode": 0,
-  "result": {
-    "childArguments": [
-      "solution",
-      "./Demo.slnx",
-      "list"
-    ],
-    "standardError": "",
-    "standardOutput": "Project(s)\n----------\nsrc/Demo.Core/Demo.Core.csproj\n",
-    "summary": "dotnet command completed"
-  },
-  "revision": 0,
-  "schemaVersion": 1,
-  "success": true
-}
-```
-
-Errors use the same shape and include diagnostics:
-
-```json
-{
-  "commandId": "solution",
+  "commandId": "solution.launch",
   "diagnostics": [
     {
       "artifactPath": null,
-      "code": "external_tool_failed",
-      "correlationId": "1b724f33-3943-48fd-85cc-cdc3e02a26c6",
+      "code": "solution.not_found",
+      "correlationId": "6756aa70-e14f-4036-b828-d94ef49fcfa7",
       "location": null,
-      "retryable": true,
-      "safeMessage": "The dotnet command failed.",
+      "retryable": false,
+      "safeMessage": "The solution or filter file was not found.",
       "severity": "Error"
     }
   ],
-  "externalExitCode": 1,
   "result": {
-    "childArguments": [
-      "solution",
-      "./Missing.slnx",
-      "list"
-    ],
-    "standardError": "Could not find solution or directory `./Missing.slnx`.\n",
-    "standardOutput": "",
-    "summary": null
+    "output": null
   },
   "revision": null,
   "schemaVersion": 1,
@@ -136,9 +99,9 @@ Errors use the same shape and include diagnostics:
 }
 ```
 
-## Editor integration
+## Editor service
 
-Editors can start the MessagePack-RPC server for a workspace:
+Editor clients start the MessagePack-RPC service with:
 
 ```console
 dotnet-we workspace ./Demo.slnx --pipe
@@ -150,22 +113,16 @@ Project export uses three workers by default. Set a different capacity when need
 dotnet-we workspace ./Demo.slnx --pipe --export-workers 4
 ```
 
-The Neovim integration is available from
-[`dotnet-workspace-explorer.nvim`](https://github.com/alsi-lawr/dotnet-workspace-explorer.nvim).
-Protocol details are in:
-
-- [CLI commands][commands]
-- [Workspace RPC][rpc]
+See the [command reference][commands] and [workspace RPC reference][rpc] for the complete
+interfaces.
 
 ## Contributing
 
-See
-[CONTRIBUTING.md][contributing].
+See [CONTRIBUTING.md][contributing].
 
 ## License
 
-MIT. See
-[LICENSE](https://github.com/alsi-lawr/dotnet-workspace-explorer/blob/master/LICENSE).
+MIT. See [LICENSE](https://github.com/alsi-lawr/dotnet-workspace-explorer/blob/master/LICENSE).
 
 [commands]: https://github.com/alsi-lawr/dotnet-workspace-explorer/blob/master/docs/commands.md
 [contributing]: https://github.com/alsi-lawr/dotnet-workspace-explorer/blob/master/CONTRIBUTING.md

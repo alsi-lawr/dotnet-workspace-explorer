@@ -17,7 +17,7 @@ type WorkspaceRpcGoldenFrameTests() =
 
         let cases =
             [ "standard-request.mpack", Request(7u, "x", Test.empty)
-              "standard-response.mpack", Response(7u, Some error, Test.empty)
+              "standard-response.mpack", Response(7u, Error error)
               "standard-notification.mpack",
               Notification("n", Test.map [ "v", RpcValue.Boolean true ])
               "initialize-request.mpack",
@@ -83,14 +83,12 @@ type WorkspaceRpcGoldenFrameTests() =
 
             match decoded with
             | Request(7u, "x", RpcValue.Map fields) -> (fields) |> should be Empty
-            | Response(7u, Some decoded, RpcValue.Map result) ->
+            | Response(7u, Error decoded) ->
                 (decoded.Code) |> should equal ("e")
                 (decoded.Message) |> should equal ("m")
 
                 (decoded.Data |> Option.bind (RpcValue.tryField "d"))
                 |> should equal (Some(RpcValue.Unsigned 1UL))
-
-                (result) |> should be Empty
             | Notification("n", parameters) ->
                 (RpcValue.tryField "v" parameters) |> should equal (Some(RpcValue.Boolean true))
             | Request(_, "initialize", _)

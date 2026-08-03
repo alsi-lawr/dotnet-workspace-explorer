@@ -1,57 +1,113 @@
-# CLI grammar and compatibility
+# Command reference
 
-`dotnet-we` adds solution and workspace commands to the .NET CLI. It selects targets and checks
-changes before handing ordinary SDK commands to `dotnet`.
+`dotnet-we` provides the workspace service and the small set of solution operations that are not
+available from the .NET SDK.
 
 ## Grammar
 
-Every direct form may begin with `--json`:
-
 ```text
-[--json] solution|sln [<SLN_FILE>] add|list|remove|migrate [options]
-[--json] package add|list|remove|update|search|download [options]
-[--json] reference add|list|remove [options]
-[--json] new [<template-name>|create|list|search|details|install|uninstall|update] [options]
-[--json] restore|build|test|run [options]
-[--json] solution|sln <SLN_FILE> launch list|set|remove [options]
+[--json] solution|sln <SLN_FILE> launch list
+[--json] solution|sln <SLN_FILE> launch set <NAME> [<PROJECT>...]
+[--json] solution|sln <SLN_FILE> launch remove <NAME>
+[--json] solution|sln <SLN_FILE> add directory|dir <DIRECTORY>
 workspace <TARGET> --pipe
-workspace <TARGET> --pipe --export-workers <positive-integer>
+workspace <TARGET> --pipe --export-workers <POSITIVE_INTEGER>
 ```
 
-`solution` and `sln` are aliases. The legacy `solution <solution> add directory <path>` import form remains available for adding an existing directory hierarchy as nested solution folders.
+`solution` and `sln` are aliases. `<TARGET>` may be an `.sln`, `.slnx`, `.slnf`, or project file.
+Solution filters are read-only.
 
-Targets may be classic `.sln` or XML `.slnx`. A `.slnf` filter resolves its backing solution for inspection but is read-only: mutation requests against the selected filter are rejected.
+Use the stock `dotnet` CLI for ordinary SDK commands:
 
-Pipe startup uses three export workers by default. `--export-workers` sets a positive, process-local
-logical concurrency bound for that invocation only. The product does not impose another maximum or
-derive the value from processor count; actual workers are created lazily from admitted export work.
-Overrides retain the same graph, ordering, cancellation, failure, freshness, and cleanup contracts
-but carry no time or memory-usage promise. The option is valid only in the final position shown
-above and cannot be combined with `--json`.
+```console
+dotnet package add Newtonsoft.Json --project ./src/App/App.csproj
+dotnet reference add ../Library/Library.csproj --project ./src/App/App.csproj
+dotnet new webapi --output ./src/Api
+dotnet solution ./Demo.slnx add ./src/Api/Api.csproj
+dotnet build ./Demo.slnx
+dotnet test ./Demo.slnx
+```
 
-## JSON results and failures
+Workspace Explorer does not recognize or forward those commands.
 
-With `--json`, the command writes a single JSON envelope. It has schema version `1`, the command ID, a `success` flag, optional workspace `revision`, result summary/child arguments/standard output/standard error, a `diagnostics` array, and optional `externalExitCode`. On failure the process returns non-zero and diagnostics are safe messages rather than an alternate output shape.
+## Launch profiles
 
-A diagnostic carries severity, code, safe message, optional artifact location, retryability, and a correlation ID. Common machine codes include `invalid_input`, `unsupported_capability`, `ambiguous_target`, `workspace_conflict`, `cancelled`, `external_tool_failed`, and `partial_recovery_required`. Consumers must not infer additional persistence or recovery semantics from a successful or failed response.
+Launch profile commands read and write the `.slnLaunch` file beside the selected solution.
 
-## Mutation and delegation boundaries
+```console
+dotnet-we solution ./Demo.slnx launch list
+dotnet-we solution ./Demo.slnx launch set Web ./src/Web/Web.csproj
+dotnet-we solution ./Demo.slnx launch remove Web
+```
 
-Solution, package, reference, and template mutations are checked against the selected workspace. For mutating pipe commands, clients obtain a preview and execute with its confirmation/expected revision. Direct commands perform their documented operation and verify postconditions where possible. A failed mutation may receive narrowly scoped in-process compensation; there is no durable recovery guarantee.
+Listing is allowed through an `.slnf` target. Changes through a solution filter are rejected.
 
-Pipe clients discover contextual `workspace.create` and `workspace.delete` commands for semantic
-workspace nodes. New choices come from the active workspace SDK's installed template catalog,
-including custom templates. Empty files and item templates target the nearest physical directory
-inside the selected project; item choices are filtered to the project language. Project templates
-create a named directory at the solution root and are added to the nearest logical solution folder.
-Delete composes project or solution membership changes with native trash where the selected
-artifact is physical. Template creation is asynchronous; its operation completion is authoritative.
+## Directory import
 
-`restore`, `build`, `run`, and `test` select a workspace or project where appropriate, then invoke
-one ordinary `dotnet` child. The installed SDK owns its options and output.
+Directory import adds an existing physical directory hierarchy as nested solution folders without
+calling `dotnet`.
 
-Launch profiles stored in `.slnLaunch` are configuration data. The tool can list, set, and remove that data; it never executes `.slnLaunch`.
+```console
+dotnet-we solution ./Demo.slnx add directory ./src
+```
 
-## Filters and compatibility
+The `dir` alias is also accepted.
 
-Options and arguments intended for the delegated command are preserved, including tokens following `--`. For package and reference commands, SDK options can precede operands. `new` recognizes the literal subcommands `list`, `search`, `details`, `install`, `uninstall`, `update`, and `create`; any other first positional token is the template name for creation. It inspects output and dry-run options only to maintain its verification boundary. Unsupported or ambiguous inputs are reported rather than guessed.
+## JSON results
+
+Add `--json` to a launch-profile or directory-import command for a machine-readable result:
+
+```console
+dotnet-we --json solution ./Demo.slnx launch list
+```
+
+```json
+{
+  "commandId": "solution.launch",
+  "diagnostics": [],
+  "result": {
+    "output": "Web\n"
+  },
+  "revision": null,
+  "schemaVersion": 1,
+  "success": true
+}
+```
+
+Failures include diagnostics:
+
+```json
+{
+  "commandId": "solution.launch",
+  "diagnostics": [
+    {
+      "artifactPath": null,
+      "code": "solution.not_found",
+      "correlationId": "6756aa70-e14f-4036-b828-d94ef49fcfa7",
+      "location": null,
+      "retryable": false,
+      "safeMessage": "The solution or filter file was not found.",
+      "severity": "Error"
+    }
+  ],
+  "result": {
+    "output": null
+  },
+  "revision": null,
+  "schemaVersion": 1,
+  "success": false
+}
+```
+
+## Workspace service
+
+```console
+dotnet-we workspace ./Demo.slnx --pipe
+```
+
+The service exchanges MessagePack-RPC frames over standard input and output. It is intended for
+editor and TUI integrations rather than interactive shell use. See
+[`workspace-rpc.md`](workspace-rpc.md) for the protocol.
+
+Project export uses three workers by default. `--export-workers` accepts a positive integer and
+changes the process-local concurrency bound for that invocation.

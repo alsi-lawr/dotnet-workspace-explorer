@@ -19,4 +19,4 @@ module private LaunchProfileScenario =
 
     let output result =
         use document = DirectCommandProcess.json result
-        document.RootElement.GetProperty("result").GetProperty("standardOutput").GetString()
+        document.RootElement.GetProperty("result").GetProperty("output").GetString()

@@ -63,11 +63,21 @@ module internal Test =
         |> RpcProfile.create name 1 0
 
     let dispatchResult result stop =
-        { Result = result
-          Notifications = []
-          BackgroundWork = None
-          AfterResponse = None
-          StopAfterResponse = stop }
+        if stop then
+            RpcRequestResult.Stop result
+        else
+            RpcRequestResult.Continue
+                { Result = result
+                  Notifications = []
+                  BackgroundWork = None
+                  AfterResponse = None }
+
+    let dispatchResultWithBackground result background =
+        RpcRequestResult.Continue
+            { Result = result
+              Notifications = []
+              BackgroundWork = Some background
+              AfterResponse = None }
 
     let configurationWithLimit profile getOutboundLimit initialize dispatch =
         { Profile = profile
@@ -111,5 +121,5 @@ module internal Test =
     let responseErrors bytes =
         frames bytes
         |> List.choose (function
-            | Response(id, Some error, _) -> Some(id, error.Code)
+            | Response(id, Error error) -> Some(id, error.Code)
             | _ -> None)

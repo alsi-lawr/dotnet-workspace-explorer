@@ -135,13 +135,6 @@ module internal DirectCommandProcess =
         let diagnostics = document.RootElement.GetProperty "diagnostics"
         diagnostics[0].GetProperty("code").GetString()
 
-    let childArguments result =
-        use document = json result
-
-        document.RootElement.GetProperty("result").GetProperty("childArguments").EnumerateArray()
-        |> Seq.map _.GetString()
-        |> Seq.toArray
-
     let waitForFile path =
         if not (File.Exists path) then
             use watcher =

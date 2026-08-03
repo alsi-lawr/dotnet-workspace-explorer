@@ -26,7 +26,7 @@ type LaunchProfileStorageTests() =
                         [ "solution"; solution; "launch"; "set"; "Both"; second; first ]
 
                 DirectCommandProcess.success set |> should equal true
-                DirectCommandProcess.childArguments set |> should equal [||]
+                LaunchProfileScenario.output set |> should equal ""
 
                 let profile = Path.ChangeExtension(solution, ".slnLaunch")
                 use document = JsonDocument.Parse(File.ReadAllText profile)

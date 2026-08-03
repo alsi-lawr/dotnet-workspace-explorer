@@ -859,13 +859,7 @@ type internal WorkspaceIndex
                         | Failure failure ->
                             let! reset = resetUnsafe failure.Diagnostic
 
-                            return
-                                Ok
-                                    { Revision = reset.Revision.Value
-                                      Reset = true
-                                      Delta = None
-                                      ResetEvent = Some reset
-                                      Diagnostics = reset.Diagnostics }
+                            return Ok(WorkspaceRefreshResult.Reset reset)
                         | Success workspace ->
                             let! hydrated = stageMaterialized current workspace cancellationToken
 
@@ -879,13 +873,7 @@ type internal WorkspaceIndex
                                             "The workspace refresh could not be verified."
                                     )
 
-                                return
-                                    Ok
-                                        { Revision = reset.Revision.Value
-                                          Reset = true
-                                          Delta = None
-                                          ResetEvent = Some reset
-                                          Diagnostics = reset.Diagnostics }
+                                return Ok(WorkspaceRefreshResult.Reset reset)
                             | Ok values ->
                                 let recency = current.Recency |> List.filter values.ContainsKey
 
@@ -897,13 +885,7 @@ type internal WorkspaceIndex
                                           Revision = current.Revision
                                           NeedsRebase = false }
 
-                                return
-                                    Ok
-                                        { Revision = current.Revision
-                                          Reset = false
-                                          Delta = delta
-                                          ResetEvent = None
-                                          Diagnostics = ImmutableArray<WorkspaceDiagnostic>.Empty }
+                                return Ok(WorkspaceRefreshResult.Refreshed(current.Revision, delta))
                     with :? OperationCanceledException ->
                         return Error cancelledError
             finally

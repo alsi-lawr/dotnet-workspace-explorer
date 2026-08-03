@@ -6,29 +6,15 @@ open Dotnet.WorkspaceExplorer.Rpc
 open Dotnet.WorkspaceExplorer.WorkspaceIndex
 open Dotnet.WorkspaceExplorer.WorkspaceEditing
 open Dotnet.WorkspaceExplorer.WorkspaceCommands
-open Dotnet.WorkspaceExplorer.CommandLine
 
 #nowarn "3511"
 
 open System
-open System.Collections.Concurrent
 open System.Collections.Immutable
 open System.IO
 open System.Threading
 open System.Threading.Tasks
 open WorkspaceCommandEditing
-
-type internal DotnetCommandOperationContext =
-    { Workspace: SolutionWorkspace
-      State: WorkspaceIndex
-      Watcher: WorkspaceIndexWatcher
-      Coordinator: WorkspaceEditTransaction
-      PublicationGate: SemaphoreSlim
-      ActiveOperations: ConcurrentDictionary<string, WorkspaceExportOperation>
-      WorkspaceRoot: string
-      MaximumFrameBytes: unit -> int
-      RebuildWatcher: CancellationToken -> Task<RpcFrame list>
-      MutationNotifications: WorkspaceProjectInvalidationResult -> RpcFrame list }
 
 module internal DotnetCommandOperation =
     let private mutationFailure outcome =
@@ -105,16 +91,16 @@ module internal DotnetCommandOperation =
                         let resetForFramePressure =
                             WorkspaceNavigationRequests.resetForFramePressure
 
-                        let brokerOutcome fallback (result: DirectCommandResult) =
-                            match result.Diagnostics |> List.tryHead with
-                            | Some diagnostic when diagnostic.Code.Value = "cancelled" ->
+                        let brokerOutcome fallback (result: Result<unit, WorkspaceDiagnostic>) =
+                            match result with
+                            | Error diagnostic when diagnostic.Code.Value = "cancelled" ->
                                 WorkspaceOperationCompletion.Cancelled
-                            | Some diagnostic ->
+                            | Error diagnostic ->
                                 WorkspaceOperationCompletion.Failed(
                                     diagnostic.Code.Value,
                                     diagnostic.Message
                                 )
-                            | None ->
+                            | Ok() ->
                                 WorkspaceOperationCompletion.Failed(
                                     "external_tool_failed",
                                     fallback
@@ -607,11 +593,11 @@ module internal DotnetCommandOperation =
                                     | None -> argv
 
                                 let! executed =
-                                    DirectCommandRunner.ExecuteAsync(
-                                        effectiveArgv |> List.toArray,
-                                        Human(outputWriter, errorWriter, false, false),
+                                    WorkspaceCommandExecution.execute
+                                        (effectiveArgv |> List.toArray)
+                                        outputWriter
+                                        errorWriter
                                         linked.Token
-                                    )
 
                                 ownedSnapshots <- captureExpectedFiles ownedSnapshots
 
@@ -624,9 +610,9 @@ module internal DotnetCommandOperation =
                                         DotnetCommandCompensation.newOutputRoot before after
                                 | None -> ()
 
-                                if operation.IsCancellationReserved && executed.Success then
+                                if operation.IsCancellationReserved && Result.isOk executed then
                                     outcome <- WorkspaceOperationCompletion.Cancelled
-                                elif not executed.Success then
+                                elif Result.isError executed then
                                     outcome <- brokerOutcome "The dotnet command failed." executed
                                 else
                                     if
@@ -642,13 +628,13 @@ module internal DotnetCommandOperation =
                                         match project with
                                         | Some project ->
                                             let! restored =
-                                                DirectCommandRunner.ExecuteAsync(
-                                                    [| "restore"; project |],
-                                                    Human(outputWriter, errorWriter, false, false),
+                                                WorkspaceCommandExecution.execute
+                                                    [| "restore"; project |]
+                                                    outputWriter
+                                                    errorWriter
                                                     linked.Token
-                                                )
 
-                                            if not restored.Success then
+                                            if Result.isError restored then
                                                 outcome <-
                                                     brokerOutcome
                                                         "The dotnet restore failed."
@@ -1109,11 +1095,14 @@ module internal DotnetCommandOperation =
                     }
 
                 return
-                    Ok
-                        { Result =
-                            WorkspaceRpcResponses.commandOperationResult operationId state.Revision
-                          Notifications = []
-                          BackgroundWork = Some background
-                          AfterResponse = None
-                          StopAfterResponse = false }
+                    Ok(
+                        RpcRequestResult.Continue
+                            { Result =
+                                WorkspaceRpcResponses.commandOperationResult
+                                    operationId
+                                    state.Revision
+                              Notifications = []
+                              BackgroundWork = Some background
+                              AfterResponse = None }
+                    )
         }

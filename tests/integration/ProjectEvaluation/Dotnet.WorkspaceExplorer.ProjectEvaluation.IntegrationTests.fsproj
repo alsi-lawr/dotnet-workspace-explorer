@@ -8,6 +8,7 @@
         <RootNamespace>Dotnet.WorkspaceExplorer.ProjectEvaluation.IntegrationTests</RootNamespace>
     </PropertyGroup>
     <ItemGroup>
+        <Compile Include="../Support/WorkspaceRpcTransport.fs" Link="Testing/WorkspaceRpcTransport.fs" />
         <Compile Include="Testing/RepositoryBuild.fs" />
         <Compile Include="Workers/EvaluationWorkerIsolationTests.fs" />
         <Compile Include="ProjectEvaluation/CentralPackageOwnershipTests.fs" />

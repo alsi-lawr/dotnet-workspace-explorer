@@ -12,8 +12,12 @@ type internal WorkspaceWatchKind =
 type internal WorkspaceWatch =
     { Directory: string
       Filters: ImmutableArray<string>
-      IncludeSubdirectories: bool
       Kind: WorkspaceWatchKind }
+
+    member this.IncludeSubdirectories =
+        match this.Kind with
+        | WorkspaceWatchKind.ExactFile -> false
+        | WorkspaceWatchKind.RecursiveGlob -> true
 
 type internal IndexedNodeKey = IndexedNodeKey of string list
 

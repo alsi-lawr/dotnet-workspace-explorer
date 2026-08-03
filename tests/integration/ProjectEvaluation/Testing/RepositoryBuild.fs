@@ -3,16 +3,14 @@ namespace Dotnet.WorkspaceExplorer.ProjectEvaluation.IntegrationTests
 #nowarn "3261"
 
 open System
-open System.Collections.Generic
 open System.Diagnostics
 open System.IO
 open Dotnet.WorkspaceExplorer.Rpc
+open Dotnet.WorkspaceExplorer.Testing
 open FsUnit.Xunit
 open Xunit
 
 module internal Test =
-    let private pendingFrames = Dictionary<int, ResizeArray<byte>>()
-
     let temporaryDirectory name =
         let path =
             Path.Combine(
@@ -172,58 +170,26 @@ module internal Test =
             child.Kill true
             child.WaitForExit()
 
-        pendingFrames.Remove child.Id |> ignore
         child.Dispose()
 
-    let request id name parameters =
-        MessagePackRpcCodec.encodeFrame (Request(id, name, parameters))
+    let request = WorkspaceRpcTransport.request
 
     let send (child: Process) id name parameters =
         let bytes = request id name parameters
-        child.StandardInput.BaseStream.Write(bytes, 0, bytes.Length)
-        child.StandardInput.BaseStream.Flush()
+        WorkspaceRpcTransport.send child.StandardInput.BaseStream false bytes
 
     let readFrame (child: Process) =
-        let bytes =
-            match pendingFrames.TryGetValue child.Id with
-            | true, pending -> pending
-            | false, _ ->
-                let pending = ResizeArray<byte>()
-                pendingFrames.Add(child.Id, pending)
-                pending
-
-        let mutable frame = None
-
-        while frame.IsNone do
-            match
-                MessagePackRpcCodec.tryReadValueLength
-                    MessagePackRpcCodec.secureLimits
-                    (bytes.ToArray())
-            with
-            | Error RpcFrameDecodeError.Incomplete ->
-                let buffer = Array.zeroCreate<byte> 8192
-                let count = child.StandardOutput.BaseStream.Read(buffer, 0, buffer.Length)
-
-                if count = 0 then
-                    failwith "Apphost stdout ended before a complete frame."
-
-                for index in 0 .. count - 1 do
-                    bytes.Add buffer[index]
-            | Error error -> failwithf "Invalid executable frame: %A" error
-            | Ok length ->
-                let encoded = bytes.GetRange(0, length).ToArray()
-                bytes.RemoveRange(0, length)
-
-                match MessagePackRpcCodec.decodeFrame MessagePackRpcCodec.secureLimits encoded with
-                | Ok(RpcFrameDecodeResult.Frame decoded) -> frame <- Some decoded
-                | decoded -> failwithf "Invalid executable frame: %A" decoded
-
-        frame.Value
+        match WorkspaceRpcTransport.readFrame child.StandardOutput.BaseStream with
+        | Ok frame -> frame
+        | Error message -> failwith message
 
     let response expectedId =
         function
-        | Response(id, error, result) when id = expectedId -> error, result
-        | frame -> failwithf "Expected response %d, got %A" expectedId frame
+        | frame ->
+            match WorkspaceRpcTransport.response expectedId frame with
+            | Ok(Ok result) -> None, result
+            | Ok(Error error) -> Some error, RpcValue.Nil
+            | Error message -> failwith message
 
     let field name value =
         value |> RpcValue.requireMap "value" |> RpcValue.requireField name
@@ -264,10 +230,9 @@ module internal Test =
                 let nextRevision = field "revision" parameters |> RpcValue.requireInteger "revision"
                 (nextRevision > revision) |> should equal true
                 revision <- nextRevision
-            | Response(actual, error, value) when actual = id ->
-                match error with
-                | None -> result <- Some value
-                | Some failure -> failwithf "%s: %s" failure.Code failure.Message
+            | Response(actual, Ok value) when actual = id -> result <- Some value
+            | Response(actual, Error failure) when actual = id ->
+                failwithf "%s: %s" failure.Code failure.Message
             | frame -> failwithf "Expected workspace notification or response %d, got %A" id frame
 
         result.Value, revision
@@ -294,10 +259,9 @@ module internal Test =
                 (nextRevision > revision) |> should equal true
                 revision <- nextRevision
                 reset <- Some parameters
-            | Response(actual, error, value) when actual = id ->
-                match error with
-                | None -> result <- Some value
-                | Some failure -> failwithf "%s: %s" failure.Code failure.Message
+            | Response(actual, Ok value) when actual = id -> result <- Some value
+            | Response(actual, Error failure) when actual = id ->
+                failwithf "%s: %s" failure.Code failure.Message
             | frame -> failwithf "Expected workspace reset or response %d, got %A" id frame
 
         result.Value, reset.Value, revision

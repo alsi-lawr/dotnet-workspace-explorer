@@ -169,7 +169,7 @@ module internal DotnetCommandCompensation =
                     match snapshot.Before with
                     | FileContents contents ->
                         Some(WorkspaceEditAction.ReplaceFile(snapshot.Path, contents))
-                    | Missing -> Some(WorkspaceEditAction.Delete(snapshot.Path, true, false))
+                    | Missing -> Some(WorkspaceEditAction.PermanentDelete(snapshot.Path, false))
                     | NonFile ->
                         conflicts.Add $"{snapshot.Path} (original path was not a regular file)"
                         None)

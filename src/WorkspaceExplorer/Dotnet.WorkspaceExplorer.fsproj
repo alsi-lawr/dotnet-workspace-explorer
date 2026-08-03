@@ -8,7 +8,7 @@
         <PackageOutputPath>../../build</PackageOutputPath>
         <PackageId>ALSI.WorkspaceExplorer</PackageId>
         <Title>dotnet-workspace-explorer</Title>
-        <Description>Explore and edit .NET solutions from the command line or an editor.</Description>
+        <Description>Power terminal and editor solution explorers for .NET workspaces.</Description>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <PackageProjectUrl>https://github.com/alsi-lawr/dotnet-workspace-explorer</PackageProjectUrl>
         <RepositoryUrl>https://github.com/alsi-lawr/dotnet-workspace-explorer.git</RepositoryUrl>
@@ -47,6 +47,7 @@
         <Compile Include="RpcHosting/WorkspaceRpcContexts.fs" />
         <Compile Include="RpcHosting/WorkspaceNavigationRequests.fs" />
         <Compile Include="RpcHosting/WorkspaceExportRequests.fs" />
+        <Compile Include="DotnetCommands/WorkspaceCommandExecution.fs" />
         <Compile Include="RpcHosting/WorkspaceCommandArguments.fs" />
         <Compile Include="RpcHosting/WorkspaceTemplateCatalog.fs" />
         <Compile Include="RpcHosting/ContextWorkspaceActions.fs" />

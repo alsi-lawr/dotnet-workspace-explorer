@@ -56,11 +56,7 @@ type WorkspaceRpcFailureTests() =
                         else
                             Task.FromException<unit>(InvalidOperationException "background fault")
 
-                    Task.FromResult(
-                        Ok
-                            { Test.dispatchResult Test.empty false with
-                                BackgroundWork = Some background }
-                    )
+                    Task.FromResult(Ok(Test.dispatchResultWithBackground Test.empty background))
                 else
                     Task.FromResult(Ok(Test.dispatchResult Test.empty true))
 

@@ -6,12 +6,16 @@ namespace Dotnet.WorkspaceExplorer.Rpc
 open System.Threading
 open System.Threading.Tasks
 
-type RpcRequestResult =
+type RpcResponseEffects =
     { Result: RpcValue
       Notifications: RpcFrame list
       BackgroundWork: (RpcNotificationSink -> CancellationToken -> Task<unit>) option
-      AfterResponse: (unit -> unit) option
-      StopAfterResponse: bool }
+      AfterResponse: (unit -> unit) option }
+
+[<RequireQualifiedAccess>]
+type RpcRequestResult =
+    | Continue of RpcResponseEffects
+    | Stop of RpcValue
 
 type RpcSessionContext =
     { Profile: RpcProfile

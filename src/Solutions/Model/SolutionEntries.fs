@@ -6,8 +6,7 @@ open System.Collections.Immutable
 
 type SolutionProjectPath =
     { AbsolutePath: WorkspaceArtifactPath
-      SolutionRelativePath: string
-      IsExternal: bool }
+      SolutionRelativePath: string }
 
 type SolutionFolder =
     { Node: WorkspaceNode
@@ -42,9 +41,10 @@ type SolutionProject =
     { Node: WorkspaceNode
       Path: SolutionProjectPath
       ParentFolderPath: string option
-      IsFilteredOut: bool
       ConfigurationRules: ImmutableArray<SolutionProjectConfigurationRule>
       ConfigurationMappings: ImmutableArray<SolutionProjectConfiguration> }
+
+    member this.IsFilteredOut = this.Node.LoadState = WorkspaceNodeLoadState.FilteredOut
 
 type SolutionContents =
     { Workspace: WorkspaceDescriptor

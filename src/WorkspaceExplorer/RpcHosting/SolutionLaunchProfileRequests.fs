@@ -11,18 +11,6 @@ open WorkspaceCommandEditing
 open WorkspaceCommandArguments
 
 module internal SolutionLaunchProfileRequests =
-    let private operationContext (context: WorkspaceCommandContext) workspace =
-        { Workspace = workspace
-          State = context.State
-          Watcher = context.Watcher
-          Coordinator = context.Coordinator
-          PublicationGate = context.PublicationGate
-          ActiveOperations = context.ActiveOperations
-          WorkspaceRoot = context.WorkspaceRoot
-          MaximumFrameBytes = context.MaximumFrameBytes
-          RebuildWatcher = context.RebuildWatcher
-          MutationNotifications = context.MutationNotifications }
-
     let private executeProfileMutation
         (context: WorkspaceCommandContext)
         (workspace: SolutionWorkspace)
@@ -46,7 +34,7 @@ module internal SolutionLaunchProfileRequests =
                 | Success(LaunchProfilePlan _ as plan) ->
                     return!
                         WorkspaceEditOperation.Start(
-                            operationContext context workspace,
+                            WorkspaceCommandContext.operation workspace context,
                             plan,
                             preview,
                             "Updating launch profile.",
@@ -107,7 +95,7 @@ module internal SolutionLaunchProfileRequests =
                         | Ok argv ->
                             let! result =
                                 DotnetCommandOperation.start
-                                    (operationContext context workspace)
+                                    (WorkspaceCommandContext.operation workspace context)
                                     descriptor
                                     request
                                     None
