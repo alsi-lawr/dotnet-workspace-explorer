@@ -82,6 +82,14 @@ type ReadPackagePreviewPrecondition =
 type PreviewPackageOperation =
     PackageRequest<PackageOperationRequest> -> Async<Result<PackagePreview, PackageFailure>>
 
+type ReadPackageUpdateBatchPrecondition =
+    PackageRequest<PackageUpdateBatchPreconditionRequest>
+        -> Async<Result<PackagePreviewPrecondition, PackageFailure>>
+
+type PreviewPackageUpdateBatch =
+    PackageRequest<PackageUpdateBatchRequest>
+        -> Async<Result<PackageUpdateBatchPreview, PackageFailure>>
+
 type ExecutePackageOperation =
     PackageRequest<PackageConfirmation>
         -> (PackageProgress -> unit)
@@ -100,5 +108,7 @@ type PackageExplorerPorts =
       Consolidation: ReadPackageConsolidation
       PreviewPrecondition: ReadPackagePreviewPrecondition
       Preview: PreviewPackageOperation
+      UpdateBatchPrecondition: ReadPackageUpdateBatchPrecondition
+      PreviewUpdateBatch: PreviewPackageUpdateBatch
       ExecuteConfirmed: ExecutePackageOperation
       Cancel: CancelPackageWork }

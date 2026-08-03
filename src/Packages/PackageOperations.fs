@@ -24,6 +24,37 @@ type PackageOperationRequest =
       BrowseSource: PackageSourceId option
       Precondition: PackagePreviewPrecondition }
 
+type PackageUpdateSelection =
+    private
+        { Package: PackageId
+          Version: NuGetVersion option
+          Target: PackageTargetScope }
+
+[<RequireQualifiedAccess>]
+module PackageUpdateSelection =
+    let latest package target =
+        { Package = package
+          Version = None
+          Target = target }
+
+    let version package version target =
+        { Package = package
+          Version = Some version
+          Target = target }
+
+    let package selection = selection.Package
+    let requestedVersion selection = selection.Version
+    let target selection = selection.Target
+
+type PackageUpdateBatchPreconditionRequest =
+    { Updates: NonEmptyList<PackageUpdateSelection>
+      BrowseSource: PackageSourceId option }
+
+type PackageUpdateBatchRequest =
+    { Updates: NonEmptyList<PackageUpdateSelection>
+      BrowseSource: PackageSourceId option
+      Precondition: PackagePreviewPrecondition }
+
 [<RequireQualifiedAccess>]
 type ProposedPackageState =
     | Direct of version: NuGetVersion
@@ -159,7 +190,7 @@ module PackagePreview =
             System.String.Equals(currentOwner, proposedOwner, comparison)
         | _ -> false
 
-    let private validChange comparison operation target =
+    let internal validChange comparison operation target =
         match operation, PackageTargetPreview.change target with
         | RequestedPackageOperation.InstallLatest _, PackageTargetChange.Install(current, _) ->
             current
@@ -274,6 +305,141 @@ module PackagePreview =
     let workspaceRevision preview = preview.WorkspaceRevision
     let fileFingerprints preview = preview.FileFingerprints
 
+type PackageUpdateTargetPreview =
+    private
+        { Package: PackageId
+          RequestedVersion: NuGetVersion option
+          Target: PackageTargetPreview }
+
+[<RequireQualifiedAccess>]
+module PackageUpdateTargetPreview =
+    let internal create package requestedVersion target =
+        { Package = package
+          RequestedVersion = requestedVersion
+          Target = target }
+
+    let package preview = preview.Package
+    let requestedVersion preview = preview.RequestedVersion
+    let target preview = preview.Target
+
+    let selectedVersion preview =
+        match PackageTargetPreview.change preview.Target with
+        | PackageTargetChange.Update(_, ProposedPackageState.Direct version)
+        | PackageTargetChange.Update(_, ProposedPackageState.CentrallyManaged(version, _)) ->
+            version
+        | _ -> invalidOp "A package update preview must contain an update change."
+
+type PackageUpdateBatchPreview =
+    private
+        { Updates: NonEmptyList<PackageUpdateTargetPreview>
+          OwnerFiles: NonEmptyList<string>
+          WorkspaceRevision: string
+          FileFingerprints: Map<string, string> }
+
+[<RequireQualifiedAccess>]
+module PackageUpdateBatchPreview =
+    let internal create pathComparison updates ownerFiles workspaceRevision fileFingerprints =
+        let pathKey path =
+            let full = System.IO.Path.GetFullPath path
+
+            if pathComparison = System.StringComparison.OrdinalIgnoreCase then
+                full.ToUpperInvariant()
+            else
+                full
+
+        let targetKey update =
+            let target =
+                update |> PackageUpdateTargetPreview.target |> PackageTargetPreview.target
+
+            let project, framework, runtime =
+                match target with
+                | PackageTargetScope.Project project -> project.Value, "", ""
+                | PackageTargetScope.Framework(project, framework) ->
+                    project.Value, framework.Value, ""
+                | PackageTargetScope.Runtime(project, framework, runtime) ->
+                    project.Value, framework.Value, runtime.Value
+
+            (PackageUpdateTargetPreview.package update).Value.ToUpperInvariant(),
+            pathKey project,
+            framework,
+            runtime
+
+        let updateValues = updates |> NonEmptyList.toList |> List.sortBy targetKey
+
+        let duplicateUpdates =
+            updateValues |> List.countBy targetKey |> List.exists (snd >> ((<) 1))
+
+        let ownerPaths = ownerFiles |> NonEmptyList.toList
+
+        let validUpdates =
+            updateValues
+            |> List.forall (fun update ->
+                let operation =
+                    match PackageUpdateTargetPreview.requestedVersion update with
+                    | Some version ->
+                        RequestedPackageOperation.UpdateVersion(
+                            PackageUpdateTargetPreview.package update,
+                            version
+                        )
+                    | None ->
+                        RequestedPackageOperation.UpdateLatest(
+                            PackageUpdateTargetPreview.package update
+                        )
+
+                PackagePreview.validChange
+                    pathComparison
+                    operation
+                    (PackageUpdateTargetPreview.target update))
+
+        let exactOwners =
+            updateValues
+            |> List.collect (
+                PackageUpdateTargetPreview.target
+                >> PackageTargetPreview.ownerFiles
+                >> NonEmptyList.toList
+            )
+            |> Set.ofList
+            |> (=) (Set.ofList ownerPaths)
+
+        let exactFingerprints =
+            fileFingerprints |> Map.keys |> Set.ofSeq |> (=) (Set.ofList ownerPaths)
+
+        let validFingerprints =
+            ownerPaths
+            |> List.forall (fun path ->
+                not (System.String.IsNullOrWhiteSpace path)
+                && fileFingerprints
+                   |> Map.tryFind path
+                   |> Option.exists (System.String.IsNullOrWhiteSpace >> not))
+
+        if System.String.IsNullOrWhiteSpace workspaceRevision then
+            Error(PackageContractViolation.MissingValue "workspaceRevision")
+        elif duplicateUpdates then
+            Error(PackageContractViolation.InvalidValue "updates")
+        elif not validUpdates then
+            Error(PackageContractViolation.InvalidValue "updates")
+        elif not exactOwners then
+            Error(PackageContractViolation.InvalidValue "ownerFiles")
+        elif not exactFingerprints then
+            Error(PackageContractViolation.InvalidValue "fileFingerprints")
+        elif not validFingerprints then
+            Error(PackageContractViolation.MissingValue "fileFingerprints")
+        else
+            Ok
+                { Updates =
+                    updateValues
+                    |> NonEmptyList.tryCreate
+                    |> Option.defaultWith (fun () ->
+                        invalidOp "A package update preview requires at least one update.")
+                  OwnerFiles = ownerFiles
+                  WorkspaceRevision = workspaceRevision
+                  FileFingerprints = fileFingerprints }
+
+    let updates preview = preview.Updates
+    let ownerFiles preview = preview.OwnerFiles
+    let workspaceRevision preview = preview.WorkspaceRevision
+    let fileFingerprints preview = preview.FileFingerprints
+
 type PackageConfirmation =
     private
         { Preview: PackagePreview
@@ -281,6 +447,24 @@ type PackageConfirmation =
 
 [<RequireQualifiedAccess>]
 module PackageConfirmation =
+    let create preview confirmationToken =
+        if System.String.IsNullOrWhiteSpace confirmationToken then
+            Error(PackageContractViolation.MissingValue "confirmationToken")
+        else
+            Ok
+                { Preview = preview
+                  ConfirmationToken = confirmationToken }
+
+    let preview confirmation = confirmation.Preview
+    let token confirmation = confirmation.ConfirmationToken
+
+type PackageUpdateBatchConfirmation =
+    private
+        { Preview: PackageUpdateBatchPreview
+          ConfirmationToken: string }
+
+[<RequireQualifiedAccess>]
+module PackageUpdateBatchConfirmation =
     let create preview confirmationToken =
         if System.String.IsNullOrWhiteSpace confirmationToken then
             Error(PackageContractViolation.MissingValue "confirmationToken")

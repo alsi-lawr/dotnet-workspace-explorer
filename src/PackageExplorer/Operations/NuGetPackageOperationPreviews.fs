@@ -18,7 +18,9 @@ open Dotnet.WorkspaceExplorer.Workspaces
 module internal NuGetPackageOperationPreviews =
     type Ports =
         { ReadPrecondition: ReadPackagePreviewPrecondition
-          Preview: PreviewPackageOperation }
+          Preview: PreviewPackageOperation
+          ReadUpdateBatchPrecondition: ReadPackageUpdateBatchPrecondition
+          PreviewUpdateBatch: PreviewPackageUpdateBatch }
 
     let private failure kind message retry =
         PackageFailure.create kind message retry |> Result.defaultWith (failwithf "%A")
@@ -217,7 +219,8 @@ module internal NuGetPackageOperationPreviews =
 
 
     let private readMappings
-        (request: PackageRequest<PackageOperationRequest>)
+        requestId
+        browseSource
         (package: PackageId)
         (evaluated: InstalledPackageEvaluation list)
         =
@@ -237,15 +240,18 @@ module internal NuGetPackageOperationPreviews =
                         |> Result.defaultWith (failwithf "%A")
 
                     let mappingRequest =
-                        { Id = request.Id
+                        { Id = requestId
                           Target = target
                           Value =
                             { Package = package
-                              CandidateSource = request.Value.BrowseSource
+                              CandidateSource = browseSource
                               RestoredTransitives = Some(transitivePackages [ item ]) } }
 
                     let! policy = NuGetSources.sourceMapping mappingRequest
-                    result <- policy |> Result.map (fun value -> Map.add project value policies)
+
+                    result <-
+                        policy
+                        |> Result.map (fun value -> Map.add (package, project) value policies)
 
             return result
         }
@@ -258,20 +264,23 @@ module internal NuGetPackageOperationPreviews =
 
     let private readDetails
         (requests: ConcurrentDictionary<PackageRequestId, CancellationTokenSource>)
-        (request: PackageRequest<PackageOperationRequest>)
+        requestId
+        target
+        browseSource
+        operation
         (package: PackageId)
         (mapping: PackageSourceMappingPolicy)
         (evaluations: InstalledPackageEvaluation list)
         =
         async {
             let source =
-                request.Value.BrowseSource
+                browseSource
                 |> Option.orElseWith (fun () -> allowedSources mapping |> List.tryHead)
 
             match source with
             | None -> return Ok Map.empty
             | Some source ->
-                let selections = versions request.Value.Operation evaluations
+                let selections = versions operation evaluations
                 let mutable collected = Ok Map.empty
 
                 for selection in selections do
@@ -279,8 +288,8 @@ module internal NuGetPackageOperationPreviews =
                     | Error _ -> ()
                     | Ok details ->
                         let detailRequest =
-                            { Id = request.Id
-                              Target = request.Target
+                            { Id = requestId
+                              Target = target
                               Value =
                                 { Package = package
                                   Version = selection
@@ -290,7 +299,7 @@ module internal NuGetPackageOperationPreviews =
 
                         collected <-
                             match result with
-                            | Ok value -> Ok(Map.add value.Summary.Version value details)
+                            | Ok value -> Ok(Map.add (package, value.Summary.Version) value details)
                             | Error _ -> Ok details
 
                 return collected
@@ -323,7 +332,8 @@ module internal NuGetPackageOperationPreviews =
                     | Ok(root, sensitivity, evaluated, precondition) ->
                         let package = packageOf request.Value.Operation
 
-                        let! mappings = readMappings request package evaluated
+                        let! mappings =
+                            readMappings request.Id request.Value.BrowseSource package evaluated
 
                         match mappings with
                         | Error error -> return Error error
@@ -336,7 +346,15 @@ module internal NuGetPackageOperationPreviews =
                                 |> Option.defaultValue (PackageSourceMappingPolicy.Allowed [])
 
                             let! details =
-                                readDetails requests request package detailPolicy evaluated
+                                readDetails
+                                    requests
+                                    request.Id
+                                    request.Target
+                                    request.Value.BrowseSource
+                                    request.Value.Operation
+                                    package
+                                    detailPolicy
+                                    evaluated
 
                             return
                                 details
@@ -353,5 +371,128 @@ module internal NuGetPackageOperationPreviews =
                     evaluator.DisposeAsync().AsTask().GetAwaiter().GetResult()
             }
 
+        let readUpdateBatchPrecondition
+            (request: PackageRequest<PackageUpdateBatchPreconditionRequest>)
+            =
+            async {
+                let evaluator = evaluatorFactory ()
+
+                try
+                    let! evidence = readBase evaluator request.Id request.Target
+                    return evidence |> Result.map (fun (_, _, _, precondition) -> precondition)
+                finally
+                    evaluator.DisposeAsync().AsTask().GetAwaiter().GetResult()
+            }
+
+        let readUpdateBatchEvidence (request: PackageRequest<PackageUpdateBatchRequest>) =
+            async {
+                let evaluator = evaluatorFactory ()
+
+                try
+                    let! baseEvidence = readBase evaluator request.Id request.Target
+
+                    match baseEvidence with
+                    | Error error -> return Error error
+                    | Ok(root, sensitivity, evaluated, precondition) ->
+                        let operations =
+                            request.Value.Updates
+                            |> NonEmptyList.toList
+                            |> List.map (fun selection ->
+                                let package = PackageUpdateSelection.package selection
+
+                                match PackageUpdateSelection.requestedVersion selection with
+                                | Some version ->
+                                    RequestedPackageOperation.UpdateVersion(package, version)
+                                | None -> RequestedPackageOperation.UpdateLatest package)
+                            |> List.distinct
+                            |> List.sortBy (fun operation ->
+                                let package = packageOf operation
+
+                                let version =
+                                    match operation with
+                                    | RequestedPackageOperation.UpdateVersion(_, value) ->
+                                        value.Value
+                                    | _ -> ""
+
+                                package.Value.ToUpperInvariant(), version)
+
+                        let mutable collected =
+                            Ok(
+                                Map.empty<PackageId * PackageProjectId, PackageSourceMappingPolicy>,
+                                Map.empty<PackageId * NuGetVersion, PackageDetails>
+                            )
+
+                        for operation in operations do
+                            match collected with
+                            | Error _ -> ()
+                            | Ok(allMappings, allDetails) ->
+                                let package = packageOf operation
+
+                                let! mappings =
+                                    readMappings
+                                        request.Id
+                                        request.Value.BrowseSource
+                                        package
+                                        evaluated
+
+                                match mappings with
+                                | Error error -> collected <- Error error
+                                | Ok policies ->
+                                    let detailPolicy =
+                                        policies
+                                        |> Map.toList
+                                        |> List.tryHead
+                                        |> Option.map snd
+                                        |> Option.defaultValue (
+                                            PackageSourceMappingPolicy.Allowed []
+                                        )
+
+                                    let! details =
+                                        readDetails
+                                            requests
+                                            request.Id
+                                            request.Target
+                                            request.Value.BrowseSource
+                                            operation
+                                            package
+                                            detailPolicy
+                                            evaluated
+
+                                    collected <-
+                                        details
+                                        |> Result.map (fun packageDetails ->
+                                            let mergedMappings =
+                                                policies
+                                                |> Map.fold
+                                                    (fun state key value ->
+                                                        Map.add key value state)
+                                                    allMappings
+
+                                            let mergedDetails =
+                                                packageDetails
+                                                |> Map.fold
+                                                    (fun state key value ->
+                                                        Map.add key value state)
+                                                    allDetails
+
+                                            mergedMappings, mergedDetails)
+
+                        return
+                            collected
+                            |> Result.map (fun (mappings, details) ->
+                                { WorkspaceRoot = root
+                                  Evaluations = evaluated |> List.map _.Snapshot
+                                  Installed = evaluated |> List.collect _.Graphs
+                                  Details = details
+                                  SourceMappings = mappings
+                                  CaseSensitivity = sensitivity
+                                  WorkspaceRevision = precondition.WorkspaceRevision
+                                  FileFingerprints = precondition.FileFingerprints })
+                finally
+                    evaluator.DisposeAsync().AsTask().GetAwaiter().GetResult()
+            }
+
         { ReadPrecondition = readPrecondition
-          Preview = PackageOperationPreviews.create readEvidence }
+          Preview = PackageOperationPreviews.create readEvidence
+          ReadUpdateBatchPrecondition = readUpdateBatchPrecondition
+          PreviewUpdateBatch = PackageOperationPreviews.createUpdateBatch readUpdateBatchEvidence }

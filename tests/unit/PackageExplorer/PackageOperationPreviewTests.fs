@@ -210,16 +210,23 @@ module private PackageOperationPreviewScenario =
         (mapping: PackageSourceMappingPolicy)
         (fingerprints: Map<string, string>)
         =
+        let packages =
+            [ yield! details |> Option.map _.Summary.Identity |> Option.toList
+              yield! graphs |> List.collect _.Packages |> List.map _.Identity ]
+            |> List.distinct
+
         { WorkspaceRoot = root
           Evaluations = evaluations
           Installed = graphs
           Details =
             details
-            |> Option.map (fun value -> Map [ value.Summary.Version, value ])
+            |> Option.map (fun value ->
+                Map [ (value.Summary.Identity, value.Summary.Version), value ])
             |> Option.defaultValue Map.empty
           SourceMappings =
-            evaluations
-            |> List.map (fun value -> project value.ProjectPath.Value, mapping)
+            [ for identity in packages do
+                  for value in evaluations do
+                      yield (identity, project value.ProjectPath.Value), mapping ]
             |> Map.ofList
           CaseSensitivity = FileSystemCaseSensitivity.Sensitive
           WorkspaceRevision = "42"
@@ -252,6 +259,30 @@ module private PackageOperationPreviewScenario =
         PackageOperationPreviews.create (fun _ -> async { return Ok evidence }) request
         |> Async.RunSynchronously
 
+    let updateBatchRequest
+        (root: string)
+        (updates: PackageUpdateSelection list)
+        (fingerprints: Map<string, string>)
+        =
+        { Id = PackageRequestId.newId ()
+          Target = PackageWorkspaceTarget.directory root |> Result.defaultWith (failwithf "%A")
+          Value =
+            { Updates =
+                updates
+                |> NonEmptyList.tryCreate
+                |> Option.defaultWith (fun () -> failwith "Expected package updates")
+              BrowseSource = None
+              Precondition =
+                { WorkspaceRevision = "42"
+                  FileFingerprints = fingerprints } } }
+
+    let updateBatchPreview
+        (evidence: PackageOperationPreviewEvidence)
+        (request: PackageRequest<PackageUpdateBatchRequest>)
+        =
+        PackageOperationPreviews.createUpdateBatch (fun _ -> async { return Ok evidence }) request
+        |> Async.RunSynchronously
+
     let success =
         function
         | Ok value -> value
@@ -266,8 +297,313 @@ module private PackageOperationPreviewScenario =
     let targets (preview: PackagePreview) =
         PackagePreview.targets preview |> NonEmptyList.toList
 
+    type UpdateBatchFixture =
+        { Root: string
+          DirectPackage: PackageId
+          CentralPackage: PackageId
+          MissingPackage: PackageId
+          AnotherDirectProject: string
+          DirectProject: string
+          CentralProject: string
+          CentralOwner: string
+          AnotherDirectTarget: PackageTargetScope
+          DirectTarget: PackageTargetScope
+          CentralTarget: PackageTargetScope
+          DirectVersion: NuGetVersion
+          CentralVersion: NuGetVersion
+          AnotherDirectSelection: PackageUpdateSelection
+          DirectSelection: PackageUpdateSelection
+          CentralSelection: PackageUpdateSelection
+          Evidence: PackageOperationPreviewEvidence
+          Fingerprints: Map<string, string> }
+
+    let updateBatchFixture () =
+        let root = temporaryDirectory ()
+        let directPackage = package "Zulu.Package"
+        let centralPackage = package "Alpha.Package"
+        let missingPackage = package "Missing.Package"
+        let current = version "1.0.0"
+        let directVersion = version "2.0.0"
+        let centralVersion = version "3.0.0"
+        let feed = source "feed"
+        let anotherDirectProject = Path.Combine(root, "Another.csproj")
+        let directProject = Path.Combine(root, "Direct.csproj")
+        let centralProject = Path.Combine(root, "Central.fsproj")
+        let centralOwner = Path.Combine(root, "Directory.Packages.props")
+
+        for path in [ anotherDirectProject; directProject; centralProject; centralOwner ] do
+            write path "original"
+
+        let anotherDirectTarget = target anotherDirectProject "net10.0"
+        let directTarget = target directProject "net10.0"
+        let centralTarget = target centralProject "net10.0"
+
+        let anotherDirectSnapshot =
+            snapshot
+                anotherDirectProject
+                [ dimension anotherDirectProject "net10.0" directPackage directShape ]
+
+        let directSnapshot =
+            snapshot directProject [ dimension directProject "net10.0" directPackage directShape ]
+
+        let centralSnapshot =
+            snapshot
+                centralProject
+                [ dimension centralProject "net10.0" centralPackage (centralShape centralOwner) ]
+
+        let anotherDirectInstalled =
+            installed
+                anotherDirectTarget
+                directPackage
+                (InstalledPackageState.Direct(PackageVersionSelection.Exact current, current))
+
+        let directInstalled =
+            installed
+                directTarget
+                directPackage
+                (InstalledPackageState.Direct(PackageVersionSelection.Exact current, current))
+
+        let centralInstalled =
+            installed
+                centralTarget
+                centralPackage
+                (InstalledPackageState.CentrallyManagedDirect(
+                    PackageVersionSelection.Exact current,
+                    current,
+                    centralOwner
+                ))
+
+        let fingerprints =
+            Map
+                [ anotherDirectProject, "another-direct"
+                  directProject, "direct"
+                  centralProject, "central-project"
+                  centralOwner, "central-owner" ]
+
+        let evidence =
+            { WorkspaceRoot = root
+              Evaluations = [ anotherDirectSnapshot; directSnapshot; centralSnapshot ]
+              Installed =
+                [ graph anotherDirectTarget [ anotherDirectInstalled ]
+                  graph directTarget [ directInstalled ]
+                  graph centralTarget [ centralInstalled ] ]
+              Details =
+                Map
+                    [ (directPackage, directVersion), details directPackage directVersion feed
+                      (centralPackage, centralVersion), details centralPackage centralVersion feed ]
+              SourceMappings =
+                Map
+                    [ (directPackage, project anotherDirectProject),
+                      PackageSourceMappingPolicy.Allowed [ feed ]
+                      (directPackage, project directProject),
+                      PackageSourceMappingPolicy.Allowed [ feed ]
+                      (centralPackage, project centralProject),
+                      PackageSourceMappingPolicy.Allowed [ feed ] ]
+              CaseSensitivity = FileSystemCaseSensitivity.Sensitive
+              WorkspaceRevision = "42"
+              FileFingerprints = fingerprints }
+
+        { Root = root
+          DirectPackage = directPackage
+          CentralPackage = centralPackage
+          MissingPackage = missingPackage
+          AnotherDirectProject = anotherDirectProject
+          DirectProject = directProject
+          CentralProject = centralProject
+          CentralOwner = centralOwner
+          AnotherDirectTarget = anotherDirectTarget
+          DirectTarget = directTarget
+          CentralTarget = centralTarget
+          DirectVersion = directVersion
+          CentralVersion = centralVersion
+          AnotherDirectSelection =
+            PackageUpdateSelection.version directPackage directVersion anotherDirectTarget
+          DirectSelection = PackageUpdateSelection.version directPackage directVersion directTarget
+          CentralSelection =
+            PackageUpdateSelection.version centralPackage centralVersion centralTarget
+          Evidence = evidence
+          Fingerprints = fingerprints }
+
 [<Sealed>]
 type PackageOperationPreviewTests() =
+    [<Fact>]
+    member _.``mixed direct and central multi-package updates retain every package target impact under one revision``
+        ()
+        =
+        let fixture = PackageOperationPreviewScenario.updateBatchFixture ()
+
+        try
+            let preview =
+                PackageOperationPreviewScenario.updateBatchRequest
+                    fixture.Root
+                    [ fixture.DirectSelection; fixture.CentralSelection ]
+                    fixture.Fingerprints
+                |> PackageOperationPreviewScenario.updateBatchPreview fixture.Evidence
+                |> PackageOperationPreviewScenario.success
+
+            let updates = PackageUpdateBatchPreview.updates preview |> NonEmptyList.toList
+
+            updates
+            |> List.map (PackageUpdateTargetPreview.package >> _.Value)
+            |> should equal [ "Alpha.Package"; "Zulu.Package" ]
+
+            updates
+            |> List.map PackageUpdateTargetPreview.selectedVersion
+            |> should equal [ fixture.CentralVersion; fixture.DirectVersion ]
+
+            updates
+            |> List.map (fun update ->
+                PackageUpdateTargetPreview.package update,
+                (PackageUpdateTargetPreview.target update |> PackageTargetPreview.change))
+            |> should
+                equal
+                [ fixture.CentralPackage,
+                  PackageTargetChange.Update(
+                      InstalledPackageState.CentrallyManagedDirect(
+                          PackageVersionSelection.Exact(
+                              PackageOperationPreviewScenario.version "1.0.0"
+                          ),
+                          PackageOperationPreviewScenario.version "1.0.0",
+                          fixture.CentralOwner
+                      ),
+                      ProposedPackageState.CentrallyManaged(
+                          fixture.CentralVersion,
+                          fixture.CentralOwner
+                      )
+                  )
+                  fixture.DirectPackage,
+                  PackageTargetChange.Update(
+                      InstalledPackageState.Direct(
+                          PackageVersionSelection.Exact(
+                              PackageOperationPreviewScenario.version "1.0.0"
+                          ),
+                          PackageOperationPreviewScenario.version "1.0.0"
+                      ),
+                      ProposedPackageState.Direct fixture.DirectVersion
+                  ) ]
+
+            updates
+            |> List.map (
+                PackageUpdateTargetPreview.target >> PackageTargetPreview.impact >> _.Metadata
+            )
+            |> List.iter (fun impact ->
+                match impact with
+                | PackageMetadataImpact.Known _ -> ()
+                | PackageMetadataImpact.Unknown ->
+                    failwith "Expected metadata for every selected package target.")
+
+            PackageUpdateBatchPreview.ownerFiles preview
+            |> NonEmptyList.toList
+            |> should equal [ fixture.DirectProject; fixture.CentralOwner ]
+
+            PackageUpdateBatchPreview.workspaceRevision preview |> should equal "42"
+
+            let confirmation =
+                PackageUpdateBatchConfirmation.create preview "confirm-batch"
+                |> Result.defaultWith (failwithf "%A")
+
+            PackageUpdateBatchConfirmation.preview confirmation |> should equal preview
+        finally
+            Directory.Delete(fixture.Root, true)
+
+    [<Fact>]
+    member _.``multi-package update rejects a repeated package target before creating a preview``
+        ()
+        =
+        let fixture = PackageOperationPreviewScenario.updateBatchFixture ()
+
+        try
+            let failure =
+                PackageOperationPreviewScenario.updateBatchRequest
+                    fixture.Root
+                    [ fixture.DirectSelection; fixture.DirectSelection ]
+                    fixture.Fingerprints
+                |> PackageOperationPreviewScenario.updateBatchPreview fixture.Evidence
+                |> PackageOperationPreviewScenario.failure
+
+            PackageFailure.kind failure |> should equal PackageFailureKind.InvalidRequest
+
+            PackageFailure.message failure
+            |> should haveSubstring "duplicate package-target"
+        finally
+            Directory.Delete(fixture.Root, true)
+
+    [<Fact>]
+    member _.``multi-package update order is stable across reversed selections and evidence``() =
+        let fixture = PackageOperationPreviewScenario.updateBatchFixture ()
+
+        try
+            let preview updates evidence =
+                PackageOperationPreviewScenario.updateBatchRequest
+                    fixture.Root
+                    updates
+                    fixture.Fingerprints
+                |> PackageOperationPreviewScenario.updateBatchPreview evidence
+                |> PackageOperationPreviewScenario.success
+
+            let first =
+                preview
+                    [ fixture.DirectSelection
+                      fixture.CentralSelection
+                      fixture.AnotherDirectSelection ]
+                    fixture.Evidence
+
+            let second =
+                preview
+                    [ fixture.AnotherDirectSelection
+                      fixture.CentralSelection
+                      fixture.DirectSelection ]
+                    { fixture.Evidence with
+                        Evaluations = List.rev fixture.Evidence.Evaluations
+                        Installed = List.rev fixture.Evidence.Installed
+                        Details = fixture.Evidence.Details |> Map.toList |> List.rev |> Map.ofList
+                        SourceMappings =
+                            fixture.Evidence.SourceMappings |> Map.toList |> List.rev |> Map.ofList }
+
+            second |> should equal first
+
+            PackageUpdateBatchPreview.updates first
+            |> NonEmptyList.toList
+            |> List.map (PackageUpdateTargetPreview.package >> _.Value)
+            |> should equal [ "Alpha.Package"; "Zulu.Package"; "Zulu.Package" ]
+
+            PackageUpdateBatchPreview.updates first
+            |> NonEmptyList.toList
+            |> List.map (
+                PackageUpdateTargetPreview.target
+                >> PackageTargetPreview.target
+                >> PackageOperationPreviewScenario.targetProjectPath
+            )
+            |> should
+                equal
+                [ fixture.CentralProject; fixture.AnotherDirectProject; fixture.DirectProject ]
+        finally
+            Directory.Delete(fixture.Root, true)
+
+    [<Fact>]
+    member _.``one unsupported member prevents the complete multi-package update preview``() =
+        let fixture = PackageOperationPreviewScenario.updateBatchFixture ()
+
+        try
+            let missing =
+                PackageUpdateSelection.version
+                    fixture.MissingPackage
+                    fixture.DirectVersion
+                    fixture.DirectTarget
+
+            let failure =
+                PackageOperationPreviewScenario.updateBatchRequest
+                    fixture.Root
+                    [ fixture.CentralSelection; missing ]
+                    fixture.Fingerprints
+                |> PackageOperationPreviewScenario.updateBatchPreview fixture.Evidence
+                |> PackageOperationPreviewScenario.failure
+
+            PackageFailure.kind failure |> should equal PackageFailureKind.InvalidRequest
+            PackageFailure.message failure |> should haveSubstring "not installed"
+        finally
+            Directory.Delete(fixture.Root, true)
+
     [<Fact>]
     member _.``install update and uninstall previews retain direct and central owners metadata policy restore and browse source semantics``
         ()
@@ -790,7 +1126,7 @@ type PackageOperationPreviewTests() =
             let sourceMappings =
                 projects
                 |> List.map (fun (project, feed) ->
-                    PackageOperationPreviewScenario.project project,
+                    (identity, PackageOperationPreviewScenario.project project),
                     PackageSourceMappingPolicy.Allowed [ feed ])
                 |> Map
 
@@ -863,7 +1199,7 @@ type PackageOperationPreviewTests() =
                     CaseSensitivity = FileSystemCaseSensitivity.Insensitive
                     SourceMappings =
                         Map
-                            [ PackageOperationPreviewScenario.project project,
+                            [ (identity, PackageOperationPreviewScenario.project project),
                               PackageSourceMappingPolicy.Allowed [ feed ] ] }
 
             let insensitiveRequest fingerprints =
@@ -1271,7 +1607,7 @@ type PackageOperationPreviewTests() =
                     fingerprints
                 |> PackageOperationPreviewScenario.preview
                     { baseline with
-                        Details = Map [ two, wrongDetails ] }
+                        Details = Map [ (other, two), wrongDetails ] }
                 |> PackageOperationPreviewScenario.failure
 
             PackageFailure.kind latestFailure |> should equal PackageFailureKind.Unsupported
@@ -1300,7 +1636,7 @@ type PackageOperationPreviewTests() =
                 |> PackageOperationPreviewScenario.preview
                     { baseline with
                         Installed = [ PackageOperationPreviewScenario.graph target [ installed ] ]
-                        Details = Map [ one, compatible ] }
+                        Details = Map [ (identity, one), compatible ] }
                 |> PackageOperationPreviewScenario.success
                 |> PackageOperationPreviewScenario.targets
                 |> List.exactlyOne
@@ -1323,7 +1659,9 @@ type PackageOperationPreviewTests() =
                     { baseline with
                         Installed = [ PackageOperationPreviewScenario.graph target [ installed ] ]
                         Details =
-                            Map [ two, PackageOperationPreviewScenario.details identity two feed ] }
+                            Map
+                                [ (identity, two),
+                                  PackageOperationPreviewScenario.details identity two feed ] }
                 |> PackageOperationPreviewScenario.success
                 |> PackageOperationPreviewScenario.targets
                 |> List.exactlyOne
@@ -1375,6 +1713,12 @@ type PackageOperationPreviewTests() =
                     None
                     (PackageSourceMappingPolicy.KnownConflict(transitive, [ feed ]))
                     fingerprints
+                |> fun evidence ->
+                    { evidence with
+                        SourceMappings =
+                            Map
+                                [ (identity, PackageOperationPreviewScenario.project project),
+                                  PackageSourceMappingPolicy.KnownConflict(transitive, [ feed ]) ] }
 
             let preview =
                 PackageOperationPreviewScenario.preview baseline request

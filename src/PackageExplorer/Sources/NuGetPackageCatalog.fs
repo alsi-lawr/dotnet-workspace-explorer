@@ -13,6 +13,8 @@ type PackageCatalogPorts =
       RefreshInstalled: RefreshInstalledPackages
       PreviewPrecondition: ReadPackagePreviewPrecondition
       Preview: PreviewPackageOperation
+      UpdateBatchPrecondition: ReadPackageUpdateBatchPrecondition
+      PreviewUpdateBatch: PreviewPackageUpdateBatch
       Cancel: CancelPackageWork }
 
 [<RequireQualifiedAccess>]
@@ -44,6 +46,8 @@ module NuGetPackageCatalog =
              NuGetInstalledPackages.refreshWith evaluatorFactory runRestore requests
            PreviewPrecondition = previews.ReadPrecondition
            Preview = previews.Preview
+           UpdateBatchPrecondition = previews.ReadUpdateBatchPrecondition
+           PreviewUpdateBatch = previews.PreviewUpdateBatch
            Cancel = cancel }
         : PackageCatalogPorts)
 
