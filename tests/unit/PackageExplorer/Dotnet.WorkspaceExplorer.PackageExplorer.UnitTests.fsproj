@@ -10,6 +10,7 @@
 
     <ItemGroup>
         <Compile Include="PackageContractTests.fs" />
+        <Compile Include="NuGetPackageCatalogTests.fs" />
         <Compile Include="PackageStartupTests.fs" />
         <Compile Include="ProgramInvocationTests.fs" />
     </ItemGroup>

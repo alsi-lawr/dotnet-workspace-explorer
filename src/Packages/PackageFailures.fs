@@ -7,6 +7,8 @@ type PackageFailureKind =
     | AmbiguousTarget
     | Unsupported
     | AuthenticationRequired
+    | Unauthorized
+    | MalformedSource
     | SourceUnavailable
     | StaleState
     | Cancelled
@@ -36,6 +38,8 @@ module PackageFailure =
         | PackageFailureKind.AmbiguousTarget -> "DWE-PACKAGE-AMBIGUOUS-TARGET"
         | PackageFailureKind.Unsupported -> "DWE-PACKAGE-UNSUPPORTED"
         | PackageFailureKind.AuthenticationRequired -> "DWE-PACKAGE-AUTHENTICATION-REQUIRED"
+        | PackageFailureKind.Unauthorized -> "DWE-PACKAGE-UNAUTHORIZED"
+        | PackageFailureKind.MalformedSource -> "DWE-PACKAGE-SOURCE-MALFORMED"
         | PackageFailureKind.SourceUnavailable -> "DWE-PACKAGE-SOURCE-UNAVAILABLE"
         | PackageFailureKind.StaleState -> "DWE-PACKAGE-STALE-STATE"
         | PackageFailureKind.Cancelled -> "DWE-PACKAGE-CANCELLED"

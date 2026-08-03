@@ -7,10 +7,21 @@
     <ItemGroup>
         <ProjectReference Include="../Packages/Dotnet.WorkspaceExplorer.Packages.fsproj" />
         <PackageReference Include="FSharp.Core" />
+        <PackageReference Include="NuGet.Configuration" />
+        <PackageReference Include="NuGet.Frameworks" />
+        <PackageReference Include="NuGet.Protocol" />
+        <PackageReference Include="NuGet.Versioning" />
     </ItemGroup>
 
     <ItemGroup>
+        <Compile Include="AssemblyInfo.fs" />
         <Compile Include="Application/PackagePorts.fs" />
+        <Compile Include="Sources/PackageMetadata.fs" />
+        <Compile Include="Sources/NuGetSourceFailures.fs" />
+        <Compile Include="Sources/NuGetSources.fs" />
+        <Compile Include="Sources/NuGetPackageSearch.fs" />
+        <Compile Include="Sources/NuGetPackageDetails.fs" />
+        <Compile Include="Sources/NuGetPackageCatalog.fs" />
         <Compile Include="Startup/PackageStartup.fs" />
     </ItemGroup>
 </Project>

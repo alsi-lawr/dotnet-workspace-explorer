@@ -34,6 +34,11 @@ type PackageDetailsRequest =
       Version: PackageVersionSelection
       Source: PackageSourceId }
 
+type PackageSourceMappingRequest =
+    { Package: PackageId
+      CandidateSource: PackageSourceId option
+      RestoredTransitives: PackageId list option }
+
 [<RequireQualifiedAccess>]
 type PackageRestoreOutcome =
     | NotRequired
@@ -53,6 +58,10 @@ type SearchPackages =
 
 type ReadPackageDetails =
     PackageRequest<PackageDetailsRequest> -> Async<Result<PackageDetails, PackageFailure>>
+
+type ReadPackageSourceMapping =
+    PackageRequest<PackageSourceMappingRequest>
+        -> Async<Result<PackageSourceMappingPolicy, PackageFailure>>
 
 type ReadInstalledPackages =
     PackageRequest<unit> -> Async<Result<InstalledPackage list, PackageFailure>>
@@ -75,6 +84,7 @@ type CancelPackageWork = PackageCancellation -> Async<unit>
 
 type PackageExplorerPorts =
     { ConfiguredSources: ConfiguredPackageSources
+      SourceMapping: ReadPackageSourceMapping
       Search: SearchPackages
       Details: ReadPackageDetails
       Installed: ReadInstalledPackages
