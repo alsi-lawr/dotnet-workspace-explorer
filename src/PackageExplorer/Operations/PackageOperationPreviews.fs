@@ -158,7 +158,7 @@ module internal PackageOperationPreviews =
                 else
                     None)
             |> List.sortByDescending (fun value ->
-                NuGet.Versioning.NuGetVersion.Parse(value.Summary.Version.Value))
+                NuGet.Versioning.NuGetVersion.Parse value.Summary.Version.Value)
             |> List.tryHead
             |> function
                 | Some value -> Ok(Some value.Summary.Version)
@@ -395,7 +395,7 @@ module internal PackageOperationPreviews =
             |> List.map (fun (path, fingerprint) ->
                 pathKey sensitivity path, (Path.GetFullPath path, fingerprint))
 
-        if keyed |> List.countBy fst |> List.exists (snd >> ((<) 1)) then
+        if keyed |> List.countBy fst |> List.exists (snd >> (<) 1) then
             Error(stale "Package preview fingerprints contain ambiguous path identities.")
         else
             Ok(Map.ofList keyed)
@@ -441,12 +441,18 @@ module internal PackageOperationPreviews =
                 else
                     Error(stale "A package owner file changed before the preview was created.")
 
-    let private planTarget
+    type private TargetPreflight =
+        { Target: PackageTargetScope
+          Project: PackageProjectId
+          Installed: InstalledPackage option
+          Freshness: PackageGraphFreshness
+          Mapping: PackageSourceMappingImpact }
+
+    let private preflightTarget
         (evidence: PackageOperationPreviewEvidence)
         (operation: RequestedPackageOperation)
         (browseSource: PackageSourceId option)
         (package: PackageId)
-        (version: NuGetVersion option)
         (target: PackageTargetScope)
         =
         targetState evidence.CaseSensitivity package evidence.Installed target
@@ -477,50 +483,72 @@ module internal PackageOperationPreviews =
                     )
 
                 mappingImpact package browseSource freshness policy
-                |> Result.bind (fun mapping ->
-                    PackageOwnership.resolve
-                        evidence.WorkspaceRoot
-                        evidence.CaseSensitivity
-                        evidence.Evaluations
-                        operation
-                        package
-                        target
-                        installed
-                    |> Result.mapError (PackageOwnership.failureMessage >> unsupported)
-                    |> Result.bind (fun ownership ->
-                        targetChange operation version ownership installed
-                        |> Result.bind (fun change ->
-                            let owners =
-                                PackageOwnership.ownerFiles operation ownership
-                                |> orderedPaths evidence.CaseSensitivity
-                                |> NonEmptyList.tryCreate
-                                |> Option.defaultWith (fun () ->
-                                    invalidOp
-                                        "Package ownership must identify at least one file.")
+                |> Result.map (fun mapping ->
+                    { Target = target
+                      Project = project
+                      Installed = installed
+                      Freshness = freshness
+                      Mapping = mapping })))
 
-                            let effectiveMetadataVersion =
-                                match operation with
-                                | RequestedPackageOperation.Uninstall _ ->
-                                    resolvedVersion installed
-                                | _ -> version
+    let private planTarget
+        (evidence: PackageOperationPreviewEvidence)
+        (operation: RequestedPackageOperation)
+        (package: PackageId)
+        (preflight: TargetPreflight)
+        =
+        selectedVersion
+            evidence.CaseSensitivity
+            operation
+            package
+            preflight.Project
+            evidence.Details
+        |> Result.bind (fun version ->
+            PackageOwnership.resolve
+                evidence.WorkspaceRoot
+                evidence.CaseSensitivity
+                evidence.Evaluations
+                operation
+                package
+                preflight.Target
+                preflight.Installed
+            |> Result.mapError (PackageOwnership.failureMessage >> unsupported)
+            |> Result.bind (fun ownership ->
+                targetChange operation version ownership preflight.Installed
+                |> Result.bind (fun change ->
+                    let owners =
+                        PackageOwnership.ownerFiles operation ownership
+                        |> orderedPaths evidence.CaseSensitivity
+                        |> NonEmptyList.tryCreate
+                        |> Option.defaultWith (fun () ->
+                            invalidOp "Package ownership must identify at least one file.")
 
-                            let impact =
-                                { Metadata =
-                                    metadataImpact
-                                        evidence.CaseSensitivity
-                                        package
-                                        project
-                                        effectiveMetadataVersion
-                                        target
-                                        evidence.Details
-                                  SourceMapping = mapping
-                                  Restore =
-                                    PackageRestoreImpact.RequiredWithUnknownOutcome freshness }
+                    let effectiveMetadataVersion =
+                        match operation with
+                        | RequestedPackageOperation.Uninstall _ ->
+                            resolvedVersion preflight.Installed
+                        | _ -> version
 
-                            PackageTargetPreview.create target change owners freshness impact
-                            |> Result.mapError (fun violation ->
-                                invalid
-                                    $"The package target preview is invalid ({violation})."))))))
+                    let impact =
+                        { Metadata =
+                            metadataImpact
+                                evidence.CaseSensitivity
+                                package
+                                preflight.Project
+                                effectiveMetadataVersion
+                                preflight.Target
+                                evidence.Details
+                          SourceMapping = preflight.Mapping
+                          Restore =
+                            PackageRestoreImpact.RequiredWithUnknownOutcome preflight.Freshness }
+
+                    PackageTargetPreview.create
+                        preflight.Target
+                        change
+                        owners
+                        preflight.Freshness
+                        impact
+                    |> Result.mapError (fun violation ->
+                        invalid $"The package target preview is invalid ({violation})."))))
 
     let private collect results =
         results
@@ -541,55 +569,56 @@ module internal PackageOperationPreviews =
         let targets =
             expandTargets evidence.CaseSensitivity evidence.Installed request.Value.Targets
 
-        match
+        let preflights =
             targets
             |> List.map (fun target ->
-                selectedVersion
-                    evidence.CaseSensitivity
+                preflightTarget
+                    evidence
                     request.Value.Operation
+                    request.Value.BrowseSource
                     package
-                    (targetProject target)
-                    evidence.Details
-                |> Result.bind (fun version ->
-                    planTarget
-                        evidence
-                        request.Value.Operation
-                        request.Value.BrowseSource
-                        package
-                        version
-                        target))
+                    target)
             |> collect
-        with
-        | Error error -> Error error
-        | Ok previews ->
-            match NonEmptyList.tryCreate previews with
-            | None -> Error(invalid "A package preview requires at least one target.")
-            | Some previewTargets ->
-                let owners =
-                    previews
-                    |> List.collect (PackageTargetPreview.ownerFiles >> NonEmptyList.toList)
-                    |> orderedPaths evidence.CaseSensitivity
 
-                match NonEmptyList.tryCreate owners with
-                | None -> Error(invalid "A package preview requires an owner file.")
-                | Some ownerFiles ->
-                    match verifyPrecondition request.Value.Precondition evidence owners with
-                    | Error error -> Error error
-                    | Ok fingerprints ->
-                        PackagePreview.create
-                            (if
-                                 evidence.CaseSensitivity = FileSystemCaseSensitivity.Insensitive
-                             then
-                                 StringComparison.OrdinalIgnoreCase
-                             else
-                                 StringComparison.Ordinal)
-                            request.Value.Operation
-                            previewTargets
-                            ownerFiles
-                            evidence.WorkspaceRevision
-                            fingerprints
-                        |> Result.mapError (fun violation ->
-                            invalid $"The package preview is invalid ({violation}).")
+        match preflights with
+        | Error error -> Error error
+        | Ok targets ->
+            let planned =
+                targets
+                |> List.map (planTarget evidence request.Value.Operation package)
+                |> collect
+
+            match planned with
+            | Error error -> Error error
+            | Ok previews ->
+                match NonEmptyList.tryCreate previews with
+                | None -> Error(invalid "A package preview requires at least one target.")
+                | Some previewTargets ->
+                    let owners =
+                        previews
+                        |> List.collect (PackageTargetPreview.ownerFiles >> NonEmptyList.toList)
+                        |> orderedPaths evidence.CaseSensitivity
+
+                    match NonEmptyList.tryCreate owners with
+                    | None -> Error(invalid "A package preview requires an owner file.")
+                    | Some ownerFiles ->
+                        match verifyPrecondition request.Value.Precondition evidence owners with
+                        | Error error -> Error error
+                        | Ok fingerprints ->
+                            PackagePreview.create
+                                (if
+                                     evidence.CaseSensitivity = FileSystemCaseSensitivity.Insensitive
+                                 then
+                                     StringComparison.OrdinalIgnoreCase
+                                 else
+                                     StringComparison.Ordinal)
+                                request.Value.Operation
+                                previewTargets
+                                ownerFiles
+                                evidence.WorkspaceRevision
+                                fingerprints
+                            |> Result.mapError (fun violation ->
+                                invalid $"The package preview is invalid ({violation}).")
 
     let private updateOperation selection =
         match PackageUpdateSelection.requestedVersion selection with
@@ -629,72 +658,73 @@ module internal PackageOperationPreviews =
                     evidence.CaseSensitivity
                     (PackageUpdateSelection.package selection)
                     target)
-            |> List.exists (snd >> ((<) 1))
+            |> List.exists (snd >> (<) 1)
 
         if duplicateSelection then
             Error(invalid "A package update batch contains duplicate package-target entries.")
         else
-            let planned =
+            let preflights =
                 updates
                 |> List.map (fun (selection, target) ->
                     let operation = updateOperation selection
                     let package = PackageUpdateSelection.package selection
 
-                    selectedVersion
-                        evidence.CaseSensitivity
-                        operation
-                        package
-                        (targetProject target)
-                        evidence.Details
-                    |> Result.bind (fun version ->
-                        planTarget
-                            evidence
-                            operation
-                            request.Value.BrowseSource
-                            package
-                            version
-                            target)
-                    |> Result.map (fun preview ->
-                        PackageUpdateTargetPreview.create
-                            package
-                            (PackageUpdateSelection.requestedVersion selection)
-                            preview))
+                    preflightTarget evidence operation request.Value.BrowseSource package target
+                    |> Result.map (fun preflight -> selection, preflight))
                 |> collect
 
-            match planned with
+            match preflights with
             | Error error -> Error error
-            | Ok previews ->
-                match NonEmptyList.tryCreate previews with
-                | None -> Error(invalid "A package update preview requires at least one update.")
-                | Some previewUpdates ->
-                    let owners =
-                        previews
-                        |> List.collect (
-                            PackageUpdateTargetPreview.target
-                            >> PackageTargetPreview.ownerFiles
-                            >> NonEmptyList.toList
-                        )
-                        |> orderedPaths evidence.CaseSensitivity
+            | Ok targets ->
+                let planned =
+                    targets
+                    |> List.map (fun (selection, preflight) ->
+                        let operation = updateOperation selection
+                        let package = PackageUpdateSelection.package selection
 
-                    match NonEmptyList.tryCreate owners with
-                    | None -> Error(invalid "A package update preview requires an owner file.")
-                    | Some ownerFiles ->
-                        match verifyPrecondition request.Value.Precondition evidence owners with
-                        | Error error -> Error error
-                        | Ok fingerprints ->
-                            PackageUpdateBatchPreview.create
-                                (if
-                                     evidence.CaseSensitivity = FileSystemCaseSensitivity.Insensitive
-                                 then
-                                     StringComparison.OrdinalIgnoreCase
-                                 else
-                                     StringComparison.Ordinal)
-                                previewUpdates
-                                ownerFiles
-                                evidence.WorkspaceRevision
-                                fingerprints
-                            |> Result.mapError (fun violation ->
-                                invalid $"The package update preview is invalid ({violation}).")
+                        planTarget evidence operation package preflight
+                        |> Result.map (fun preview ->
+                            PackageUpdateTargetPreview.create
+                                package
+                                (PackageUpdateSelection.requestedVersion selection)
+                                preview))
+                    |> collect
+
+                match planned with
+                | Error error -> Error error
+                | Ok previews ->
+                    match NonEmptyList.tryCreate previews with
+                    | None ->
+                        Error(invalid "A package update preview requires at least one update.")
+                    | Some previewUpdates ->
+                        let owners =
+                            previews
+                            |> List.collect (
+                                PackageUpdateTargetPreview.target
+                                >> PackageTargetPreview.ownerFiles
+                                >> NonEmptyList.toList
+                            )
+                            |> orderedPaths evidence.CaseSensitivity
+
+                        match NonEmptyList.tryCreate owners with
+                        | None -> Error(invalid "A package update preview requires an owner file.")
+                        | Some ownerFiles ->
+                            match verifyPrecondition request.Value.Precondition evidence owners with
+                            | Error error -> Error error
+                            | Ok fingerprints ->
+                                PackageUpdateBatchPreview.create
+                                    (if
+                                         evidence.CaseSensitivity = FileSystemCaseSensitivity.Insensitive
+                                     then
+                                         StringComparison.OrdinalIgnoreCase
+                                     else
+                                         StringComparison.Ordinal)
+                                    previewUpdates
+                                    ownerFiles
+                                    evidence.WorkspaceRevision
+                                    fingerprints
+                                |> Result.mapError (fun violation ->
+                                    invalid $"The package update preview is invalid ({violation}).")
 
     let create (readEvidence: ReadPackageOperationPreviewEvidence) : PreviewPackageOperation =
         fun request ->

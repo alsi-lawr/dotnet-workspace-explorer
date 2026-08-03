@@ -464,7 +464,7 @@ type PackageOperationPreviewTests() =
             updates
             |> List.map (fun update ->
                 PackageUpdateTargetPreview.package update,
-                (PackageUpdateTargetPreview.target update |> PackageTargetPreview.change))
+                PackageUpdateTargetPreview.target update |> PackageTargetPreview.change)
             |> should
                 equal
                 [ fixture.CentralPackage,
@@ -643,6 +643,71 @@ type PackageOperationPreviewTests() =
 
             PackageFailure.kind failure |> should equal PackageFailureKind.Unsupported
             PackageFailure.message failure |> should haveSubstring "metadata"
+        finally
+            Directory.Delete(fixture.Root, true)
+
+    [<Fact>]
+    member _.``latest single update reports its known source mapping conflict before missing metadata``
+        ()
+        =
+        let fixture = PackageOperationPreviewScenario.updateBatchFixture ()
+
+        try
+            let evidence =
+                { fixture.Evidence with
+                    Details = Map.empty
+                    SourceMappings =
+                        fixture.Evidence.SourceMappings
+                        |> Map.add
+                            (fixture.DirectPackage,
+                             PackageOperationPreviewScenario.project fixture.DirectProject)
+                            (PackageSourceMappingPolicy.KnownConflict(fixture.DirectPackage, [])) }
+
+            let failure =
+                PackageOperationPreviewScenario.request
+                    fixture.Root
+                    (RequestedPackageOperation.UpdateLatest fixture.DirectPackage)
+                    [ fixture.DirectTarget ]
+                    None
+                    fixture.Fingerprints
+                |> PackageOperationPreviewScenario.preview evidence
+                |> PackageOperationPreviewScenario.failure
+
+            PackageFailure.kind failure |> should equal PackageFailureKind.Unsupported
+            PackageFailure.message failure |> should haveSubstring "source mapping"
+            PackageFailure.message failure |> should not' (haveSubstring "metadata")
+        finally
+            Directory.Delete(fixture.Root, true)
+
+    [<Fact>]
+    member _.``latest batch reports any known source mapping conflict before resolving member metadata``
+        ()
+        =
+        let fixture = PackageOperationPreviewScenario.updateBatchFixture ()
+
+        try
+            let evidence =
+                { fixture.Evidence with
+                    Details = Map.empty
+                    SourceMappings =
+                        fixture.Evidence.SourceMappings
+                        |> Map.add
+                            (fixture.DirectPackage,
+                             PackageOperationPreviewScenario.project fixture.DirectProject)
+                            (PackageSourceMappingPolicy.KnownConflict(fixture.DirectPackage, [])) }
+
+            let failure =
+                PackageOperationPreviewScenario.updateBatchRequest
+                    fixture.Root
+                    [ PackageUpdateSelection.latest fixture.CentralPackage fixture.CentralTarget
+                      PackageUpdateSelection.latest fixture.DirectPackage fixture.DirectTarget ]
+                    fixture.Fingerprints
+                |> PackageOperationPreviewScenario.updateBatchPreview evidence
+                |> PackageOperationPreviewScenario.failure
+
+            PackageFailure.kind failure |> should equal PackageFailureKind.Unsupported
+            PackageFailure.message failure |> should haveSubstring "source mapping"
+            PackageFailure.message failure |> should not' (haveSubstring "metadata")
         finally
             Directory.Delete(fixture.Root, true)
 
@@ -994,12 +1059,11 @@ type PackageOperationPreviewTests() =
 
             PackageOperationPreviewScenario.targets preview
             |> List.map (fun target ->
-                Path.GetFileName(
-                    (PackageOperationPreviewScenario.targetProjectPath (
-                        PackageTargetPreview.target target
-                    ))
-                ),
-                PackageTargetPreview.change target)
+                let projectPath =
+                    PackageTargetPreview.target target
+                    |> PackageOperationPreviewScenario.targetProjectPath
+
+                Path.GetFileName projectPath, PackageTargetPreview.change target)
             |> should
                 equal
                 [ "Above.csproj",
@@ -1785,9 +1849,8 @@ type PackageOperationPreviewTests() =
             (PackageTargetPreview.impact preview).Restore
             |> should
                 equal
-                (PackageRestoreImpact.RequiredWithUnknownOutcome(
-                    PackageGraphFreshness.AwaitingBackgroundRestore
-                ))
+                (PackageRestoreImpact.RequiredWithUnknownOutcome
+                    PackageGraphFreshness.AwaitingBackgroundRestore)
 
             let unresolvedStates =
                 [ InstalledPackageState.UnresolvedDirect(PackageVersionSelection.Exact selected)
