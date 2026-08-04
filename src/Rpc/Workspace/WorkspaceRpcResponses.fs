@@ -199,18 +199,8 @@ module WorkspaceRpcResponses =
                   "retryable", boolean value.Retryable
                   "correlationId", text (value.CorrelationId.ToString()) ]
 
-
         value.ArtifactPath
         |> Option.iter (fun path -> fields.Add("path", text path.Value))
-
-        value.Location
-        |> Option.iter (fun location ->
-            fields.Add(
-                "location",
-                map
-                    [ "line", integer (int64 location.Line)
-                      "column", integer (int64 location.Column) ]
-            ))
 
         map fields
 

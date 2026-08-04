@@ -114,6 +114,18 @@ type LaunchProfileStorageTests() =
 
                 DirectCommandProcess.success result |> should equal false
                 DirectCommandProcess.diagnosticCode result |> should equal "invalid_input"
+
+                DirectCommandProcess.diagnosticProperties result
+                |> should
+                    equal
+                    (set
+                        [ "artifactPath"
+                          "code"
+                          "correlationId"
+                          "retryable"
+                          "safeMessage"
+                          "severity" ])
+
                 File.ReadAllText profile |> should equal expected
             finally
                 DirectCommandProcess.delete directory

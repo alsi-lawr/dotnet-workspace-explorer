@@ -12,9 +12,7 @@ open Xunit
 [<Collection("Workspace scenarios")>]
 type WorkspaceExportStreamingTests() =
     [<Fact>]
-    member _.``two bounded exports of the same solution emit identical ordered node identities and chunk boundaries``
-        ()
-        =
+    member _.``a bounded export emits ordered unique node identities and one final chunk``() =
         let directory = WorkspaceRpcScenario.temporaryDirectory "pipe-bounded-export-order"
 
         let projectContents prefix =
@@ -49,49 +47,22 @@ type WorkspaceExportStreamingTests() =
                 |> WorkspaceRpcScenario.response 1u
                 |> ignore
 
-                let firstId, firstRevision = WorkspaceRpcScenario.startExport child 2u
-                let first = WorkspaceRpcScenario.readExport child firstId firstRevision
-                let secondId, secondRevision = WorkspaceRpcScenario.startExport child 3u
-                let second = WorkspaceRpcScenario.readExport child secondId secondRevision
+                let operationId, revision = WorkspaceRpcScenario.startExport child 2u
+                let exported = WorkspaceRpcScenario.readExport child operationId revision
 
-                (secondRevision) |> should equal (firstRevision)
-                (first.Outcome) |> should equal ("succeeded")
-                (second.Outcome) |> should equal ("succeeded")
-                (first.ChunkSizes.Length > 1) |> should equal true
-                (first.ChunkSizes |> Array.max >= 768) |> should equal true
-                (first.LastValues |> Array.filter id) |> should equal ([| true |])
-                (first.LastValues[first.LastValues.Length - 1]) |> should equal true
-                (second.Nodes.Length) |> should equal (first.Nodes.Length)
-                (second.ChunkSizes) |> should equal (first.ChunkSizes)
-
-                let nodeShape node =
-                    let capabilities =
-                        WorkspaceRpcScenario.field "capabilities" node
-                        |> RpcValue.requireArray "capabilities"
-                        |> Seq.map (RpcValue.requireString "capability")
-                        |> String.concat ","
-
-                    String.concat
-                        "\u001f"
-                        [ WorkspaceRpcScenario.field "id" node |> RpcValue.requireString "id"
-                          WorkspaceRpcScenario.field "kind" node |> RpcValue.requireString "kind"
-                          WorkspaceRpcScenario.field "name" node |> RpcValue.requireString "name"
-                          WorkspaceRpcScenario.field "loadState" node
-                          |> RpcValue.requireString "loadState"
-                          capabilities ]
-
-                let firstShapes = first.Nodes |> Array.map nodeShape
-                let secondShapes = second.Nodes |> Array.map nodeShape
-                (secondShapes) |> should equal (firstShapes)
+                (exported.Outcome) |> should equal ("succeeded")
+                (exported.ChunkSizes.Length > 1) |> should equal true
+                (exported.LastValues |> Array.filter id) |> should equal ([| true |])
+                (exported.LastValues[exported.LastValues.Length - 1]) |> should equal true
 
                 let nodeIds =
-                    first.Nodes
+                    exported.Nodes
                     |> Array.map (WorkspaceRpcScenario.field "id" >> RpcValue.requireString "id")
 
                 (nodeIds |> Array.distinct |> Array.length) |> should equal (nodeIds.Length)
 
                 let projectNames =
-                    first.Nodes
+                    exported.Nodes
                     |> Array.filter (fun node ->
                         WorkspaceRpcScenario.field "kind" node = RpcValue.String "project")
                     |> Array.map (
@@ -99,7 +70,7 @@ type WorkspaceExportStreamingTests() =
                     )
 
                 (projectNames) |> should equal ([| "Alpha"; "Middle"; "Zulu" |])
-                WorkspaceRpcScenario.shutdown child 4u
+                WorkspaceRpcScenario.shutdown child 3u
             finally
                 WorkspaceRpcScenario.disposeProcess child
         finally

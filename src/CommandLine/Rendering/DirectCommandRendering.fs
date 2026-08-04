@@ -31,11 +31,6 @@ module internal DirectCommandRendering =
                code = value.Code.Value |> sanitize
                safeMessage = value.Message |> sanitize
                artifactPath = value.ArtifactPath |> Option.map _.Value |> Option.map sanitize
-               location =
-                value.Location
-                |> Option.map (fun location ->
-                    {| line = location.Line
-                       column = location.Column |})
                retryable = value.Retryable
                correlationId = value.CorrelationId.Value.ToString() |> sanitize |}
 

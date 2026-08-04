@@ -2,10 +2,6 @@ namespace Dotnet.WorkspaceExplorer.Workspaces
 
 open System.Collections.Immutable
 
-type WorkspaceNodeReplacement =
-    { OldId: WorkspaceNodeId
-      NewId: WorkspaceNodeId }
-
 type WorkspacePageToken private (value: string) =
     member _.Value = value
 
@@ -23,16 +19,6 @@ type WorkspacePageToken private (value: string) =
         System.StringComparer.Ordinal.GetHashCode value
 
 type WorkspaceRoot =
-    { Revision: WorkspaceRevision
-      Nodes: ImmutableArray<WorkspaceNode> }
-
-type WorkspaceNodePage =
-    { Revision: WorkspaceRevision
-      ParentWorkspaceNodeId: WorkspaceNodeId
-      Nodes: ImmutableArray<WorkspaceNode>
-      NextToken: WorkspacePageToken option }
-
-type WorkspaceExport =
     { Revision: WorkspaceRevision
       Nodes: ImmutableArray<WorkspaceNode> }
 

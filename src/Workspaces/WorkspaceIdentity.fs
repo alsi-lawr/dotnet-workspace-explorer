@@ -127,12 +127,6 @@ type WorkspaceNodeId private (value: string) =
 type WorkspaceRevision private (value: int64) =
     member _.Value = value
 
-    member _.Next() =
-        if value = Int64.MaxValue then
-            invalidOp "The workspace revision cannot advance beyond Int64.MaxValue."
-
-        WorkspaceRevision(value + 1L)
-
     static member Create(value: int64) =
         if value < 0L then
             invalidArg (nameof value) "A workspace revision cannot be negative."

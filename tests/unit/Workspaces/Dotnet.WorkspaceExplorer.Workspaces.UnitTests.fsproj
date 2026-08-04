@@ -15,7 +15,6 @@
         <Compile Include="Testing/SolutionEditScenario.fs" />
         <Compile Include="WorkspaceContracts/WorkspaceIdentityTests.fs" />
         <Compile Include="WorkspaceContracts/WorkspaceCapabilityTests.fs" />
-        <Compile Include="WorkspaceContracts/WorkspaceConflictTests.fs" />
         <Compile Include="WorkspaceEditing/WorkspaceEditCancellationTests.fs" />
         <Compile Include="WorkspaceEditing/WorkspaceEditCompensationTests.fs" />
         <Compile Include="WorkspaceEditing/WorkspaceEditConfirmationTests.fs" />

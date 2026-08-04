@@ -119,7 +119,6 @@ internal static class ProjectEvaluationOutcomes
             WorkspaceDiagnosticCode.Create(code),
             message,
             path is null ? null : FSharpOption<WorkspaceArtifactPath>.Some(path),
-            null,
             retryable,
             CorrelationId.New()
         );

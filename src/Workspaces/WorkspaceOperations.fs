@@ -13,10 +13,3 @@ type WorkspaceOperationId private (value: Guid) =
         | _ -> false
 
     override _.GetHashCode() = value.GetHashCode()
-
-type WorkspaceOperationState =
-    | Queued = 0
-    | Running = 1
-    | Succeeded = 2
-    | Failed = 3
-    | Cancelled = 4

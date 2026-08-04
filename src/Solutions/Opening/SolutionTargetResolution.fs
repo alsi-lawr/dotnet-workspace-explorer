@@ -16,7 +16,6 @@ module internal SolutionTargetResolution =
             WorkspaceDiagnosticCode.Create code,
             message,
             None,
-            None,
             retryable,
             CorrelationId.New()
         )

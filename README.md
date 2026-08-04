@@ -94,7 +94,6 @@ Add `--json` when another program needs the result:
       "artifactPath": null,
       "code": "solution.not_found",
       "correlationId": "6756aa70-e14f-4036-b828-d94ef49fcfa7",
-      "location": null,
       "retryable": false,
       "safeMessage": "The solution or filter file was not found.",
       "severity": "Error"

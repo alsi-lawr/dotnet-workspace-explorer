@@ -14,19 +14,6 @@ type WorkspaceArtifactPath private (value: string) =
 
     override _.ToString() = value
 
-type WorkspaceSourceLocation private (line: int, column: int) =
-    member _.Line = line
-    member _.Column = column
-
-    static member Create(line: int, column: int) =
-        if line < 0 then
-            invalidArg (nameof line) "A source line cannot be negative."
-
-        if column < 0 then
-            invalidArg (nameof column) "A source column cannot be negative."
-
-        WorkspaceSourceLocation(line, column)
-
 type WorkspaceDiagnosticSeverity =
     | Information = 0
     | Warning = 1
@@ -51,7 +38,6 @@ type WorkspaceDiagnostic =
           CodeValue: WorkspaceDiagnosticCode
           MessageValue: string
           ArtifactPathValue: WorkspaceArtifactPath option
-          LocationValue: WorkspaceSourceLocation option
           RetryableValue: bool
           CorrelationIdValue: CorrelationId }
 
@@ -59,7 +45,6 @@ type WorkspaceDiagnostic =
     member this.Code = this.CodeValue
     member this.Message = this.MessageValue
     member this.ArtifactPath = this.ArtifactPathValue
-    member this.Location = this.LocationValue
     member this.Retryable = this.RetryableValue
     member this.CorrelationId = this.CorrelationIdValue
 
@@ -69,7 +54,6 @@ type WorkspaceDiagnostic =
             code: WorkspaceDiagnosticCode,
             safeMessage: string,
             artifactPath: WorkspaceArtifactPath option,
-            location: WorkspaceSourceLocation option,
             isRetryable: bool,
             correlationId: CorrelationId
         ) =
@@ -85,7 +69,6 @@ type WorkspaceDiagnostic =
           CodeValue = code
           MessageValue = safeMessage
           ArtifactPathValue = artifactPath
-          LocationValue = location
           RetryableValue = isRetryable
           CorrelationIdValue = correlationId }
 
@@ -97,15 +80,7 @@ type WorkspaceDiagnostic =
             isRetryable: bool,
             correlationId: CorrelationId
         ) =
-        WorkspaceDiagnostic.Create(
-            severity,
-            code,
-            safeMessage,
-            None,
-            None,
-            isRetryable,
-            correlationId
-        )
+        WorkspaceDiagnostic.Create(severity, code, safeMessage, None, isRetryable, correlationId)
 
 type WorkspaceErrorCode private (value: string) =
     member _.Value = value

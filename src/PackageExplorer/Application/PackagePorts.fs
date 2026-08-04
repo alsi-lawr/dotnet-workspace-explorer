@@ -91,20 +91,3 @@ type ExecutePackageUpdateBatch =
         -> Async<Result<PackageExecution, PackageFailure>>
 
 type CancelPackageWork = PackageCancellation -> Async<unit>
-
-type PackageExplorerPorts =
-    { ConfiguredSources: ConfiguredPackageSources
-      SourceMapping: ReadPackageSourceMapping
-      Search: SearchPackages
-      Details: ReadPackageDetails
-      Installed: ReadInstalledPackages
-      RefreshInstalled: RefreshInstalledPackages
-      Updates: ReadPackageUpdates
-      Consolidation: ReadPackageConsolidation
-      PreviewPrecondition: ReadPackagePreviewPrecondition
-      Preview: PreviewPackageOperation
-      UpdateBatchPrecondition: ReadPackageUpdateBatchPrecondition
-      PreviewUpdateBatch: PreviewPackageUpdateBatch
-      ExecuteConfirmed: ExecutePackageOperation
-      ExecuteConfirmedUpdateBatch: ExecutePackageUpdateBatch
-      Cancel: CancelPackageWork }

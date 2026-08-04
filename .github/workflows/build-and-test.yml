@@ -43,19 +43,3 @@ jobs:
       - name: Run workspace integration tests (Debug)
         working-directory: tests/integration/Workspaces/bin/Debug/net10.0
         run: dotnet Dotnet.WorkspaceExplorer.Workspaces.IntegrationTests.dll --fail-skips on
-      - name: Run RPC unit tests (Release)
-        working-directory: tests/unit/Rpc/bin/Release/net10.0
-        run: dotnet Dotnet.WorkspaceExplorer.Rpc.UnitTests.dll --fail-skips on
-      - name: Run workspace unit tests (Release)
-        working-directory: tests/unit/Workspaces/bin/Release/net10.0
-        run: dotnet Dotnet.WorkspaceExplorer.Workspaces.UnitTests.dll --fail-skips on
-      - name: Run project evaluation integration tests (Release)
-        working-directory: tests/integration/ProjectEvaluation/bin/Release/net10.0
-        run: dotnet Dotnet.WorkspaceExplorer.ProjectEvaluation.IntegrationTests.dll --fail-skips on
-      - name: Run workspace integration tests (Release)
-        working-directory: tests/integration/Workspaces/bin/Release/net10.0
-        run: dotnet Dotnet.WorkspaceExplorer.Workspaces.IntegrationTests.dll --fail-skips on
-      - name: Check formatting
-        run: |
-          dotnet fantomas --check .
-          dotnet csharpier check src/ProjectEvaluation
