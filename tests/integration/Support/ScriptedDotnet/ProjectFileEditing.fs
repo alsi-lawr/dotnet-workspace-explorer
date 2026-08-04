@@ -92,7 +92,6 @@ module internal ProjectFileEditing =
         match arguments |> Array.toList with
         | "add" :: _project :: "package" :: identity :: _
         | "remove" :: _project :: "package" :: identity :: _ -> Some identity
-        | "package" :: "update" :: identity :: _ -> Some identity
         | _ -> positionalArguments arguments |> List.tryHead
 
     let private packageProject (arguments: string array) =
