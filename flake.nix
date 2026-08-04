@@ -34,14 +34,37 @@
           fantomas_7_0_5
           csharpier_1_3_0
         ];
-      workspaceExplorer = pkgs:
-        pkgs.buildDotnetGlobalTool {
+      workspaceExplorer = system:
+        let
+          pkgs = import nixpkgs { inherit system; };
+          inherit (pkgs) lib;
+        in
+        pkgs.buildDotnetModule {
           pname = "dotnet-workspace-explorer";
-          version = "0.1.0";
-          nugetName = "ALSI.WorkspaceExplorer";
-          nugetHash = "sha256-kldK7e4NxqXl5KgzGdJ3KTHShxF09Y7DO09gLVxrNkw=";
-          executables = "dotnet-we";
+          version = "0.3.0";
+
+          src = lib.fileset.toSource {
+            root = ./.;
+            fileset = lib.fileset.unions [
+              ./Directory.Build.props
+              ./Directory.Packages.props
+              ./global.json
+              ./src
+            ];
+          };
+
+          projectFile = "src/WorkspaceExplorer/Dotnet.WorkspaceExplorer.fsproj";
+          nugetDeps = ./nix/deps.json;
           dotnet-sdk = pkgs.dotnet-sdk_10;
+          dotnet-runtime = pkgs.dotnet-runtime_10;
+          selfContainedBuild = true;
+          executables = [ "dotnet-we" ];
+
+          postInstall = ''
+            mv \
+              "$out/lib/$pname/Dotnet.WorkspaceExplorer" \
+              "$out/lib/$pname/dotnet-we"
+          '';
 
           meta = {
             description = "Explore and edit .NET solutions from the command line or an editor";
@@ -55,14 +78,20 @@
       packages = forAllSystems (
         system:
         let
-          pkgs = import nixpkgs { inherit system; };
-          package = workspaceExplorer pkgs;
+          package = workspaceExplorer system;
         in
         {
           default = package;
           dotnet-workspace-explorer = package;
         }
       );
+
+      apps = forAllSystems (system: {
+        default = {
+          type = "app";
+          program = "${workspaceExplorer system}/bin/dotnet-we";
+        };
+      });
 
       devShells = forAllSystems (
         system:

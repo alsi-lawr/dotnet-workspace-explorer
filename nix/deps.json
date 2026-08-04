@@ -1,0 +1,132 @@
+[
+  {
+    "pname": "FSharp.Core",
+    "version": "10.1.201",
+    "hash": "sha256-NzxdRJgL+5RQpUm8Y6Mc0w7sakxqThv6qHpP+u0x5x0="
+  },
+  {
+    "pname": "MessagePack",
+    "version": "3.1.8",
+    "hash": "sha256-SD0IcA49uwpKBCV2qDJcuWlh/b0OKIkeRVXgnEwhV7g="
+  },
+  {
+    "pname": "MessagePack.Annotations",
+    "version": "3.1.8",
+    "hash": "sha256-Z2dbN0UNiYroJwvpdT1C7HqMiVbFeMkYkTaF7q1+szM="
+  },
+  {
+    "pname": "MessagePackAnalyzer",
+    "version": "3.1.8",
+    "hash": "sha256-iKUIxHaBzepfVgL2453xQNxyMIoBxvIXu6RhaKiO5Wg="
+  },
+  {
+    "pname": "Microsoft.Build",
+    "version": "18.7.1",
+    "hash": "sha256-SuiMJA9ZSVRMgWCSuqmI+utYuccmObKGcXr6c2zvPDg="
+  },
+  {
+    "pname": "Microsoft.Build.Framework",
+    "version": "18.7.1",
+    "hash": "sha256-reiTfnhkYsgfMBlcyGpDICzVtmJaAt0iOjiq9vg9owg="
+  },
+  {
+    "pname": "Microsoft.Build.Locator",
+    "version": "1.11.2",
+    "hash": "sha256-1eY1hJ9ttRjj5np9DIt3GTnerDI0wToD/CNS3A7BBQI="
+  },
+  {
+    "pname": "Microsoft.NET.StringTools",
+    "version": "17.11.4",
+    "hash": "sha256-lWfzY35WQ+iKS9TpuztDTljgF9CIORhFhFEm0p1dVBE="
+  },
+  {
+    "pname": "Microsoft.NET.StringTools",
+    "version": "18.7.1",
+    "hash": "sha256-sTEk+neir/Qbrn93/T1C3qUl25J0kvD/Mf6ojoBgzQc="
+  },
+  {
+    "pname": "Microsoft.VisualStudio.SolutionPersistence",
+    "version": "1.0.52",
+    "hash": "sha256-KZGPtOXe6Hv8RrkcsgoLKTRyaCScIpQEa2NhNB3iOXw="
+  },
+  {
+    "pname": "Newtonsoft.Json",
+    "version": "13.0.3",
+    "hash": "sha256-hy/BieY4qxBWVVsDqqOPaLy1QobiIapkbrESm6v2PHc="
+  },
+  {
+    "pname": "NuGet.Common",
+    "version": "7.6.0",
+    "hash": "sha256-amMiRHEwKpmZ0tXjsLBGOz9pTagbuBYmzN2oUlFgjWA="
+  },
+  {
+    "pname": "NuGet.Configuration",
+    "version": "7.6.0",
+    "hash": "sha256-yg60WRuOsAeO51Ax06FdeagIjvA1K4OYqnV0yoR6UMA="
+  },
+  {
+    "pname": "NuGet.DependencyResolver.Core",
+    "version": "7.6.0",
+    "hash": "sha256-gYe/dtvoOldqYmx+9mpsTJkNTkhJheLgMYI+nxLqQKQ="
+  },
+  {
+    "pname": "NuGet.Frameworks",
+    "version": "7.6.0",
+    "hash": "sha256-BNgwXyNLZha+ROnqzDke7L2NRgSHVfh6XIc1bkBrhP8="
+  },
+  {
+    "pname": "NuGet.LibraryModel",
+    "version": "7.6.0",
+    "hash": "sha256-hzUI0e2+w1S9BQ6eAvK0sAR2l+tcPdUNSPpFiEueQ4Y="
+  },
+  {
+    "pname": "NuGet.Packaging",
+    "version": "7.6.0",
+    "hash": "sha256-iEKjMWIiw+e9+2pWJegaMo8trPCHl/y2kA4GFMBhfEY="
+  },
+  {
+    "pname": "NuGet.ProjectModel",
+    "version": "7.6.0",
+    "hash": "sha256-sx4enIJ7RCBrwPD48gMqaWMou1EFtgP2SwFAiUdILw0="
+  },
+  {
+    "pname": "NuGet.Protocol",
+    "version": "7.6.0",
+    "hash": "sha256-CXdmTVhSWtbCSJJHQl4cqXAzBMER6HwSG0JcKxF9oq8="
+  },
+  {
+    "pname": "NuGet.Versioning",
+    "version": "7.6.0",
+    "hash": "sha256-HmQBQ808F5jGNQ1We6Ry16G98kPnBVoyoZ8oTyOGoiQ="
+  },
+  {
+    "pname": "System.Configuration.ConfigurationManager",
+    "version": "10.0.4",
+    "hash": "sha256-IOgtnN6hHNdoZDDvrIBoMzVp+D1SWJ1LwJ+TIUuE3W8="
+  },
+  {
+    "pname": "System.Diagnostics.EventLog",
+    "version": "10.0.4",
+    "hash": "sha256-gFbdvani74oe8mLZ7bp4Iz5lfP0dJbc+SaUAyko82PY="
+  },
+  {
+    "pname": "System.Reflection.MetadataLoadContext",
+    "version": "10.0.4",
+    "hash": "sha256-usqt7uNKKWseO94OBJOwPna0lq30W1PhS9MOE+N3VP0="
+  },
+  {
+    "pname": "System.Security.Cryptography.Pkcs",
+    "version": "8.0.1",
+    "hash": "sha256-KMNIkJ3yQ/5O6WIhPjyAIarsvIMhkp26A6aby5KkneU="
+  },
+  {
+    "pname": "System.Security.Cryptography.ProtectedData",
+    "version": "10.0.4",
+    "hash": "sha256-aCbQXMJQrDEOGHCwbY36COSkGHBrZfSnPyTrz6P2Al4="
+  },
+  {
+    "pname": "System.Security.Cryptography.ProtectedData",
+    "version": "8.0.0",
+    "hash": "sha256-fb0pa9sQxN+mr0vnXg1Igbx49CaOqS+GDkTfWNboUvs="
+  }
+]
