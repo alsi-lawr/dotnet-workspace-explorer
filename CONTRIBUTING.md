@@ -26,6 +26,8 @@ Build the project you changed and run its nearest test target while iterating:
 | Change | Test target |
 | --- | --- |
 | RPC framing and sessions | `tests/unit/Rpc` |
+| Package models, adapters, previews, and mutations | `tests/unit/PackageExplorer` |
+| Package processes and package RPC sessions | `tests/integration/PackageExplorer` |
 | Solution projection and edit planning | `tests/unit/Workspaces` |
 | SDK and project evaluation | `tests/integration/ProjectEvaluation` |
 | CLI, workspace RPC, indexing, and editing | `tests/integration/Workspaces` |
@@ -36,6 +38,28 @@ For example:
 dotnet build tests/unit/Rpc/Dotnet.WorkspaceExplorer.Rpc.UnitTests.fsproj --configuration Debug
 dotnet tests/unit/Rpc/bin/Debug/net10.0/Dotnet.WorkspaceExplorer.Rpc.UnitTests.dll --fail-skips on
 ```
+
+For package backend work, build and run these focused targets:
+
+```console
+dotnet build tests/unit/PackageExplorer/Dotnet.WorkspaceExplorer.PackageExplorer.UnitTests.fsproj
+dotnet tests/unit/PackageExplorer/bin/Debug/net10.0/\
+Dotnet.WorkspaceExplorer.PackageExplorer.UnitTests.dll --fail-skips on
+
+dotnet build tests/unit/Rpc/Dotnet.WorkspaceExplorer.Rpc.UnitTests.fsproj
+dotnet tests/unit/Rpc/bin/Debug/net10.0/\
+Dotnet.WorkspaceExplorer.Rpc.UnitTests.dll --fail-skips on
+
+dotnet build \
+  tests/integration/PackageExplorer/\
+Dotnet.WorkspaceExplorer.PackageExplorer.IntegrationTests.fsproj
+dotnet tests/integration/PackageExplorer/bin/Debug/net10.0/\
+Dotnet.WorkspaceExplorer.PackageExplorer.IntegrationTests.dll --fail-skips on
+```
+
+The package unit target covers adapters, installed state, previews, and mutations. The RPC unit
+target covers the package schema and golden frames. The package integration target covers stock
+`dotnet package` processes, restore behavior, and package RPC sessions.
 
 Use both Debug and Release for cross-cutting changes. The
 [build workflow](.github/workflows/build-and-test.yml) is the canonical list of full CI targets.
@@ -69,6 +93,11 @@ suggestions.
 Use one FsAutoComplete process for the workspace and stop it when the check is complete. Do not run
 multiple language-server processes in parallel. FsAutoComplete is a local review tool, not a CI
 dependency; the compiler remains the deterministic warning gate.
+
+Check touched package backend files in dependency order: `src/Packages`, `src/PackageExplorer`,
+`src/Rpc`, then `src/WorkspaceExplorer`. Wait for diagnostics for one file before opening the next
+one. Clear warnings and suggestions that apply to the change, then stop the single server and check
+that no FsAutoComplete process remains.
 
 ## Tests and pull requests
 

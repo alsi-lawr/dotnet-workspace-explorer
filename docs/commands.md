@@ -12,6 +12,7 @@ available from the .NET SDK.
 [--json] solution|sln <SLN_FILE> add directory|dir <DIRECTORY>
 workspace <TARGET> --pipe
 workspace <TARGET> --pipe --export-workers <POSITIVE_INTEGER>
+packages <TARGET> --pipe
 ```
 
 `solution` and `sln` are aliases. `<TARGET>` may be an `.sln`, `.slnx`, `.slnf`, or project file.
@@ -111,3 +112,16 @@ editor and TUI integrations rather than interactive shell use. See
 
 Project export uses three workers by default. `--export-workers` accepts a positive integer and
 changes the process-local concurrency bound for that invocation.
+
+## Package service
+
+```console
+dotnet we packages ./Demo.slnx --pipe
+```
+
+The target is required. It may be an `.sln`, `.slnx`, `.slnf`, C#, F#, or Visual Basic project, or
+a directory whose projects should be included. The package service has its own MessagePack-RPC
+profile and does not accept workspace RPC requests.
+
+This command starts only the backend. It does not open an interactive package explorer or forward
+ordinary `dotnet package` commands. See [`package-rpc.md`](package-rpc.md) for the protocol.

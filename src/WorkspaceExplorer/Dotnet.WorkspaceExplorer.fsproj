@@ -77,6 +77,15 @@
     <ItemGroup>
         <None Include="$(PackageReadmeOutput)" Pack="true" PackagePath="/" />
         <None Include="../../LICENSE" Pack="true" PackagePath="/" />
+        <None Include="../../docs/package-rpc.md" Pack="true" PackagePath="docs/" />
+        <None
+            Include="../../protocol/package-v1.schema.json"
+            Pack="true"
+            PackagePath="protocol/" />
+        <None
+            Include="../../tests/Fixtures/PackageRpc/**/*.mpack"
+            Pack="true"
+            PackagePath="protocol/package-v1/golden/" />
     </ItemGroup>
     <Target
         Name="GeneratePackageReadme"

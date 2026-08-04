@@ -53,6 +53,16 @@ The Neovim integration is
 [`dotnet-workspace-explorer.nvim`](https://github.com/alsi-lawr/dotnet-workspace-explorer.nvim).
 It starts the workspace service automatically.
 
+Package clients can use the same tool as a backend:
+
+```console
+dotnet we packages ./Demo.slnx --pipe
+```
+
+This starts the package service without opening a terminal interface. The Visual Studio-style
+terminal interface is the separate
+[`dotnet-package-explorer`](https://github.com/alsi-lawr/dotnet-package-explorer) project.
+
 ## Commands
 
 Workspace Explorer only provides commands that add behavior beyond the .NET SDK.
@@ -113,8 +123,8 @@ Project export uses three workers by default. Set a different capacity when need
 dotnet-we workspace ./Demo.slnx --pipe --export-workers 4
 ```
 
-See the [command reference][commands] and [workspace RPC reference][rpc] for the complete
-interfaces.
+See the [command reference][commands], [workspace RPC reference][workspace-rpc], and
+[package RPC reference][package-rpc] for the complete interfaces.
 
 ## Contributing
 
@@ -126,4 +136,7 @@ MIT. See [LICENSE](https://github.com/alsi-lawr/dotnet-workspace-explorer/blob/m
 
 [commands]: https://github.com/alsi-lawr/dotnet-workspace-explorer/blob/master/docs/commands.md
 [contributing]: https://github.com/alsi-lawr/dotnet-workspace-explorer/blob/master/CONTRIBUTING.md
-[rpc]: https://github.com/alsi-lawr/dotnet-workspace-explorer/blob/master/docs/workspace-rpc.md
+[package-rpc]:
+  https://github.com/alsi-lawr/dotnet-workspace-explorer/blob/master/docs/package-rpc.md
+[workspace-rpc]:
+  https://github.com/alsi-lawr/dotnet-workspace-explorer/blob/master/docs/workspace-rpc.md
