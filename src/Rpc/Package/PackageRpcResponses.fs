@@ -258,6 +258,8 @@ module PackageRpcResponses =
         map [ "package", text package.Value; "versionRange", text range.Value ]
 
     let detailsResult includeReadme (details: PackageDetails) =
+        let readme = details.ReadmeContent |> Option.orElse details.Summary.Description
+
         map (
             [ "summary", summary details.Summary
               "versions", details.Versions |> array (_.Value >> text)
@@ -280,7 +282,7 @@ module PackageRpcResponses =
             @ optional "licenseUrl" (fun (value: Uri) -> text (value.ToString())) details.LicenseUrl
             @ optional "readmeUrl" (fun (value: Uri) -> text (value.ToString())) details.ReadmeUrl
             @ if includeReadme then
-                  optional "readmeCommonMark" text details.ReadmeContent
+                  optional "readmeCommonMark" text readme
               else
                   []
         )

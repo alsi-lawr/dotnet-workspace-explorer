@@ -513,16 +513,12 @@ type PackageRpcSessionTests() =
             Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``package details include README and deprecation only when negotiated``() =
+    member _.``package details prefer README content, fall back to description, and respect negotiated metadata``
+        ()
+        =
         let directory, project = PackageRpcSessionScenario.temporaryProject ()
 
         try
-            let ports =
-                { PackageRpcSessionScenario.ports (fun _ -> async.Return(Ok [])) with
-                    Details =
-                        fun _ ->
-                            async.Return(Ok(PackageRpcSessionScenario.details "Example.Package")) }
-
             let detailsRequest id =
                 Request(
                     id,
@@ -534,7 +530,11 @@ type PackageRpcSessionTests() =
                           "source", RpcValue.String "nuget.org" ]
                 )
 
-            let run capabilities =
+            let run details capabilities =
+                let ports =
+                    { PackageRpcSessionScenario.ports (fun _ -> async.Return(Ok [])) with
+                        Details = fun _ -> async.Return(Ok details) }
+
                 PackageRpcSessionScenario.run
                     (PackageRpcSessionScenario.target project)
                     ports
@@ -549,10 +549,17 @@ type PackageRpcSessionTests() =
                         | Response(2u, Ok result) -> Some result
                         | _ -> None)
 
-            let withReadme = run [ "packages.details.v1"; "packages.readme.v1" ]
+            let details = PackageRpcSessionScenario.details "Example.Package"
+            let capabilities = [ "packages.details.v1"; "packages.readme.v1" ]
+            let withReadme = run details capabilities
 
             RpcValue.tryField "readmeCommonMark" withReadme
             |> should equal (Some(RpcValue.String "# Example"))
+
+            let withDescription = run { details with ReadmeContent = None } capabilities
+
+            RpcValue.tryField "readmeCommonMark" withDescription
+            |> should equal (Some(RpcValue.String "Example package"))
 
             let deprecation =
                 RpcValue.tryField "deprecation" withReadme
@@ -561,7 +568,7 @@ type PackageRpcSessionTests() =
             RpcValue.tryField "kind" deprecation
             |> should equal (Some(RpcValue.String "deprecated"))
 
-            let withoutReadme = run [ "packages.details.v1" ]
+            let withoutReadme = run details [ "packages.details.v1" ]
             RpcValue.tryField "readmeCommonMark" withoutReadme |> should equal None
         finally
             Directory.Delete(directory, true)
