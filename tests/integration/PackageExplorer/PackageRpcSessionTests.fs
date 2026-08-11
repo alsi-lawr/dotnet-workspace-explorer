@@ -22,20 +22,23 @@ module private PackageRpcSessionScenario =
     let target path =
         PackageWorkspaceTarget.file path |> Result.defaultWith (failwithf "%A")
 
-    let initializationWithLimit frameLimit capabilities =
+    let initializationWithLimits frameLimit pageLimit capabilities =
         Request(
             1u,
             "initialize",
             map
                 [ "protocolVersion",
-                  map [ "major", RpcValue.Integer 1L; "minor", RpcValue.Integer 0L ]
+                  map [ "major", RpcValue.Integer 2L; "minor", RpcValue.Integer 0L ]
                   "clientInfo", map [ "name", text "session-test" ]
                   "capabilities", capabilities |> Seq.map text |> RpcValue.array
                   "limits",
                   map
                       [ "maxFrameBytes", RpcValue.Integer(int64 frameLimit)
-                        "maxPageSize", RpcValue.Integer 20L ] ]
+                        "maxPageSize", RpcValue.Integer(int64 pageLimit) ] ]
         )
+
+    let initializationWithLimit frameLimit capabilities =
+        initializationWithLimits frameLimit 20 capabilities
 
     let initialization capabilities =
         initializationWithLimit 65536 capabilities
@@ -295,6 +298,85 @@ module private PackageRpcSessionScenario =
 
             ValueTask()
 
+    type StagedInputStream(chunks: byte array list, releases: Task list) =
+        inherit Stream()
+        let chunks = chunks |> List.toArray
+        let releases = releases |> List.toArray
+        let mutable chunk = 0
+        let mutable offset = 0
+        let released = Array.create releases.Length false
+        override _.CanRead = true
+        override _.CanSeek = false
+        override _.CanWrite = false
+        override _.Length = chunks |> Array.sumBy (_.Length) |> int64
+
+        override _.Position
+            with get () =
+                chunks |> Array.take chunk |> Array.sumBy (_.Length) |> (+) offset |> int64
+            and set _ = raise (NotSupportedException())
+
+        override _.Flush() = ()
+        override _.Read(_, _, _) = raise (NotSupportedException())
+        override _.Seek(_, _) = raise (NotSupportedException())
+        override _.SetLength _ = raise (NotSupportedException())
+        override _.Write(_, _, _) = raise (NotSupportedException())
+
+        override _.ReadAsync(buffer: Memory<byte>, cancellationToken: CancellationToken) =
+            ValueTask<int>(
+                task {
+                    if chunk < chunks.Length && offset = chunks[chunk].Length then
+                        chunk <- chunk + 1
+                        offset <- 0
+
+                    if chunk >= chunks.Length then
+                        return 0
+                    else
+                        if chunk > 0 && not released[chunk - 1] then
+                            do! releases[chunk - 1].WaitAsync cancellationToken
+                            released[chunk - 1] <- true
+
+                        let count = min buffer.Length (chunks[chunk].Length - offset)
+                        chunks[chunk].AsSpan(offset, count).CopyTo buffer.Span
+                        offset <- offset + count
+                        return count
+                }
+            )
+
+    type SignallingOutputStream(signals: (string * TaskCompletionSource) list) =
+        inherit Stream()
+        let bytes = new MemoryStream()
+        override _.CanRead = false
+        override _.CanSeek = false
+        override _.CanWrite = true
+        override _.Length = bytes.Length
+
+        override _.Position
+            with get () = bytes.Position
+            and set _ = raise (NotSupportedException())
+
+        member _.ToArray() = bytes.ToArray()
+        override _.Flush() = ()
+        override _.FlushAsync(_: CancellationToken) = Task.CompletedTask
+        override _.Read(_, _, _) = raise (NotSupportedException())
+        override _.Seek(_, _) = raise (NotSupportedException())
+        override _.SetLength _ = raise (NotSupportedException())
+        override _.Write(_, _, _) = raise (NotSupportedException())
+
+        override _.WriteAsync(buffer: ReadOnlyMemory<byte>, _: CancellationToken) =
+            bytes.Write buffer.Span
+
+            match
+                MessagePackRpcCodec.decodeFrame MessagePackRpcCodec.secureLimits (buffer.ToArray())
+            with
+            | Ok(RpcFrameDecodeResult.Frame(Notification(methodName, _))) ->
+                signals
+                |> List.tryFind (fun (name, signal) ->
+                    name = methodName && not signal.Task.IsCompleted)
+                |> Option.iter (fun (_, signal) -> signal.TrySetResult() |> ignore)
+            | _ -> ()
+
+            ValueTask()
+
     let ports (refresh: RefreshInstalledPackages) : PackageCatalogPorts =
         let unsupported _ = async.Return(Error failure)
         let unsupportedProducer _ _ = async.Return(Error failure)
@@ -400,6 +482,35 @@ module private PackageRpcSessionScenario =
             return exitCode, decode (output.ToArray()), errors.ToString()
         }
 
+    let runStaged target ports chunks releaseNotifications =
+        task {
+            let signals =
+                releaseNotifications
+                |> List.map (fun methodName ->
+                    methodName,
+                    TaskCompletionSource TaskCreationOptions.RunContinuationsAsynchronously)
+
+            use input =
+                new StagedInputStream(
+                    chunks |> List.map encode,
+                    signals |> List.map (fun (_, signal) -> signal.Task)
+                )
+
+            use output = new SignallingOutputStream(signals)
+            use errors = new StringWriter()
+
+            let! exitCode =
+                PackageRpcServer.runWithPortsAsync
+                    target
+                    ports
+                    input
+                    output
+                    errors
+                    CancellationToken.None
+
+            return exitCode, decode (output.ToArray()), errors.ToString()
+        }
+
     let temporaryProject () =
         let directory =
             Path.Combine(Path.GetTempPath(), $"dotnet-we-package-rpc-{Guid.NewGuid():N}")
@@ -414,146 +525,317 @@ type PackageRpcSessionTests() =
     let hasErrorCode = PackageRpcSessionScenario.hasErrorCode
 
     [<Fact>]
-    member _.``installed restore remains background work while unrelated package requests complete``
-        ()
-        =
+    member _.``installed inventory completes before an explicit restore stream starts``() =
         let directory, project = PackageRpcSessionScenario.temporaryProject ()
 
         try
-            let frames =
-                [ PackageRpcSessionScenario.initialization
-                      [ "packages.installed.v1"; "packages.restore.v1"; "packages.sources.v1" ]
-                  Request(
-                      2u,
-                      "package/installed",
-                      RpcValue.map
-                          [ "requestId", RpcValue.String PackageRpcSessionScenario.requestId
-                            "pageSize", RpcValue.Integer 20L ]
-                  )
-                  Request(
-                      3u,
-                      "package/sources",
-                      RpcValue.map
-                          [ "requestId", RpcValue.String "33333333-3333-3333-3333-333333333333" ]
-                  )
-                  Request(4u, "shutdown", RpcValue.emptyMap) ]
+            let graph =
+                PackageRpcSessionScenario.graph
+                    project
+                    [ PackageRpcSessionScenario.installed project "First.Package" "1.0.0"
+                      PackageRpcSessionScenario.installed project "Second.Package" "2.0.0" ]
 
-            let refresh _ _ =
-                async {
-                    do! Async.Sleep 60000
-                    return Ok()
-                }
+            let ports =
+                { PackageRpcSessionScenario.ports (
+                      PackageRpcSessionScenario.installedProducer [ graph ]
+                  ) with
+                    Installed = PackageRpcSessionScenario.installedProducer [ graph ] }
+
+            let inventoryRequestId = PackageRpcSessionScenario.requestId
+            let restoreRequestId = "22222222-2222-2222-2222-222222222222"
 
             let exitCode, output, errors =
-                PackageRpcSessionScenario.run
+                PackageRpcSessionScenario.runStaged
                     (PackageRpcSessionScenario.target project)
-                    (PackageRpcSessionScenario.ports refresh)
-                    (PackageRpcSessionScenario.encode frames)
+                    ports
+                    [ [ PackageRpcSessionScenario.initialization
+                            [ "packages.installed.v2"; "packages.restore.v2" ]
+                        Request(
+                            2u,
+                            "package/installed/start",
+                            RpcValue.map [ "requestId", RpcValue.String inventoryRequestId ]
+                        ) ]
+                      [ Request(
+                            3u,
+                            "package/installed/restore/start",
+                            RpcValue.map [ "requestId", RpcValue.String restoreRequestId ]
+                        ) ]
+                      [ Request(4u, "shutdown", RpcValue.emptyMap) ] ]
+                    [ "package/installed/completed"; "package/installed/restore/completed" ]
                 |> _.Result
 
             exitCode |> should equal 0
             errors |> should equal String.Empty
 
-            output
-            |> List.choose (function
-                | Response(id, Ok _) -> Some id
-                | _ -> None)
-            |> should equal [ 1u; 2u; 3u; 4u ]
+            let index predicate = output |> List.findIndex predicate
+
+            let accepted responseId requestId =
+                output
+                |> List.pick (function
+                    | Response(id, Ok value) when id = responseId -> Some value
+                    | _ -> None)
+                |> fun value ->
+                    RpcValue.tryField "accepted" value |> should equal (Some(RpcValue.Boolean true))
+
+                    RpcValue.tryField "requestId" value
+                    |> should equal (Some(RpcValue.String requestId))
+
+            accepted 2u inventoryRequestId
+            accepted 3u restoreRequestId
+
+            index (function
+                | Response(2u, Ok _) -> true
+                | _ -> false)
+            |> should
+                be
+                (lessThan (
+                    index (function
+                        | Notification("package/installed/batch", _) -> true
+                        | _ -> false)
+                ))
+
+            index (function
+                | Notification("package/installed/completed", _) -> true
+                | _ -> false)
+            |> should
+                be
+                (lessThan (
+                    index (function
+                        | Response(3u, Ok _) -> true
+                        | _ -> false)
+                ))
+
+            index (function
+                | Response(3u, Ok _) -> true
+                | _ -> false)
+            |> should
+                be
+                (lessThan (
+                    index (function
+                        | Notification("package/installed/restore/batch", _) -> true
+                        | _ -> false)
+                ))
+
+            let assertTerminal methodName requestId =
+                output
+                |> List.pick (function
+                    | Notification(name, parameters) when name = methodName -> Some parameters
+                    | _ -> None)
+                |> fun parameters ->
+                    RpcValue.tryField "requestId" parameters
+                    |> should equal (Some(RpcValue.String requestId))
+
+                    RpcValue.tryField "state" parameters
+                    |> should equal (Some(RpcValue.String "completed"))
+
+                    RpcValue.tryField "batchCount" parameters
+                    |> should equal (Some(RpcValue.Unsigned 1UL))
+
+                    RpcValue.tryField "itemCount" parameters
+                    |> should equal (Some(RpcValue.Unsigned 2UL))
+
+                    RpcValue.tryField "lastSequence" parameters
+                    |> should equal (Some(RpcValue.Unsigned 0UL))
+
+                    RpcValue.tryField "error" parameters |> should equal None
+
+            assertTerminal "package/installed/completed" inventoryRequestId
+            assertTerminal "package/installed/restore/completed" restoreRequestId
         finally
             Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``installed restore reports refreshed failed and cancelled terminal states``() =
+    member _.``discovery admission rejects overlap without queuing and releases after cleanup``() =
         let directory, project = PackageRpcSessionScenario.temporaryProject ()
 
-        let runCase refresh cancel expectedState =
-            let ports =
-                { PackageRpcSessionScenario.ports refresh with
-                    Cancel = cancel }
-
-            let initial =
-                [ PackageRpcSessionScenario.initialization
-                      [ "packages.installed.v1"; "packages.restore.v1"; "packages.cancel.v1" ]
-                  Request(
-                      2u,
-                      "package/installed",
-                      RpcValue.map
-                          [ "requestId", RpcValue.String PackageRpcSessionScenario.requestId
-                            "pageSize", RpcValue.Integer 20L ]
-                  ) ]
-
-            let initial =
-                if expectedState = "cancelled" then
-                    initial
-                    @ [ Request(
-                            3u,
-                            "package/cancel",
-                            RpcValue.map
-                                [ "requestId", RpcValue.String PackageRpcSessionScenario.requestId ]
-                        ) ]
-                else
-                    initial
-
-            let exitCode, output, errors =
-                PackageRpcSessionScenario.runObserved
-                    (PackageRpcSessionScenario.target project)
-                    ports
-                    initial
-                    [ Request(4u, "shutdown", RpcValue.emptyMap) ]
-                    [ "package/restore/completed" ]
-                |> _.Result
-
-            exitCode |> should equal 0
-            errors |> should equal String.Empty
-
-            let foundState =
-                output
-                |> List.exists (function
-                    | Notification("package/restore/completed", parameters) ->
-                        Some(RpcValue.String expectedState) = RpcValue.tryField "state" parameters
-                    | _ -> false)
-
-            if not foundState then
-                failwithf "Expected restore state %s in %A" expectedState output
-
         try
-            let restored =
-                PackageRpcSessionScenario.graph
-                    project
-                    [ PackageRpcSessionScenario.installed project "Example.Package" "1.0.0" ]
-
-            runCase
-                (PackageRpcSessionScenario.installedProducer [ restored ])
-                (fun _ -> async.Return())
-                "refreshed"
-
-            runCase
-                (fun _ _ ->
-                    async.Return(
-                        Error(
-                            PackageRpcSessionScenario.packageFailure
-                                PackageFailureKind.SourceUnavailable
-                        )
-                    ))
-                (fun _ -> async.Return())
-                "failed"
-
-            let cancellation =
+            let cancelled =
                 TaskCompletionSource TaskCreationOptions.RunContinuationsAsynchronously
 
-            runCase
-                (fun _ _ ->
-                    async {
-                        do! cancellation.Task |> Async.AwaitTask
+            let mutable starts = 0
+
+            let search request _ =
+                async {
+                    let current = Interlocked.Increment(&starts)
+
+                    if current = 1 then
+                        do! cancelled.Task |> Async.AwaitTask
 
                         return
                             Error(
                                 PackageRpcSessionScenario.packageFailure
                                     PackageFailureKind.Cancelled
                             )
-                    })
-                (fun _ -> async { cancellation.TrySetResult() |> ignore })
-                "cancelled"
+                    else
+                        return
+                            Ok
+                                { Query = request.Value.Search
+                                  Continuation = None
+                                  SourceFailures = [] }
+                }
+
+            let ports =
+                { PackageRpcSessionScenario.ports (PackageRpcSessionScenario.installedProducer []) with
+                    Search = search
+                    Cancel = fun _ -> async { cancelled.TrySetResult() |> ignore } }
+
+            let firstRequestId = PackageRpcSessionScenario.requestId
+            let rejectedRequestId = "22222222-2222-2222-2222-222222222222"
+            let retryRequestId = "33333333-3333-3333-3333-333333333333"
+
+            let searchRequest id requestId =
+                Request(
+                    id,
+                    "package/search/start",
+                    RpcValue.map [ "requestId", RpcValue.String requestId ]
+                )
+
+            let exitCode, output, errors =
+                PackageRpcSessionScenario.runObserved
+                    (PackageRpcSessionScenario.target project)
+                    ports
+                    [ PackageRpcSessionScenario.initialization
+                          [ "packages.search.v2"; "packages.cancel.v1" ]
+                      searchRequest 2u firstRequestId
+                      searchRequest 3u rejectedRequestId
+                      Request(
+                          4u,
+                          "package/cancel",
+                          RpcValue.map [ "requestId", RpcValue.String firstRequestId ]
+                      ) ]
+                    [ searchRequest 5u retryRequestId; Request(6u, "shutdown", RpcValue.emptyMap) ]
+                    [ "package/search/completed" ]
+                |> _.Result
+
+            exitCode |> should equal 0
+            errors |> should equal String.Empty
+
+            output
+            |> List.exists (function
+                | Response(3u, Error error) ->
+                    error.Code = "discovery_in_progress"
+                    && (error.Data |> Option.bind (RpcValue.tryField "retry")) = Some(
+                        RpcValue.String "transient"
+                    )
+                | _ -> false)
+            |> should equal true
+
+            output
+            |> List.exists (function
+                | Response(5u, Ok _) -> true
+                | _ -> false)
+            |> should equal true
+
+            let terminalStates =
+                output
+                |> List.choose (function
+                    | Notification("package/search/completed", parameters) ->
+                        RpcValue.tryField "state" parameters
+                    | _ -> None)
+
+            terminalStates |> List.head |> should equal (RpcValue.String "cancelled")
+
+            output
+            |> List.choose (function
+                | Notification("package/search/completed", parameters) ->
+                    RpcValue.tryField "error" parameters
+                | _ -> None)
+            |> List.isEmpty
+            |> should equal false
+        finally
+            Directory.Delete(directory, true)
+
+    [<Fact>]
+    member _.``failed discovery after a batch is redacted and releases admission``() =
+        let directory, project = PackageRpcSessionScenario.temporaryProject ()
+
+        try
+            let update =
+                { Installed = PackageRpcSessionScenario.installed project "Example.Package" "1.0.0"
+                  Available = NonEmptyList.singleton (PackageRpcSessionScenario.version "2.0.0") }
+
+            let mutable starts = 0
+
+            let updates _ sink =
+                async {
+                    let current = Interlocked.Increment(&starts)
+
+                    if current = 1 then
+                        let! cancellation = Async.CancellationToken
+                        do! sink cancellation (NonEmptyList.singleton update)
+
+                        return
+                            Error(
+                                PackageRpcSessionScenario.packageFailure
+                                    PackageFailureKind.SourceUnavailable
+                            )
+                    else
+                        return Ok()
+                }
+
+            let ports =
+                { PackageRpcSessionScenario.ports (PackageRpcSessionScenario.installedProducer []) with
+                    Updates = updates }
+
+            let retryRequestId = "22222222-2222-2222-2222-222222222222"
+
+            let updateRequest id requestId =
+                Request(
+                    id,
+                    "package/updates/start",
+                    RpcValue.map [ "requestId", RpcValue.String requestId ]
+                )
+
+            let exitCode, output, errors =
+                PackageRpcSessionScenario.runObserved
+                    (PackageRpcSessionScenario.target project)
+                    ports
+                    [ PackageRpcSessionScenario.initialization [ "packages.updates.v2" ]
+                      updateRequest 2u PackageRpcSessionScenario.requestId ]
+                    [ updateRequest 3u retryRequestId; Request(4u, "shutdown", RpcValue.emptyMap) ]
+                    [ "package/updates/completed" ]
+                |> _.Result
+
+            exitCode |> should equal 0
+            errors |> should equal String.Empty
+
+            let terminal =
+                output
+                |> List.pick (function
+                    | Notification("package/updates/completed", parameters) -> Some parameters
+                    | _ -> None)
+
+            RpcValue.tryField "state" terminal
+            |> should equal (Some(RpcValue.String "failed"))
+
+            RpcValue.tryField "batchCount" terminal
+            |> should equal (Some(RpcValue.Unsigned 1UL))
+
+            RpcValue.tryField "itemCount" terminal
+            |> should equal (Some(RpcValue.Unsigned 1UL))
+
+            let error =
+                terminal
+                |> RpcValue.tryField "error"
+                |> Option.defaultWith (fun () -> failwith "Failure terminal error was absent.")
+
+            RpcValue.tryField "code" error
+            |> should equal (Some(RpcValue.String "DWE-PACKAGE-SOURCE-UNAVAILABLE"))
+
+            let message =
+                error
+                |> RpcValue.tryField "message"
+                |> Option.map (RpcValue.requireString "message")
+                |> Option.defaultValue String.Empty
+
+            message |> should equal "The configured package source is unavailable."
+            message |> should not' (haveSubstring "sensitive dependency detail")
+
+            output
+            |> List.exists (function
+                | Response(3u, Ok _) -> true
+                | _ -> false)
+            |> should equal true
         finally
             Directory.Delete(directory, true)
 
@@ -621,15 +903,26 @@ type PackageRpcSessionTests() =
             Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``update and consolidation inventories page results and cancel active requests``() =
+    member _.``discovery batches obey item limits and cancellation produces one terminal``() =
         let directory, project = PackageRpcSessionScenario.temporaryProject ()
 
-        let runCancellation methodName capability configure =
+        try
+            let first = PackageRpcSessionScenario.installed project "First.Package" "1.0.0"
+            let second = PackageRpcSessionScenario.installed project "Second.Package" "1.0.0"
+
+            let updates =
+                [ { Installed = first
+                    Available = NonEmptyList.singleton (PackageRpcSessionScenario.version "2.0.0") }
+                  { Installed = second
+                    Available = NonEmptyList.singleton (PackageRpcSessionScenario.version "3.0.0") } ]
+
             let cancelled =
                 TaskCompletionSource TaskCreationOptions.RunContinuationsAsynchronously
 
-            let operation =
+            let updateProducer _ sink =
                 async {
+                    let! cancellation = Async.CancellationToken
+                    do! sink cancellation (NonEmptyList.create updates.Head updates.Tail)
                     do! cancelled.Task |> Async.AwaitTask
 
                     return
@@ -637,28 +930,24 @@ type PackageRpcSessionTests() =
                 }
 
             let ports =
-                configure
-                    { PackageRpcSessionScenario.ports (
-                          PackageRpcSessionScenario.installedProducer []
-                      ) with
-                        Cancel = fun _ -> async { cancelled.TrySetResult() |> ignore } }
-                    operation
-
-            let request =
-                Request(
-                    2u,
-                    methodName,
-                    RpcValue.map
-                        [ "requestId", RpcValue.String PackageRpcSessionScenario.requestId
-                          "pageSize", RpcValue.Integer 1L ]
-                )
+                { PackageRpcSessionScenario.ports (PackageRpcSessionScenario.installedProducer []) with
+                    Updates = updateProducer
+                    Cancel = fun _ -> async { cancelled.TrySetResult() |> ignore } }
 
             let exitCode, output, errors =
                 PackageRpcSessionScenario.runObserved
                     (PackageRpcSessionScenario.target project)
                     ports
-                    [ PackageRpcSessionScenario.initialization [ capability; "packages.cancel.v1" ]
-                      request
+                    [ PackageRpcSessionScenario.initializationWithLimits
+                          65536
+                          1
+                          [ "packages.updates.v2"; "packages.cancel.v1" ]
+                      Request(
+                          2u,
+                          "package/updates/start",
+                          RpcValue.map
+                              [ "requestId", RpcValue.String PackageRpcSessionScenario.requestId ]
+                      )
                       Request(
                           3u,
                           "package/cancel",
@@ -666,78 +955,179 @@ type PackageRpcSessionTests() =
                               [ "requestId", RpcValue.String PackageRpcSessionScenario.requestId ]
                       ) ]
                     [ Request(4u, "shutdown", RpcValue.emptyMap) ]
-                    [ $"{methodName}/completed" ]
+                    [ "package/updates/completed" ]
+                |> _.Result
+
+            exitCode |> should equal 0
+            errors |> should equal String.Empty
+
+            let responseIndex =
+                output
+                |> List.findIndex (function
+                    | Response(2u, Ok _) -> true
+                    | _ -> false)
+
+            let batches =
+                output
+                |> List.indexed
+                |> List.choose (fun (index, frame) ->
+                    match frame with
+                    | Notification("package/updates/batch", parameters) -> Some(index, parameters)
+                    | _ -> None)
+
+            batches |> List.length |> should equal 2
+            responseIndex |> should be (lessThan (batches.Head |> fst))
+
+            batches
+            |> List.map (snd >> RpcValue.tryField "sequence")
+            |> should equal [ Some(RpcValue.Unsigned 0UL); Some(RpcValue.Unsigned 1UL) ]
+
+            batches
+            |> List.iter (fun (_, parameters) ->
+                parameters
+                |> RpcValue.tryField "updates"
+                |> Option.map (RpcValue.requireArray "updates" >> _.Length)
+                |> should equal (Some 1))
+
+            let terminal =
+                output
+                |> List.pick (function
+                    | Notification("package/updates/completed", parameters) -> Some parameters
+                    | _ -> None)
+
+            RpcValue.tryField "state" terminal
+            |> should equal (Some(RpcValue.String "cancelled"))
+
+            RpcValue.tryField "batchCount" terminal
+            |> should equal (Some(RpcValue.Unsigned 2UL))
+
+            RpcValue.tryField "itemCount" terminal
+            |> should equal (Some(RpcValue.Unsigned 2UL))
+
+            RpcValue.tryField "lastSequence" terminal
+            |> should equal (Some(RpcValue.Unsigned 1UL))
+
+            RpcValue.tryField "error" terminal |> Option.isSome |> should equal true
+        finally
+            Directory.Delete(directory, true)
+
+    [<Fact>]
+    member _.``different discovery kinds interleave without mixing request identities``() =
+        let directory, project = PackageRpcSessionScenario.temporaryProject ()
+
+        try
+            let searchFirst =
+                TaskCompletionSource TaskCreationOptions.RunContinuationsAsynchronously
+
+            let updateWritten =
+                TaskCompletionSource TaskCreationOptions.RunContinuationsAsynchronously
+
+            let firstSummary =
+                { Identity = PackageRpcSessionScenario.package "First.Package"
+                  Version = PackageRpcSessionScenario.version "1.0.0"
+                  Description = None
+                  Summary = None
+                  Tags = []
+                  Authors = []
+                  Owners = []
+                  Source = PackageRpcSessionScenario.source "nuget.org" }
+
+            let secondSummary =
+                { firstSummary with
+                    Identity = PackageRpcSessionScenario.package "Second.Package" }
+
+            let search request sink =
+                async {
+                    let! cancellation = Async.CancellationToken
+                    do! sink cancellation (NonEmptyList.singleton firstSummary)
+                    searchFirst.TrySetResult() |> ignore
+                    do! updateWritten.Task |> Async.AwaitTask
+                    do! sink cancellation (NonEmptyList.singleton secondSummary)
+
+                    return
+                        Ok
+                            { Query = request.Value.Search
+                              Continuation = None
+                              SourceFailures = [] }
+                }
+
+            let update =
+                { Installed =
+                    PackageRpcSessionScenario.installed project "Installed.Package" "1.0.0"
+                  Available = NonEmptyList.singleton (PackageRpcSessionScenario.version "2.0.0") }
+
+            let updates _ sink =
+                async {
+                    do! searchFirst.Task |> Async.AwaitTask
+                    let! cancellation = Async.CancellationToken
+                    do! sink cancellation (NonEmptyList.singleton update)
+                    updateWritten.TrySetResult() |> ignore
+                    return Ok()
+                }
+
+            let ports =
+                { PackageRpcSessionScenario.ports (PackageRpcSessionScenario.installedProducer []) with
+                    Search = search
+                    Updates = updates }
+
+            let searchRequestId = PackageRpcSessionScenario.requestId
+            let updatesRequestId = "22222222-2222-2222-2222-222222222222"
+
+            let exitCode, output, errors =
+                PackageRpcSessionScenario.runObserved
+                    (PackageRpcSessionScenario.target project)
+                    ports
+                    [ PackageRpcSessionScenario.initialization
+                          [ "packages.search.v2"; "packages.updates.v2"; "packages.sources.v1" ]
+                      Request(
+                          2u,
+                          "package/search/start",
+                          RpcValue.map [ "requestId", RpcValue.String searchRequestId ]
+                      )
+                      Request(
+                          3u,
+                          "package/updates/start",
+                          RpcValue.map [ "requestId", RpcValue.String updatesRequestId ]
+                      )
+                      Request(
+                          4u,
+                          "package/sources",
+                          RpcValue.map
+                              [ "requestId", RpcValue.String "44444444-4444-4444-4444-444444444444" ]
+                      ) ]
+                    [ Request(5u, "shutdown", RpcValue.emptyMap) ]
+                    [ "package/search/completed"; "package/updates/completed" ]
                 |> _.Result
 
             exitCode |> should equal 0
             errors |> should equal String.Empty
 
             output
+            |> List.choose (function
+                | Notification("package/search/batch", parameters) ->
+                    Some(
+                        "search",
+                        RpcValue.tryField "requestId" parameters,
+                        RpcValue.tryField "sequence" parameters
+                    )
+                | Notification("package/updates/batch", parameters) ->
+                    Some(
+                        "updates",
+                        RpcValue.tryField "requestId" parameters,
+                        RpcValue.tryField "sequence" parameters
+                    )
+                | _ -> None)
+            |> should
+                equal
+                [ "search", Some(RpcValue.String searchRequestId), Some(RpcValue.Unsigned 0UL)
+                  "updates", Some(RpcValue.String updatesRequestId), Some(RpcValue.Unsigned 0UL)
+                  "search", Some(RpcValue.String searchRequestId), Some(RpcValue.Unsigned 1UL) ]
+
+            output
             |> List.exists (function
-                | Notification(name, parameters) when name = $"{methodName}/completed" ->
-                    hasErrorCode "DWE-PACKAGE-CANCELLED" parameters
+                | Response(4u, Ok _) -> true
                 | _ -> false)
             |> should equal true
-
-        try
-            runCancellation "package/updates" "packages.updates.v1" (fun ports operation ->
-                { ports with
-                    Updates = fun _ _ -> operation })
-
-            runCancellation
-                "package/consolidation"
-                "packages.consolidation.v1"
-                (fun ports operation ->
-                    { ports with
-                        Consolidation = fun _ _ -> operation })
-
-            let first = PackageRpcSessionScenario.installed project "First.Package" "1.0.0"
-            let second = PackageRpcSessionScenario.installed project "Second.Package" "1.0.0"
-            let secondUpdate = PackageRpcSessionScenario.version "3.0.0"
-
-            let updates =
-                [ { Installed = first
-                    Available = NonEmptyList.singleton (PackageRpcSessionScenario.version "2.0.0") }
-                  { Installed = second
-                    Available = NonEmptyList.singleton secondUpdate } ]
-
-            let ports =
-                { PackageRpcSessionScenario.ports (PackageRpcSessionScenario.installedProducer []) with
-                    Updates = PackageRpcSessionScenario.producer updates }
-
-            let _, output, _ =
-                PackageRpcSessionScenario.runObserved
-                    (PackageRpcSessionScenario.target project)
-                    ports
-                    [ PackageRpcSessionScenario.initialization [ "packages.updates.v1" ]
-                      Request(
-                          2u,
-                          "package/updates",
-                          RpcValue.map
-                              [ "requestId", RpcValue.String PackageRpcSessionScenario.requestId
-                                "pageSize", RpcValue.Integer 1L ]
-                      ) ]
-                    [ Request(3u, "shutdown", RpcValue.emptyMap) ]
-                    [ "package/updates/completed" ]
-                |> _.Result
-
-            let result =
-                output
-                |> List.pick (function
-                    | Notification("package/updates/completed", parameters) ->
-                        RpcValue.tryField "result" parameters
-                    | _ -> None)
-
-            let items =
-                result
-                |> RpcValue.tryField "updates"
-                |> Option.map (RpcValue.requireArray "updates")
-                |> Option.defaultWith (fun () -> failwith "Updates were absent.")
-
-            items.Length |> should equal 1
-
-            RpcValue.tryField "continuation" result
-            |> should equal (Some(RpcValue.String "1"))
         finally
             Directory.Delete(directory, true)
 
@@ -1109,7 +1499,7 @@ type PackageRpcSessionTests() =
                     "package/search/start",
                     RpcValue.map
                         [ "requestId", RpcValue.String PackageRpcSessionScenario.requestId
-                          "pageSize", RpcValue.Integer 0L ]
+                          "includePrerelease", RpcValue.String "not-a-boolean" ]
                 )
 
             let search =
@@ -1117,8 +1507,7 @@ type PackageRpcSessionTests() =
                     3u,
                     "package/search/start",
                     RpcValue.map
-                        [ "requestId", RpcValue.String "33333333-3333-3333-3333-333333333333"
-                          "pageSize", RpcValue.Integer 20L ]
+                        [ "requestId", RpcValue.String "33333333-3333-3333-3333-333333333333" ]
                 )
 
             let sourceRequestId = "44444444-4444-4444-4444-444444444444"
@@ -1129,7 +1518,7 @@ type PackageRpcSessionTests() =
                     ports
                     [ PackageRpcSessionScenario.initializationWithLimit
                           1024
-                          [ "packages.search.v1"; "packages.sources.v1" ]
+                          [ "packages.search.v2"; "packages.sources.v1" ]
                       malformed
                       search ]
                     [ Request(
@@ -1168,188 +1557,208 @@ type PackageRpcSessionTests() =
             Directory.Delete(directory, true)
 
     [<Fact>]
-    member _.``every asynchronous package result contains frame limits without ending the session``
-        ()
-        =
+    member _.``search discovery byte-splits duplicates and emits source failures as data``() =
         let directory, project = PackageRpcSessionScenario.temporaryProject ()
 
         try
-            let single = PackageRpcSessionScenario.preview project "Example.Package" "2.0.0"
-
-            let precondition =
-                { WorkspaceRevision = "revision-1"
-                  FileFingerprints = Map [ project, "fingerprint-1" ] }
-
-            let installed =
-                [ 1..80 ]
-                |> List.map (fun index ->
-                    PackageRpcSessionScenario.installed project $"Example.Package.{index}" "1.0.0")
-
-            let updates =
-                installed
-                |> List.map (fun package ->
-                    { Installed = package
-                      Available =
-                        NonEmptyList.singleton (PackageRpcSessionScenario.version "2.0.0") })
-
-            let consolidations =
-                installed
-                |> List.map (fun package ->
-                    { Identity = package.Identity
-                      CurrentVersions =
-                        NonEmptyList.singleton (
-                            PackageRpcSessionScenario.version "1.0.0",
-                            NonEmptyList.singleton package.Target
-                        )
-                      CandidateVersions =
-                        NonEmptyList.singleton (PackageRpcSessionScenario.version "2.0.0") })
-
-            let execution =
-                { Operation =
-                    Guid.Parse "22222222-2222-2222-2222-222222222222"
-                    |> PackageOperationId.create
-                    |> Result.defaultWith (failwithf "%A")
-                  Entries =
-                    installed
-                    |> List.map (fun package ->
-                        { Package = package.Identity
-                          Target = package.Target
-                          State = PackageExecutionState.Completed })
-                  ChangedFiles = []
-                  Restore = PackageRestoreOutcome.NotRequired }
-
-            let largeSummary =
-                { Identity = PackageRpcSessionScenario.package "Large.Package"
+            let summary =
+                { Identity = PackageRpcSessionScenario.package "Duplicate.Package"
                   Version = PackageRpcSessionScenario.version "1.0.0"
-                  Description = Some(String('x', 5000))
+                  Description = Some(String('x', 600))
                   Summary = None
                   Tags = []
                   Authors = []
                   Owners = []
                   Source = PackageRpcSessionScenario.source "nuget.org" }
 
-            let refreshedGraph = PackageRpcSessionScenario.graph project installed
-            let refresh = PackageRpcSessionScenario.installedProducer [ refreshedGraph ]
+            let sourceFailure =
+                PackageSourceFailure.create
+                    (PackageRpcSessionScenario.source "private")
+                    PackageSourceFailureKind.AuthenticationRequired
 
             let ports =
-                { PackageRpcSessionScenario.ports refresh with
-                    Search = PackageRpcSessionScenario.searchProducer [ largeSummary ] None []
-                    Updates = PackageRpcSessionScenario.producer updates
-                    Consolidation = PackageRpcSessionScenario.producer consolidations
-                    PreviewPrecondition = fun _ -> async.Return(Ok precondition)
-                    Preview = fun _ -> async.Return(Ok single)
-                    ExecuteConfirmed = fun _ _ -> async { return Ok execution } }
+                { PackageRpcSessionScenario.ports (PackageRpcSessionScenario.installedProducer []) with
+                    Search =
+                        PackageRpcSessionScenario.searchProducer
+                            [ summary; summary ]
+                            (Some "next-page")
+                            [ sourceFailure ] }
 
-            let requestId index =
-                $"{index:D8}-1111-1111-1111-111111111111"
-
-            let target = RpcValue.map [ "project", RpcValue.String project ]
-
-            let initial =
-                [ PackageRpcSessionScenario.initializationWithLimit
-                      1024
-                      [ "packages.search.v1"
-                        "packages.installed.v1"
-                        "packages.restore.v1"
-                        "packages.updates.v1"
-                        "packages.consolidation.v1"
-                        "packages.preview.v1"
-                        "packages.execute.v1"
-                        "packages.partial-recovery.v1"
-                        "packages.sources.v1" ]
-                  Request(
-                      2u,
-                      "package/search/start",
-                      RpcValue.map
-                          [ "requestId", RpcValue.String(requestId 2)
-                            "pageSize", RpcValue.Integer 20L ]
-                  )
-                  Request(
-                      3u,
-                      "package/installed",
-                      RpcValue.map
-                          [ "requestId", RpcValue.String(requestId 3)
-                            "pageSize", RpcValue.Integer 20L ]
-                  )
-                  Request(
-                      4u,
-                      "package/updates",
-                      RpcValue.map
-                          [ "requestId", RpcValue.String(requestId 4)
-                            "pageSize", RpcValue.Integer 20L ]
-                  )
-                  Request(
-                      5u,
-                      "package/consolidation",
-                      RpcValue.map
-                          [ "requestId", RpcValue.String(requestId 5)
-                            "pageSize", RpcValue.Integer 20L ]
-                  )
-                  Request(
-                      6u,
-                      "package/preview",
-                      RpcValue.map
-                          [ "requestId", RpcValue.String(requestId 6)
-                            "operation",
-                            RpcValue.map
-                                [ "kind", RpcValue.String "updateVersion"
-                                  "package", RpcValue.String "Example.Package"
-                                  "version", RpcValue.String "2.0.0" ]
-                            "targets", RpcValue.array [ target ] ]
-                  )
-                  Request(
-                      7u,
-                      "package/execute/start",
-                      RpcValue.map
-                          [ "requestId", RpcValue.String(requestId 7)
-                            "confirmationToken",
-                            RpcValue.String(PackagePreview.confirmationToken single) ]
-                  ) ]
+            let searchRequestId = PackageRpcSessionScenario.requestId
 
             let exitCode, output, errors =
                 PackageRpcSessionScenario.runObserved
                     (PackageRpcSessionScenario.target project)
                     ports
-                    initial
+                    [ PackageRpcSessionScenario.initializationWithLimits
+                          1024
+                          20
+                          [ "packages.search.v2"; "packages.sources.v1" ]
+                      Request(
+                          2u,
+                          "package/search/start",
+                          RpcValue.map
+                              [ "requestId", RpcValue.String searchRequestId
+                                "term", RpcValue.String "Duplicate"
+                                "includePrerelease", RpcValue.Boolean true
+                                "continuation", RpcValue.String "current-page" ]
+                      ) ]
                     [ Request(
-                          8u,
+                          3u,
                           "package/sources",
-                          RpcValue.map [ "requestId", RpcValue.String(requestId 8) ]
+                          RpcValue.map
+                              [ "requestId", RpcValue.String "33333333-3333-3333-3333-333333333333" ]
                       )
-                      Request(9u, "shutdown", RpcValue.emptyMap) ]
-                    [ "package/search/completed"
-                      "package/restore/completed"
-                      "package/updates/completed"
-                      "package/consolidation/completed"
-                      "package/operations/completed" ]
+                      Request(4u, "shutdown", RpcValue.emptyMap) ]
+                    [ "package/search/completed" ]
                 |> _.Result
 
             exitCode |> should equal 0
             errors |> should equal String.Empty
 
-            [ "package/search/completed"
-              "package/updates/completed"
-              "package/consolidation/completed"
-              "package/operations/completed" ]
-            |> List.iter (fun methodName ->
+            let batches =
                 output
-                |> List.exists (function
-                    | Notification(name, parameters) when name = methodName ->
-                        hasErrorCode "response_too_large" parameters
-                    | _ -> false)
-                |> should equal true)
+                |> List.choose (function
+                    | Notification("package/search/batch", parameters) -> Some parameters
+                    | _ -> None)
+
+            batches |> List.length |> should equal 3
+
+            batches
+            |> List.map (RpcValue.tryField "sequence")
+            |> should
+                equal
+                [ Some(RpcValue.Unsigned 0UL)
+                  Some(RpcValue.Unsigned 1UL)
+                  Some(RpcValue.Unsigned 2UL) ]
+
+            let itemBatches =
+                batches
+                |> List.filter (fun parameters ->
+                    parameters
+                    |> RpcValue.tryField "items"
+                    |> Option.map (RpcValue.requireArray "items" >> _.IsEmpty >> not)
+                    |> Option.defaultValue false)
+
+            itemBatches |> List.length |> should equal 2
+
+            itemBatches
+            |> List.collect (fun parameters ->
+                parameters
+                |> RpcValue.tryField "items"
+                |> Option.map (RpcValue.requireArray "items" >> Seq.toList)
+                |> Option.defaultValue [])
+            |> List.map (RpcValue.tryField "package")
+            |> should
+                equal
+                [ Some(RpcValue.String "Duplicate.Package")
+                  Some(RpcValue.String "Duplicate.Package") ]
+
+            let failureBatch = batches |> List.last
+
+            failureBatch
+            |> RpcValue.tryField "items"
+            |> Option.map (RpcValue.requireArray "items" >> _.Length)
+            |> should equal (Some 0)
+
+            failureBatch
+            |> RpcValue.tryField "sourceFailures"
+            |> Option.map (RpcValue.requireArray "sourceFailures" >> _.Length)
+            |> should equal (Some 1)
+
+            let terminal =
+                output
+                |> List.pick (function
+                    | Notification("package/search/completed", parameters) -> Some parameters
+                    | _ -> None)
+
+            RpcValue.tryField "state" terminal
+            |> should equal (Some(RpcValue.String "completed"))
+
+            RpcValue.tryField "batchCount" terminal
+            |> should equal (Some(RpcValue.Unsigned 3UL))
+
+            RpcValue.tryField "itemCount" terminal
+            |> should equal (Some(RpcValue.Unsigned 2UL))
+
+            RpcValue.tryField "lastSequence" terminal
+            |> should equal (Some(RpcValue.Unsigned 2UL))
+
+            RpcValue.tryField "continuation" terminal
+            |> should equal (Some(RpcValue.String "next-page"))
+
+            let query =
+                terminal
+                |> RpcValue.tryField "query"
+                |> Option.defaultWith (fun () -> failwith "Search query metadata was absent.")
+
+            RpcValue.tryField "term" query
+            |> should equal (Some(RpcValue.String "Duplicate"))
+
+            RpcValue.tryField "includePrerelease" query
+            |> should equal (Some(RpcValue.Boolean true))
 
             output
             |> List.exists (function
-                | Notification("package/restore/completed", parameters) ->
-                    Some(RpcValue.String "failed") = RpcValue.tryField "state" parameters
-                    && hasErrorCode "response_too_large" parameters
+                | Response(3u, Ok _) -> true
                 | _ -> false)
             |> should equal true
+        finally
+            Directory.Delete(directory, true)
+
+    [<Fact>]
+    member _.``shutdown promptly cancels an active discovery stream``() =
+        let directory, project = PackageRpcSessionScenario.temporaryProject ()
+
+        try
+            let search request _ =
+                async {
+                    let! cancellation = Async.CancellationToken
+                    do! Task.Delay(Timeout.Infinite, cancellation) |> Async.AwaitTask
+
+                    return
+                        Ok
+                            { Query = request.Value.Search
+                              Continuation = None
+                              SourceFailures = [] }
+                }
+
+            let ports =
+                { PackageRpcSessionScenario.ports (PackageRpcSessionScenario.installedProducer []) with
+                    Search = search }
+
+            let stopwatch = Stopwatch.StartNew()
+
+            let exitCode, output, errors =
+                PackageRpcSessionScenario.run
+                    (PackageRpcSessionScenario.target project)
+                    ports
+                    (PackageRpcSessionScenario.encode
+                        [ PackageRpcSessionScenario.initialization [ "packages.search.v2" ]
+                          Request(
+                              2u,
+                              "package/search/start",
+                              RpcValue.map
+                                  [ "requestId", RpcValue.String PackageRpcSessionScenario.requestId ]
+                          )
+                          Request(3u, "shutdown", RpcValue.emptyMap) ])
+                |> _.Result
+
+            stopwatch.Stop()
+            exitCode |> should equal 0
+            errors |> should equal String.Empty
+            stopwatch.Elapsed |> should be (lessThan (TimeSpan.FromSeconds 5.0))
+
+            output
+            |> List.choose (function
+                | Response(id, Ok _) -> Some id
+                | _ -> None)
+            |> should equal [ 1u; 2u; 3u ]
 
             output
             |> List.exists (function
-                | Response(8u, Ok _) -> true
+                | Notification("package/search/completed", parameters) ->
+                    RpcValue.tryField "state" parameters = Some(RpcValue.String "cancelled")
                 | _ -> false)
             |> should equal true
         finally

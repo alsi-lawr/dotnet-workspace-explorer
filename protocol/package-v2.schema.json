@@ -1,0 +1,830 @@
+{
+  "profile": "dotnet-workspace-explorer/packages",
+  "version": {
+    "major": 2,
+    "minor": 0
+  },
+  "limits": {
+    "maximumFrameBytes": 16777216,
+    "minimumNegotiatedFrameBytes": 1024,
+    "maximumDepth": 64,
+    "maximumPageSize": 200
+  },
+  "capabilities": [
+    "packages.batch-execute.v1",
+    "packages.batch-preview.v1",
+    "packages.cancel.v1",
+    "packages.consolidation.v2",
+    "packages.details.v1",
+    "packages.execute.v1",
+    "packages.installed.v2",
+    "packages.partial-recovery.v1",
+    "packages.preview.v1",
+    "packages.readme.v1",
+    "packages.restore.v2",
+    "packages.search.v2",
+    "packages.source-mapping.v1",
+    "packages.sources.v1",
+    "packages.updates.v2"
+  ],
+  "requests": {
+    "initialize": {
+      "required": [
+        "protocolVersion",
+        "clientInfo",
+        "capabilities",
+        "limits"
+      ]
+    },
+    "package/sources": {
+      "required": [
+        "requestId"
+      ]
+    },
+    "package/sourceMapping": {
+      "required": [
+        "requestId",
+        "package"
+      ],
+      "optional": [
+        "source",
+        "restoredTransitives"
+      ]
+    },
+    "package/search/start": {
+      "required": [
+        "requestId"
+      ],
+      "optional": [
+        "term",
+        "includePrerelease",
+        "source",
+        "continuation"
+      ]
+    },
+    "package/details": {
+      "required": [
+        "requestId",
+        "package",
+        "version",
+        "source"
+      ]
+    },
+    "package/preview": {
+      "required": [
+        "requestId",
+        "operation",
+        "targets"
+      ],
+      "optional": [
+        "source"
+      ]
+    },
+    "package/previewBatch": {
+      "required": [
+        "requestId",
+        "updates"
+      ],
+      "optional": [
+        "source"
+      ]
+    },
+    "package/execute/start": {
+      "required": [
+        "requestId",
+        "confirmationToken"
+      ]
+    },
+    "package/executeBatch/start": {
+      "required": [
+        "requestId",
+        "confirmationToken"
+      ]
+    },
+    "package/cancel": {
+      "exactlyOne": [
+        "requestId",
+        "operationId"
+      ]
+    },
+    "shutdown": {
+      "required": []
+    },
+    "package/installed/start": {
+      "required": [
+        "requestId"
+      ]
+    },
+    "package/installed/restore/start": {
+      "required": [
+        "requestId"
+      ]
+    },
+    "package/updates/start": {
+      "required": [
+        "requestId"
+      ],
+      "optional": [
+        "includePrerelease"
+      ]
+    },
+    "package/consolidation/start": {
+      "required": [
+        "requestId"
+      ]
+    }
+  },
+  "responses": {
+    "initialize": {
+      "result": "initializeResult"
+    },
+    "package/sources": {
+      "result": "sourcesResult"
+    },
+    "package/sourceMapping": {
+      "result": "sourceMapping"
+    },
+    "package/search/start": {
+      "result": "acceptedResult"
+    },
+    "package/details": {
+      "result": "detailsResult"
+    },
+    "package/preview": {
+      "result": "previewResult"
+    },
+    "package/previewBatch": {
+      "result": "batchPreviewResult"
+    },
+    "package/execute/start": {
+      "result": "acceptedResult"
+    },
+    "package/executeBatch/start": {
+      "result": "acceptedResult"
+    },
+    "package/cancel": {
+      "result": "acknowledgementResult"
+    },
+    "shutdown": {
+      "result": "acknowledgementResult"
+    },
+    "error": {
+      "required": [
+        "code",
+        "message"
+      ],
+      "optional": [
+        "data"
+      ]
+    },
+    "package/installed/start": {
+      "result": "acceptedResult"
+    },
+    "package/installed/restore/start": {
+      "result": "acceptedResult"
+    },
+    "package/updates/start": {
+      "result": "acceptedResult"
+    },
+    "package/consolidation/start": {
+      "result": "acceptedResult"
+    }
+  },
+  "notifications": {
+    "package/operations/progress": {
+      "required": [
+        "requestId",
+        "progress"
+      ]
+    },
+    "package/operations/completed": {
+      "required": [
+        "requestId"
+      ],
+      "exactlyOne": [
+        "result:executionResult",
+        "error"
+      ]
+    },
+    "package/search/batch": {
+      "required": [
+        "requestId",
+        "sequence",
+        "items",
+        "sourceFailures"
+      ],
+      "itemShape": "packageSummary",
+      "sourceFailureShape": "sourceFailure"
+    },
+    "package/search/completed": {
+      "shape": "searchTerminal"
+    },
+    "package/installed/batch": {
+      "shape": "installedBatch"
+    },
+    "package/installed/completed": {
+      "shape": "discoveryTerminal"
+    },
+    "package/installed/restore/batch": {
+      "shape": "installedBatch"
+    },
+    "package/installed/restore/completed": {
+      "shape": "discoveryTerminal"
+    },
+    "package/updates/batch": {
+      "shape": "updatesBatch"
+    },
+    "package/updates/completed": {
+      "shape": "discoveryTerminal"
+    },
+    "package/consolidation/batch": {
+      "shape": "consolidationBatch"
+    },
+    "package/consolidation/completed": {
+      "shape": "discoveryTerminal"
+    }
+  },
+  "shapes": {
+    "initializeResult": {
+      "required": [
+        "protocolVersion",
+        "serverInfo",
+        "target",
+        "capabilities",
+        "limits"
+      ]
+    },
+    "acceptedResult": {
+      "required": [
+        "accepted:true",
+        "requestId"
+      ]
+    },
+    "acknowledgementResult": {
+      "required": [
+        "accepted:true"
+      ]
+    },
+    "workspaceTarget": {
+      "required": [
+        "path",
+        "kind"
+      ],
+      "kinds": [
+        "solution",
+        "solutionXml",
+        "solutionFilter",
+        "project:csharp",
+        "project:fsharp",
+        "project:visualBasic",
+        "directory"
+      ]
+    },
+    "target": {
+      "required": [
+        "project"
+      ],
+      "optional": [
+        "framework",
+        "runtime"
+      ],
+      "constraint": "runtime requires framework"
+    },
+    "versionSelection": {
+      "required": [
+        "kind"
+      ],
+      "optional": [
+        "value"
+      ],
+      "kinds": [
+        "latest",
+        "exact",
+        "range"
+      ],
+      "valueRequiredFor": [
+        "exact",
+        "range"
+      ]
+    },
+    "operation": {
+      "required": [
+        "kind",
+        "package"
+      ],
+      "optional": [
+        "version"
+      ],
+      "kinds": [
+        "installLatest",
+        "installVersion",
+        "updateLatest",
+        "updateVersion",
+        "uninstall",
+        "consolidate"
+      ],
+      "versionRequiredFor": [
+        "installVersion",
+        "updateVersion",
+        "consolidate"
+      ]
+    },
+    "sourcesResult": {
+      "required": [
+        "sources"
+      ],
+      "itemRequired": [
+        "id",
+        "name",
+        "location",
+        "availability"
+      ],
+      "availability": [
+        "available",
+        "disabled",
+        "authenticationRequired",
+        "unavailable"
+      ]
+    },
+    "sourceMapping": {
+      "required": [
+        "kind",
+        "sources"
+      ],
+      "optional": [
+        "package"
+      ],
+      "kinds": [
+        "allowed",
+        "knownConflict",
+        "insufficientRestoredTransitiveEvidence"
+      ]
+    },
+    "packageSummary": {
+      "required": [
+        "package",
+        "version",
+        "tags",
+        "authors",
+        "owners",
+        "source"
+      ],
+      "optional": [
+        "description",
+        "summary"
+      ]
+    },
+    "sourceFailure": {
+      "required": [
+        "source",
+        "code",
+        "message"
+      ]
+    },
+    "deprecation": {
+      "required": [
+        "kind"
+      ],
+      "optional": [
+        "reasons",
+        "alternate"
+      ],
+      "kinds": [
+        "notDeprecated",
+        "deprecated"
+      ],
+      "deprecatedRequires": [
+        "reasons"
+      ],
+      "alternateRequired": [
+        "package"
+      ],
+      "alternateOptional": [
+        "versionRange"
+      ]
+    },
+    "vulnerability": {
+      "required": [
+        "severity",
+        "advisory"
+      ],
+      "severities": [
+        "low",
+        "moderate",
+        "high",
+        "critical"
+      ]
+    },
+    "detailsResult": {
+      "required": [
+        "summary",
+        "versions",
+        "authors",
+        "dependencyGroups",
+        "deprecation",
+        "vulnerabilities"
+      ],
+      "optional": [
+        "projectUrl",
+        "license",
+        "licenseUrl",
+        "readmeUrl",
+        "readmeCommonMark"
+      ],
+      "readmeCapability": "packages.readme.v1"
+    },
+    "installedState": {
+      "required": [
+        "kind"
+      ],
+      "optional": [
+        "requested",
+        "resolved",
+        "ownerFile"
+      ],
+      "kinds": [
+        "direct",
+        "centrallyManagedDirect",
+        "transitive",
+        "frameworkProvided",
+        "unresolvedDirect",
+        "unresolvedCentrallyManagedDirect"
+      ]
+    },
+    "proposedPackageState": {
+      "required": [
+        "kind",
+        "version"
+      ],
+      "optional": [
+        "ownerFile"
+      ],
+      "kinds": [
+        "direct",
+        "centrallyManaged"
+      ]
+    },
+    "targetChange": {
+      "required": [
+        "kind"
+      ],
+      "optional": [
+        "current",
+        "proposed",
+        "position"
+      ],
+      "kinds": [
+        "install",
+        "update",
+        "uninstall",
+        "consolidate"
+      ],
+      "positions": [
+        "alreadyOnDestination",
+        "belowDestination",
+        "aboveDestination",
+        "unusable"
+      ]
+    },
+    "metadataImpact": {
+      "required": [
+        "kind"
+      ],
+      "optional": [
+        "dependencies",
+        "deprecation",
+        "vulnerabilities",
+        "license"
+      ],
+      "kinds": [
+        "known",
+        "unknown"
+      ]
+    },
+    "sourceMappingImpact": {
+      "required": [
+        "kind",
+        "allowedSources"
+      ],
+      "optional": [
+        "browseSource"
+      ],
+      "kinds": [
+        "applyAllowed",
+        "browseSourceDoesNotConstrainApply",
+        "unknownTransitiveConsequences"
+      ]
+    },
+    "restoreImpact": {
+      "required": [
+        "kind",
+        "graphFreshness"
+      ],
+      "kind": "requiredWithUnknownOutcome",
+      "graphFreshness": [
+        "current",
+        "awaitingRestore"
+      ]
+    },
+    "targetImpact": {
+      "required": [
+        "metadata",
+        "sourceMapping",
+        "restore"
+      ]
+    },
+    "targetPreview": {
+      "required": [
+        "target",
+        "change",
+        "ownerFiles",
+        "graphFreshness",
+        "impact"
+      ]
+    },
+    "previewResult": {
+      "required": [
+        "operation",
+        "targets",
+        "ownerFiles",
+        "workspaceRevision",
+        "fileFingerprints",
+        "confirmationToken"
+      ],
+      "targetShape": "targetPreview"
+    },
+    "batchPreviewResult": {
+      "required": [
+        "updates",
+        "ownerFiles",
+        "workspaceRevision",
+        "fileFingerprints",
+        "confirmationToken"
+      ],
+      "updateRequired": [
+        "package",
+        "targetPreview"
+      ],
+      "updateOptional": [
+        "version"
+      ]
+    },
+    "progress": {
+      "required": [
+        "operationId",
+        "stage"
+      ],
+      "optional": [
+        "completed",
+        "total"
+      ],
+      "stages": [
+        "preparing",
+        "applying",
+        "restoring",
+        "refreshing",
+        "completed"
+      ]
+    },
+    "executionEntry": {
+      "required": [
+        "package",
+        "target",
+        "state"
+      ],
+      "states": [
+        "completed",
+        "compensated",
+        "unchanged",
+        "uncertain"
+      ]
+    },
+    "executionResult": {
+      "required": [
+        "operationId",
+        "entries",
+        "changedFiles",
+        "restore"
+      ],
+      "restoreStates": [
+        "notRequired",
+        "completed"
+      ]
+    },
+    "errorData": {
+      "required": [
+        "retry",
+        "recovery"
+      ],
+      "retry": [
+        "never",
+        "afterUserAction",
+        "transient"
+      ],
+      "recoveryItemShape": "executionEntry"
+    },
+    "discoveryTerminal": {
+      "required": [
+        "requestId",
+        "state",
+        "batchCount",
+        "itemCount"
+      ],
+      "optional": [
+        "lastSequence",
+        "error"
+      ],
+      "states": [
+        "completed",
+        "cancelled",
+        "failed"
+      ],
+      "constraints": [
+        "lastSequence absent when batchCount is zero",
+        "lastSequence equals batchCount minus one otherwise",
+        "error absent for completed and required otherwise",
+        "no rows"
+      ]
+    },
+    "searchTerminal": {
+      "base": "discoveryTerminal",
+      "optional": [
+        "query",
+        "continuation"
+      ],
+      "queryRequired": [
+        "includePrerelease"
+      ],
+      "queryOptional": [
+        "term",
+        "source"
+      ],
+      "constraints": [
+        "query required for completed and absent otherwise",
+        "continuation allowed only for completed"
+      ]
+    },
+    "installedBatch": {
+      "required": [
+        "requestId",
+        "sequence",
+        "items"
+      ],
+      "itemRequired": [
+        "target",
+        "graphState"
+      ],
+      "itemOptional": [
+        "package"
+      ],
+      "graphStates": [
+        "current",
+        "missing",
+        "mismatched",
+        "unverifiable",
+        "stale"
+      ]
+    },
+    "updatesBatch": {
+      "required": [
+        "requestId",
+        "sequence",
+        "updates"
+      ],
+      "itemRequired": [
+        "package",
+        "target",
+        "available"
+      ],
+      "itemOptional": [
+        "installedVersion"
+      ]
+    },
+    "consolidationBatch": {
+      "required": [
+        "requestId",
+        "sequence",
+        "packages"
+      ],
+      "itemRequired": [
+        "package",
+        "currentVersions",
+        "candidateVersions"
+      ]
+    }
+  },
+  "stableErrors": [
+    {
+      "code": "invalid_request",
+      "messages": [
+        "A request frame must contain exactly four values.",
+        "A request method must be a non-empty UTF-8 string.",
+        "A session cannot be initialized more than once."
+      ]
+    },
+    {
+      "code": "invalid_params",
+      "messages": [
+        "Package initialization parameters are invalid.",
+        "Package request parameters are invalid.",
+        "The confirmation token does not identify a current preview of this operation kind.",
+        "Request params must be a string-key map.",
+        "MessagePack strings must contain valid UTF-8.",
+        "MessagePack nesting exceeds the configured limit.",
+        "MessagePack arrays exceed the configured item limit. (Parameter 'value')",
+        "MessagePack maps exceed the configured item limit. (Parameter 'value')",
+        "MessagePack map keys must be strings. (Parameter 'value')",
+        "MessagePack map keys must be non-empty strings. (Parameter 'value')",
+        "MessagePack maps cannot contain duplicate keys. (Parameter 'value')",
+        "MessagePack extension values are not allowed. (Parameter 'value')"
+      ]
+    },
+    {
+      "code": "not_initialized",
+      "message": "initialize must be called before other methods."
+    },
+    {
+      "code": "unknown_method",
+      "messageTemplate": "The method '{method}' is not available in this protocol profile."
+    },
+    {
+      "code": "unsupported_capability",
+      "message": "The required package capability was not negotiated."
+    },
+    {
+      "code": "discovery_in_progress",
+      "message": "A package discovery stream of this kind is already active.",
+      "data": {
+        "retry": "transient"
+      }
+    },
+    {
+      "code": "response_too_large",
+      "message": "The response exceeds the negotiated outbound frame limit."
+    },
+    {
+      "code": "internal_error",
+      "message": "The request could not be completed safely."
+    },
+    {
+      "code": "DWE-PACKAGE-INVALID-REQUEST",
+      "message": "The package request is invalid."
+    },
+    {
+      "code": "DWE-PACKAGE-NOT-FOUND",
+      "message": "The requested package resource was not found."
+    },
+    {
+      "code": "DWE-PACKAGE-AMBIGUOUS-TARGET",
+      "message": "The package target is ambiguous."
+    },
+    {
+      "code": "DWE-PACKAGE-UNSUPPORTED",
+      "message": "The package operation is not supported."
+    },
+    {
+      "code": "DWE-PACKAGE-AUTHENTICATION-REQUIRED",
+      "message": "The configured package source requires authentication."
+    },
+    {
+      "code": "DWE-PACKAGE-UNAUTHORIZED",
+      "message": "The configured package source rejected the request."
+    },
+    {
+      "code": "DWE-PACKAGE-SOURCE-AUTHENTICATION-REQUIRED",
+      "message": "The configured package source requires authentication."
+    },
+    {
+      "code": "DWE-PACKAGE-SOURCE-UNAUTHORIZED",
+      "message": "The configured package source rejected the request."
+    },
+    {
+      "code": "DWE-PACKAGE-SOURCE-MALFORMED",
+      "message": "The configured package source returned an invalid response."
+    },
+    {
+      "code": "DWE-PACKAGE-SOURCE-UNAVAILABLE",
+      "message": "The configured package source is unavailable."
+    },
+    {
+      "code": "DWE-PACKAGE-STALE-STATE",
+      "message": "The package preview is stale."
+    },
+    {
+      "code": "DWE-PACKAGE-CANCELLED",
+      "message": "The package work was cancelled."
+    },
+    {
+      "code": "DWE-PACKAGE-EXTERNAL-TOOL-FAILED",
+      "message": "The stock dotnet package command failed."
+    },
+    {
+      "code": "DWE-PACKAGE-PARTIAL-RECOVERY",
+      "message": "Package recovery requires user attention."
+    },
+    {
+      "code": "DWE-PACKAGE-INTERNAL",
+      "message": "The package request could not be completed safely."
+    }
+  ]
+}

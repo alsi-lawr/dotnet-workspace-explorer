@@ -32,8 +32,8 @@
             Pack="false"
             CopyToOutputDirectory="PreserveNewest" />
         <None
-            Include="../../../protocol/package-v1.schema.json"
-            Link="protocol/package-v1.schema.json"
+            Include="../../../protocol/package-v2.schema.json"
+            Link="protocol/package-v2.schema.json"
             Pack="false"
             CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>

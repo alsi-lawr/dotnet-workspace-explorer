@@ -10,6 +10,8 @@ module PackageRpcResponses =
     let private integer value = RpcValue.Integer(int64 value)
     let private boolean value = RpcValue.Boolean value
 
+    let private requestText (requestId: PackageRequestId) = text (requestId.Value.ToString "D")
+
     let private array mapping values =
         values |> Seq.map mapping |> RpcValue.array
 
@@ -129,39 +131,20 @@ module PackageRpcResponses =
         | InstalledPackageGraphState.UnverifiablyFreshRestoreGraph -> "unverifiable"
         | InstalledPackageGraphState.StaleRestoreGraph -> "stale"
 
-    let private page pageSize offset values =
-        let items = values |> List.skip (min offset values.Length) |> List.truncate pageSize
-        let nextOffset = offset + items.Length
-
-        let continuation =
-            if nextOffset < values.Length then
-                Some(string nextOffset)
-            else
-                None
-
-        items, continuation
-
-    let installedResult
-        (requestId: PackageRequestId)
-        restoreState
-        pageSize
-        offset
-        (entries: InstalledPackageEntry list)
-        =
-        let entries, continuation = page pageSize offset entries
-
-        map (
-            [ "requestId", text (requestId.Value.ToString "D")
-              "restore", text restoreState
-              "items",
-              entries
-              |> array (fun entry ->
-                  map (
-                      [ "target", target entry.Target
-                        "graphState", text (graphState entry.GraphState) ]
-                      @ optional "package" installed entry.Package
-                  )) ]
-            @ optional "continuation" text continuation
+    let installedBatch methodName (requestId: PackageRequestId) sequence entries =
+        Notification(
+            methodName,
+            map
+                [ "requestId", requestText requestId
+                  "sequence", integer sequence
+                  "items",
+                  entries
+                  |> array (fun entry ->
+                      map (
+                          [ "target", target entry.Target
+                            "graphState", text (graphState entry.GraphState) ]
+                          @ optional "package" installed entry.Package
+                      )) ]
         )
 
     let private sourceFailure (failure: PackageSourceFailure) =
@@ -182,12 +165,14 @@ module PackageRpcResponses =
             @ optional "summary" text value.Summary
         )
 
-    let searchResult (requestId: PackageRequestId) (page: PackagePage<PackageSummary>) =
-        map (
-            [ "requestId", text (requestId.Value.ToString "D")
-              "items", page.Items |> array summary
-              "sourceFailures", page.SourceFailures |> array sourceFailure ]
-            @ optional "continuation" text page.Continuation
+    let searchBatch (requestId: PackageRequestId) sequence items sourceFailures =
+        Notification(
+            "package/search/batch",
+            map
+                [ "requestId", requestText requestId
+                  "sequence", integer sequence
+                  "items", items |> array summary
+                  "sourceFailures", sourceFailures |> array sourceFailure ]
         )
 
     let sourcesResult (sources: PackageSource list) =
@@ -288,44 +273,46 @@ module PackageRpcResponses =
         | InstalledPackageState.FrameworkProvided value -> Some value.Value
         | _ -> None
 
-    let updatesResult pageSize offset (updates: PackageUpdate list) =
-        let updates, continuation = page pageSize offset updates
-
-        map (
-            [ "updates",
-              updates
-              |> array (fun (update: PackageUpdate) ->
-                  map (
-                      [ "package", text update.Installed.Identity.Value
-                        "target", target update.Installed.Target
-                        "available",
-                        update.Available |> NonEmptyList.toList |> array (_.Value >> text) ]
-                      @ optional "installedVersion" text (resolvedVersion update.Installed)
-                  )) ]
-            @ optional "continuation" text continuation
+    let updatesBatch (requestId: PackageRequestId) sequence updates =
+        Notification(
+            "package/updates/batch",
+            map
+                [ "requestId", requestText requestId
+                  "sequence", integer sequence
+                  "updates",
+                  updates
+                  |> array (fun (update: PackageUpdate) ->
+                      map (
+                          [ "package", text update.Installed.Identity.Value
+                            "target", target update.Installed.Target
+                            "available",
+                            update.Available |> NonEmptyList.toList |> array (_.Value >> text) ]
+                          @ optional "installedVersion" text (resolvedVersion update.Installed)
+                      )) ]
         )
 
-    let consolidationResult pageSize offset (values: PackageConsolidation list) =
-        let values, continuation = page pageSize offset values
+    let consolidationBatch (requestId: PackageRequestId) sequence values =
+        Notification(
+            "package/consolidation/batch",
+            map
+                [ "requestId", requestText requestId
+                  "sequence", integer sequence
+                  "packages",
+                  values
+                  |> array (fun (value: PackageConsolidation) ->
+                      let candidates =
+                          value.CandidateVersions |> NonEmptyList.toList |> array (_.Value >> text)
 
-        map (
-            [ "packages",
-              values
-              |> array (fun (value: PackageConsolidation) ->
-                  let candidates =
-                      value.CandidateVersions |> NonEmptyList.toList |> array (_.Value >> text)
-
-                  map
-                      [ "package", text value.Identity.Value
-                        "currentVersions",
-                        value.CurrentVersions
-                        |> NonEmptyList.toList
-                        |> array (fun (version, targets) ->
-                            map
-                                [ "version", text version.Value
-                                  "targets", targets |> NonEmptyList.toList |> array target ])
-                        "candidateVersions", candidates ]) ]
-            @ optional "continuation" text continuation
+                      map
+                          [ "package", text value.Identity.Value
+                            "currentVersions",
+                            value.CurrentVersions
+                            |> NonEmptyList.toList
+                            |> array (fun (version, targets) ->
+                                map
+                                    [ "version", text version.Value
+                                      "targets", targets |> NonEmptyList.toList |> array target ])
+                            "candidateVersions", candidates ]) ]
         )
 
     let private operation =
@@ -580,11 +567,75 @@ module PackageRpcResponses =
                       "recovery", failure |> PackageFailure.recovery |> array executionEntry ]
             ) }
 
+    let discoveryInProgress =
+        RpcErrors.create
+            "discovery_in_progress"
+            "A package discovery stream of this kind is already active."
+            (Some(map [ "retry", text "transient" ]))
+
     let private rpcError (error: RpcError) =
         map (
             [ "code", text error.Code; "message", text error.Message ]
             @ optional "data" id error.Data
         )
+
+    let private terminalFields (requestId: PackageRequestId) state batchCount itemCount =
+        [ "requestId", requestText requestId
+          "state", text state
+          "batchCount", integer batchCount
+          "itemCount", integer itemCount ]
+        @ if batchCount = 0 then
+              []
+          else
+              [ "lastSequence", integer (batchCount - 1) ]
+
+    let discoveryCompleted methodName requestId batchCount itemCount metadata =
+        Notification(
+            methodName,
+            map (terminalFields requestId "completed" batchCount itemCount @ metadata)
+        )
+
+    let discoveryFailedWithRpcError methodName requestId batchCount itemCount error =
+        Notification(
+            methodName,
+            map (
+                terminalFields requestId "failed" batchCount itemCount
+                @ [ "error", rpcError error ]
+            )
+        )
+
+    let discoveryFailed methodName requestId batchCount itemCount (failure: PackageFailure) =
+        let state =
+            if PackageFailure.kind failure = PackageFailureKind.Cancelled then
+                "cancelled"
+            else
+                "failed"
+
+        Notification(
+            methodName,
+            map (
+                terminalFields requestId state batchCount itemCount
+                @ [ "error", failure |> failureError |> rpcError ]
+            )
+        )
+
+    let private searchQuery (query: PackageSearch) =
+        map (
+            [ "includePrerelease",
+              boolean (query.Prerelease = PrereleaseSelection.IncludePrerelease) ]
+            @ match query.Term with
+              | PackageSearchTerm.AllPackages -> []
+              | PackageSearchTerm.Matching value -> [ "term", text value ]
+            @ optional "source" (fun (source: PackageSourceId) -> text source.Value) query.Source
+        )
+
+    let searchCompleted requestId batchCount itemCount query continuation =
+        discoveryCompleted
+            "package/search/completed"
+            requestId
+            batchCount
+            itemCount
+            ([ "query", searchQuery query ] @ optional "continuation" text continuation)
 
     let completedNotification
         methodName
@@ -606,37 +657,4 @@ module PackageRpcResponses =
         Notification(
             methodName,
             map [ "requestId", text (requestId.Value.ToString "D"); "error", rpcError error ]
-        )
-
-    let restoreCompletedNotification (requestId: PackageRequestId) outcome =
-        match outcome with
-        | Ok() ->
-            Notification(
-                "package/restore/completed",
-                map [ "requestId", text (requestId.Value.ToString "D"); "state", text "refreshed" ]
-            )
-        | Error(failure: PackageFailure) ->
-            let error = failureError failure
-
-            Notification(
-                "package/restore/completed",
-                map
-                    [ "requestId", text (requestId.Value.ToString "D")
-                      "state",
-                      text (
-                          if PackageFailure.kind failure = PackageFailureKind.Cancelled then
-                              "cancelled"
-                          else
-                              "failed"
-                      )
-                      "error", rpcError error ]
-            )
-
-    let restoreTransportFailureNotification (requestId: PackageRequestId) error =
-        Notification(
-            "package/restore/completed",
-            map
-                [ "requestId", text (requestId.Value.ToString "D")
-                  "state", text "failed"
-                  "error", rpcError error ]
         )

@@ -23,10 +23,10 @@ type PackageRpcContractTests() =
                   [ "maxFrameBytes", RpcValue.Integer 4096L; "maxPageSize", RpcValue.Integer 20L ] ]
 
     [<Fact>]
-    member _.``package initialization negotiates only version one bounded capability input``() =
+    member _.``package initialization negotiates only version two bounded capability input``() =
         match
             PackageRpc.parseInitialize (
-                initialization 1L [ "packages.search.v1"; "packages.unknown"; "packages.search.v1" ]
+                initialization 2L [ "packages.search.v2"; "packages.unknown"; "packages.search.v2" ]
             )
         with
         | Error error -> failwithf "Initialization failed: %A" error
@@ -37,9 +37,9 @@ type PackageRpcContractTests() =
 
             request.Capabilities
             |> Seq.toList
-            |> should equal [ "packages.search.v1"; "packages.unknown" ]
+            |> should equal [ "packages.search.v2"; "packages.unknown" ]
 
-        match PackageRpc.parseInitialize (initialization 2L []) with
+        match PackageRpc.parseInitialize (initialization 1L [ "packages.search.v1" ]) with
         | Error error -> error.Code |> should equal "invalid_params"
         | Ok _ -> failwith "An incompatible package protocol major version was accepted."
 
@@ -74,11 +74,11 @@ type PackageRpcContractTests() =
         | result -> failwithf "Batch preview parsing failed: %A" result
 
     [<Fact>]
-    member _.``package parsing rejects unknown fields invalid cancellation and oversized pages``() =
+    member _.``package parsing rejects removed discovery fields and invalid cancellation``() =
         let invalidSearch =
             Test.map
                 [ "requestId", RpcValue.String requestId
-                  "pageSize", RpcValue.Integer 201L
+                  "pageSize", RpcValue.Integer 20L
                   "unexpected", RpcValue.Boolean true ]
 
         match PackageRpc.parseRequest "package/search/start" invalidSearch with
@@ -93,6 +93,54 @@ type PackageRpcContractTests() =
         match PackageRpc.parseRequest "package/cancel" invalidCancellation with
         | Error error -> error.Code |> should equal "invalid_params"
         | Ok _ -> failwith "Ambiguous cancellation parameters were accepted."
+
+    [<Fact>]
+    member _.``discovery terminals report exact empty and nonempty sequence metadata without rows``
+        ()
+        =
+        let parsedRequestId =
+            Guid.Parse requestId
+            |> PackageRequestId.create
+            |> Result.defaultWith (failwithf "%A")
+
+        let parameters =
+            function
+            | Notification(_, value) -> value
+            | _ -> failwith "Expected a notification."
+
+        let empty =
+            PackageRpcResponses.discoveryCompleted
+                "package/installed/completed"
+                parsedRequestId
+                0
+                0
+                []
+            |> parameters
+
+        RpcValue.tryField "batchCount" empty |> should equal (Some(RpcValue.Integer 0L))
+        RpcValue.tryField "itemCount" empty |> should equal (Some(RpcValue.Integer 0L))
+        RpcValue.tryField "lastSequence" empty |> should equal None
+        RpcValue.tryField "items" empty |> should equal None
+
+        let nonempty =
+            PackageRpcResponses.discoveryCompleted
+                "package/updates/completed"
+                parsedRequestId
+                3
+                7
+                []
+            |> parameters
+
+        RpcValue.tryField "lastSequence" nonempty
+        |> should equal (Some(RpcValue.Integer 2L))
+
+        RpcValue.tryField "batchCount" nonempty
+        |> should equal (Some(RpcValue.Integer 3L))
+
+        RpcValue.tryField "itemCount" nonempty
+        |> should equal (Some(RpcValue.Integer 7L))
+
+        RpcValue.tryField "updates" nonempty |> should equal None
 
     [<Fact>]
     member _.``package failures redact dependency text while preserving recovery identities``() =
@@ -126,7 +174,7 @@ type PackageRpcContractTests() =
     [<Fact>]
     member _.``package schema reconciles every runtime response notification and stable error``() =
         let path =
-            Path.Combine(AppContext.BaseDirectory, "protocol", "package-v1.schema.json")
+            Path.Combine(AppContext.BaseDirectory, "protocol", "package-v2.schema.json")
 
         use document = JsonDocument.Parse(File.ReadAllText path)
         let root = document.RootElement
@@ -137,9 +185,10 @@ type PackageRpcContractTests() =
           "package/sourceMapping"
           "package/search/start"
           "package/details"
-          "package/installed"
-          "package/updates"
-          "package/consolidation"
+          "package/installed/start"
+          "package/installed/restore/start"
+          "package/updates/start"
+          "package/consolidation/start"
           "package/preview"
           "package/previewBatch"
           "package/execute/start"
@@ -184,7 +233,6 @@ type PackageRpcContractTests() =
             equal
             [ "Package initialization parameters are invalid."
               "Package request parameters are invalid."
-              "pageSize exceeds the negotiated package page limit."
               "The confirmation token does not identify a current preview of this operation kind."
               "Request params must be a string-key map."
               "MessagePack strings must contain valid UTF-8."
@@ -201,6 +249,14 @@ type PackageRpcContractTests() =
 
         message RpcErrors.internalError.Code
         |> should equal RpcErrors.internalError.Message
+
+        message PackageRpcResponses.discoveryInProgress.Code
+        |> should equal PackageRpcResponses.discoveryInProgress.Message
+
+        [ "package/installed"; "package/updates"; "package/consolidation" ]
+        |> List.iter (fun name ->
+            let mutable value = Unchecked.defaultof<JsonElement>
+            responses.TryGetProperty(name, &value) |> should equal false)
 
         let authentication =
             PackageSourceFailure.create

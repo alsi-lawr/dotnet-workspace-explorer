@@ -12,23 +12,16 @@ type PackageRpcRequest =
         package: PackageId *
         source: PackageSourceId option *
         restoredTransitives: PackageId list option
-    | Search of
-        requestId: PackageRequestId *
-        search: PackageSearch *
-        pageSize: int *
-        continuation: string option
+    | Search of requestId: PackageRequestId * search: PackageSearch * continuation: string option
     | Details of
         requestId: PackageRequestId *
         package: PackageId *
         version: PackageVersionSelection *
         source: PackageSourceId
-    | Installed of requestId: PackageRequestId * pageSize: int * offset: int
-    | Updates of
-        requestId: PackageRequestId *
-        prerelease: PrereleaseSelection *
-        pageSize: int *
-        offset: int
-    | Consolidation of requestId: PackageRequestId * pageSize: int * offset: int
+    | Installed of requestId: PackageRequestId
+    | RestoreInstalled of requestId: PackageRequestId
+    | Updates of requestId: PackageRequestId * prerelease: PrereleaseSelection
+    | Consolidation of requestId: PackageRequestId
     | Preview of
         requestId: PackageRequestId *
         operation: RequestedPackageOperation *
@@ -109,22 +102,6 @@ module PackageRpc =
         |> RpcValue.requireArray name
         |> Seq.map (RpcValue.requireString name)
         |> Seq.toList
-
-    let private page fields =
-        let pageSize =
-            match RpcValue.optionalField "pageSize" fields with
-            | None -> 50
-            | Some _ -> requiredInt "pageSize" 1 PackageRpcContract.MaximumPageSize fields
-
-        let offset =
-            match optionalString "continuation" fields with
-            | None -> 0
-            | Some value ->
-                match Int32.TryParse value with
-                | true, parsed when parsed >= 0 -> parsed
-                | _ -> invalidArg "continuation" "continuation is invalid."
-
-        pageSize, offset
 
     let private parseTarget value =
         let fields = RpcValue.requireMap "target" value
@@ -283,12 +260,7 @@ module PackageRpc =
                 | "package/search/start" ->
                     let fields =
                         requestFields
-                            [ "requestId"
-                              "term"
-                              "includePrerelease"
-                              "source"
-                              "pageSize"
-                              "continuation" ]
+                            [ "requestId"; "term"; "includePrerelease"; "source"; "continuation" ]
                             parameters
 
                     let term =
@@ -311,7 +283,6 @@ module PackageRpc =
                         { Term = term
                           Prerelease = prerelease
                           Source = source },
-                        requiredInt "pageSize" 1 PackageRpcContract.MaximumPageSize fields,
                         optionalString "continuation" fields
                     )
                 | "package/details" ->
@@ -324,17 +295,14 @@ module PackageRpc =
                         fields |> RpcValue.requireField "version" |> parseVersionSelection,
                         requiredString "source" fields |> sourceId "source"
                     )
-                | "package/installed" ->
-                    let fields =
-                        requestFields [ "requestId"; "pageSize"; "continuation" ] parameters
-
-                    let pageSize, offset = page fields
-                    PackageRpcRequest.Installed(requestId fields, pageSize, offset)
-                | "package/updates" ->
-                    let fields =
-                        requestFields
-                            [ "requestId"; "includePrerelease"; "pageSize"; "continuation" ]
-                            parameters
+                | "package/installed/start" ->
+                    let fields = requestFields [ "requestId" ] parameters
+                    PackageRpcRequest.Installed(requestId fields)
+                | "package/installed/restore/start" ->
+                    let fields = requestFields [ "requestId" ] parameters
+                    PackageRpcRequest.RestoreInstalled(requestId fields)
+                | "package/updates/start" ->
+                    let fields = requestFields [ "requestId"; "includePrerelease" ] parameters
 
                     let prerelease =
                         match RpcValue.optionalField "includePrerelease" fields with
@@ -344,14 +312,10 @@ module PackageRpc =
                         | Some _ ->
                             invalidArg "includePrerelease" "includePrerelease must be boolean."
 
-                    let pageSize, offset = page fields
-                    PackageRpcRequest.Updates(requestId fields, prerelease, pageSize, offset)
-                | "package/consolidation" ->
-                    let fields =
-                        requestFields [ "requestId"; "pageSize"; "continuation" ] parameters
-
-                    let pageSize, offset = page fields
-                    PackageRpcRequest.Consolidation(requestId fields, pageSize, offset)
+                    PackageRpcRequest.Updates(requestId fields, prerelease)
+                | "package/consolidation/start" ->
+                    let fields = requestFields [ "requestId" ] parameters
+                    PackageRpcRequest.Consolidation(requestId fields)
                 | "package/preview" ->
                     let fields =
                         requestFields [ "requestId"; "operation"; "targets"; "source" ] parameters
@@ -423,11 +387,3 @@ module PackageRpc =
         with
         | :? ArgumentException -> invalid "Package request parameters are invalid."
         | _ -> invalid "Package request parameters are invalid."
-
-    let requestedPageSize =
-        function
-        | PackageRpcRequest.Search(_, _, pageSize, _)
-        | PackageRpcRequest.Installed(_, pageSize, _)
-        | PackageRpcRequest.Updates(_, _, pageSize, _)
-        | PackageRpcRequest.Consolidation(_, pageSize, _) -> Some pageSize
-        | _ -> None

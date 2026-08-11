@@ -9,7 +9,7 @@ module PackageRpcContract =
     let ProfileName = "dotnet-workspace-explorer/packages"
 
     [<Literal>]
-    let VersionMajor = 1
+    let VersionMajor = 2
 
     [<Literal>]
     let VersionMinor = 0
@@ -25,13 +25,13 @@ module PackageRpcContract =
             StringComparer.Ordinal,
             [ "packages.sources.v1"
               "packages.source-mapping.v1"
-              "packages.search.v1"
+              "packages.search.v2"
               "packages.details.v1"
               "packages.readme.v1"
-              "packages.installed.v1"
-              "packages.restore.v1"
-              "packages.updates.v1"
-              "packages.consolidation.v1"
+              "packages.installed.v2"
+              "packages.restore.v2"
+              "packages.updates.v2"
+              "packages.consolidation.v2"
               "packages.preview.v1"
               "packages.batch-preview.v1"
               "packages.execute.v1"
@@ -45,21 +45,26 @@ module PackageRpcContract =
           "package/sourceMapping", Read
           "package/search/start", Read
           "package/details", Read
-          "package/installed", Read
-          "package/updates", Read
-          "package/consolidation", Read
+          "package/installed/start", Read
+          "package/installed/restore/start", Read
+          "package/updates/start", Read
+          "package/consolidation/start", Read
           "package/preview", Read
           "package/previewBatch", Read
           "package/execute/start", Mutation
           "package/executeBatch/start", Mutation
           "package/cancel", Control
           "shutdown", Control
+          "package/search/batch", NotificationMethod
           "package/search/completed", NotificationMethod
+          "package/installed/batch", NotificationMethod
+          "package/installed/completed", NotificationMethod
+          "package/installed/restore/batch", NotificationMethod
+          "package/installed/restore/completed", NotificationMethod
+          "package/updates/batch", NotificationMethod
           "package/updates/completed", NotificationMethod
+          "package/consolidation/batch", NotificationMethod
           "package/consolidation/completed", NotificationMethod
-          "package/restore/progress", NotificationMethod
-          "package/installed/refreshed", NotificationMethod
-          "package/restore/completed", NotificationMethod
           "package/operations/progress", NotificationMethod
           "package/operations/completed", NotificationMethod ]
 
@@ -74,11 +79,12 @@ module PackageRpcContract =
         match methodName with
         | "package/sources" -> Some "packages.sources.v1"
         | "package/sourceMapping" -> Some "packages.source-mapping.v1"
-        | "package/search/start" -> Some "packages.search.v1"
+        | "package/search/start" -> Some "packages.search.v2"
         | "package/details" -> Some "packages.details.v1"
-        | "package/installed" -> Some "packages.installed.v1"
-        | "package/updates" -> Some "packages.updates.v1"
-        | "package/consolidation" -> Some "packages.consolidation.v1"
+        | "package/installed/start" -> Some "packages.installed.v2"
+        | "package/installed/restore/start" -> Some "packages.restore.v2"
+        | "package/updates/start" -> Some "packages.updates.v2"
+        | "package/consolidation/start" -> Some "packages.consolidation.v2"
         | "package/preview" -> Some "packages.preview.v1"
         | "package/previewBatch" -> Some "packages.batch-preview.v1"
         | "package/execute/start" -> Some "packages.execute.v1"

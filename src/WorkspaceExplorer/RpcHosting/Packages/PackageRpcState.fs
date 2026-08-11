@@ -3,6 +3,7 @@ namespace Dotnet.WorkspaceExplorer
 open System
 open System.Collections.Concurrent
 open System.Collections.Immutable
+open System.Collections.Generic
 open Dotnet.WorkspaceExplorer.PackageExplorer
 open Dotnet.WorkspaceExplorer.Packages
 
@@ -11,9 +12,18 @@ type internal CachedPackagePreview =
     | Single of PackagePreview
     | Batch of PackageUpdateBatchPreview
 
+[<RequireQualifiedAccess>]
+type internal PackageDiscoveryKind =
+    | Installed
+    | Search
+    | Updates
+    | Consolidation
+
 type internal PackageRpcState(target: PackageWorkspaceTarget, ports: PackageCatalogPorts) =
     let previews =
         ConcurrentDictionary<string, CachedPackagePreview>(StringComparer.Ordinal)
+
+    let activeDiscovery = ConcurrentDictionary<PackageDiscoveryKind, PackageRequestId>()
 
     let mutable readmeEnabled = false
 
@@ -23,6 +33,13 @@ type internal PackageRpcState(target: PackageWorkspaceTarget, ports: PackageCata
     member _.ReadmeEnabled
         with get () = readmeEnabled
         and set value = readmeEnabled <- value
+
+    member _.TryAdmit(kind, requestId) = activeDiscovery.TryAdd(kind, requestId)
+
+    member _.Release(kind, requestId) =
+        (activeDiscovery :> ICollection<KeyValuePair<PackageDiscoveryKind, PackageRequestId>>)
+            .Remove(KeyValuePair(kind, requestId))
+        |> ignore
 
     member _.Remember(preview: PackagePreview) =
         let token = PackagePreview.confirmationToken preview

@@ -9,6 +9,7 @@ type PackageRpcGoldenFrameTests() =
     [<Fact>]
     member _.``package protocol capability families retain stable independent-client frames``() =
         let requestId = "11111111-1111-1111-1111-111111111111"
+        let restoreRequestId = "33333333-3333-3333-3333-333333333333"
         let operationId = "22222222-2222-2222-2222-222222222222"
         let empty = RpcValue.emptyMap
         let map = RpcValue.map
@@ -20,16 +21,18 @@ type PackageRpcGoldenFrameTests() =
         let recoveryData =
             map [ "retry", text "afterUserAction"; "recovery", RpcValue.array [] ]
 
+        let cancelledData = map [ "retry", text "never"; "recovery", RpcValue.array [] ]
+
         let cases =
             [ "initialize-request.mpack",
               Request(
                   1u,
                   "initialize",
                   map
-                      [ "protocolVersion", map [ "major", integer 1L; "minor", integer 0L ]
+                      [ "protocolVersion", map [ "major", integer 2L; "minor", integer 0L ]
                         "clientInfo", map [ "name", text "package-fixture" ]
                         "capabilities",
-                        RpcValue.array [ text "packages.search.v1"; text "packages.execute.v1" ]
+                        RpcValue.array [ text "packages.search.v2"; text "packages.execute.v1" ]
                         "limits",
                         map [ "maxFrameBytes", integer 65536L; "maxPageSize", integer 25L ] ]
               )
@@ -40,8 +43,7 @@ type PackageRpcGoldenFrameTests() =
                   map
                       [ "requestId", text requestId
                         "term", text "example"
-                        "includePrerelease", RpcValue.Boolean false
-                        "pageSize", integer 25L ]
+                        "includePrerelease", RpcValue.Boolean false ]
               )
               "sources-request.mpack",
               Request(10u, "package/sources", map [ "requestId", text requestId ])
@@ -64,27 +66,22 @@ type PackageRpcGoldenFrameTests() =
                         "version", map [ "kind", text "latest" ]
                         "source", text "nuget.org" ]
               )
-              "installed-request.mpack",
+              "installed-start-request.mpack",
+              Request(4u, "package/installed/start", map [ "requestId", text requestId ])
+              "installed-restore-start-request.mpack",
               Request(
-                  4u,
-                  "package/installed",
-                  map [ "requestId", text requestId; "pageSize", integer 25L ]
+                  15u,
+                  "package/installed/restore/start",
+                  map [ "requestId", text restoreRequestId ]
               )
-              "updates-request.mpack",
+              "updates-start-request.mpack",
               Request(
                   12u,
-                  "package/updates",
-                  map
-                      [ "requestId", text requestId
-                        "includePrerelease", RpcValue.Boolean false
-                        "pageSize", integer 25L ]
+                  "package/updates/start",
+                  map [ "requestId", text requestId; "includePrerelease", RpcValue.Boolean false ]
               )
-              "consolidation-request.mpack",
-              Request(
-                  13u,
-                  "package/consolidation",
-                  map [ "requestId", text requestId; "pageSize", integer 25L ]
-              )
+              "consolidation-start-request.mpack",
+              Request(13u, "package/consolidation/start", map [ "requestId", text requestId ])
               "preview-request.mpack",
               Request(
                   5u,
@@ -127,22 +124,6 @@ type PackageRpcGoldenFrameTests() =
               )
               "cancel-request.mpack",
               Request(8u, "package/cancel", map [ "operationId", text operationId ])
-              "search-completed.mpack",
-              Notification(
-                  "package/search/completed",
-                  map
-                      [ "requestId", text requestId
-                        "result",
-                        map
-                            [ "requestId", text requestId
-                              "items", RpcValue.array []
-                              "sourceFailures", RpcValue.array [] ] ]
-              )
-              "restore-progress.mpack",
-              Notification(
-                  "package/restore/progress",
-                  map [ "requestId", text requestId; "state", text "inProgress" ]
-              )
               "operation-progress.mpack",
               Notification(
                   "package/operations/progress",
@@ -246,7 +227,7 @@ type PackageRpcGoldenFrameTests() =
                   1u,
                   Ok(
                       map
-                          [ "protocolVersion", map [ "major", integer 1L; "minor", integer 0L ]
+                          [ "protocolVersion", map [ "major", integer 2L; "minor", integer 0L ]
                             "serverInfo",
                             map [ "name", text "dotnet-workspace-explorer"; "version", text "1" ]
                             "target",
@@ -307,25 +288,69 @@ type PackageRpcGoldenFrameTests() =
                             "readmeCommonMark", text "# Example" ]
                   )
               )
-              "installed-response.mpack",
+              "installed-accepted-response.mpack",
               Response(
                   4u,
-                  Ok(
-                      map
-                          [ "requestId", text requestId
-                            "restore", text "inProgress"
-                            "items",
-                            RpcValue.array
-                                [ map
-                                      [ "target", target
-                                        "graphState", text "current"
-                                        "package",
-                                        map
-                                            [ "package", text "Example.Package"
-                                              "target", target
-                                              "state", installedState ] ] ]
-                            "continuation", text "1" ]
-                  )
+                  Ok(map [ "accepted", RpcValue.Boolean true; "requestId", text requestId ])
+              )
+              "installed-restore-accepted-response.mpack",
+              Response(
+                  15u,
+                  Ok(map [ "accepted", RpcValue.Boolean true; "requestId", text restoreRequestId ])
+              )
+              "installed-batch.mpack",
+              Notification(
+                  "package/installed/batch",
+                  map
+                      [ "requestId", text requestId
+                        "sequence", integer 0L
+                        "items",
+                        RpcValue.array
+                            [ map
+                                  [ "target", target
+                                    "graphState", text "current"
+                                    "package",
+                                    map
+                                        [ "package", text "Example.Package"
+                                          "target", target
+                                          "state", installedState ] ] ] ]
+              )
+              "installed-completed.mpack",
+              Notification(
+                  "package/installed/completed",
+                  map
+                      [ "requestId", text requestId
+                        "state", text "completed"
+                        "batchCount", integer 1L
+                        "itemCount", integer 1L
+                        "lastSequence", integer 0L ]
+              )
+              "installed-restore-batch.mpack",
+              Notification(
+                  "package/installed/restore/batch",
+                  map
+                      [ "requestId", text restoreRequestId
+                        "sequence", integer 0L
+                        "items",
+                        RpcValue.array
+                            [ map
+                                  [ "target", target
+                                    "graphState", text "current"
+                                    "package",
+                                    map
+                                        [ "package", text "Example.Package"
+                                          "target", target
+                                          "state", installedState ] ] ] ]
+              )
+              "installed-restore-completed.mpack",
+              Notification(
+                  "package/installed/restore/completed",
+                  map
+                      [ "requestId", text restoreRequestId
+                        "state", text "completed"
+                        "batchCount", integer 1L
+                        "itemCount", integer 1L
+                        "lastSequence", integer 0L ]
               )
               "preview-response.mpack", Response(5u, Ok preview)
               "preview-batch-response.mpack",
@@ -351,52 +376,93 @@ type PackageRpcGoldenFrameTests() =
               )
               "cancel-response.mpack", Response(8u, Ok(map [ "accepted", RpcValue.Boolean true ]))
               "shutdown-response.mpack", Response(9u, Ok(map [ "accepted", RpcValue.Boolean true ]))
+              "updates-batch.mpack",
+              Notification(
+                  "package/updates/batch",
+                  map
+                      [ "requestId", text requestId
+                        "sequence", integer 0L
+                        "updates",
+                        RpcValue.array
+                            [ map
+                                  [ "package", text "Example.Package"
+                                    "target", target
+                                    "available", RpcValue.array [ text "2.0.0" ]
+                                    "installedVersion", text "1.0.0" ] ] ]
+              )
               "updates-completed.mpack",
               Notification(
                   "package/updates/completed",
                   map
                       [ "requestId", text requestId
-                        "result",
-                        map
-                            [ "updates",
-                              RpcValue.array
-                                  [ map
-                                        [ "package", text "Example.Package"
-                                          "target", target
-                                          "available", RpcValue.array [ text "2.0.0" ]
-                                          "installedVersion", text "1.0.0" ] ]
-                              "continuation", text "1" ] ]
+                        "state", text "completed"
+                        "batchCount", integer 1L
+                        "itemCount", integer 1L
+                        "lastSequence", integer 0L ]
+              )
+              "consolidation-batch.mpack",
+              Notification(
+                  "package/consolidation/batch",
+                  map
+                      [ "requestId", text requestId
+                        "sequence", integer 0L
+                        "packages",
+                        RpcValue.array
+                            [ map
+                                  [ "package", text "Example.Package"
+                                    "currentVersions",
+                                    RpcValue.array
+                                        [ map
+                                              [ "version", text "1.0.0"
+                                                "targets", RpcValue.array [ target ] ] ]
+                                    "candidateVersions", candidateVersions ] ] ]
               )
               "consolidation-completed.mpack",
               Notification(
                   "package/consolidation/completed",
                   map
                       [ "requestId", text requestId
-                        "result",
-                        map
-                            [ "packages",
-                              RpcValue.array
-                                  [ map
-                                        [ "package", text "Example.Package"
-                                          "currentVersions",
-                                          RpcValue.array
-                                              [ map
-                                                    [ "version", text "1.0.0"
-                                                      "targets", RpcValue.array [ target ] ] ]
-                                          "candidateVersions", candidateVersions ] ] ] ]
+                        "state", text "completed"
+                        "batchCount", integer 1L
+                        "itemCount", integer 1L
+                        "lastSequence", integer 0L ]
               )
-              "installed-refreshed.mpack",
+              "search-batch.mpack",
               Notification(
-                  "package/installed/refreshed",
+                  "package/search/batch",
                   map
                       [ "requestId", text requestId
-                        "restore", text "refreshed"
-                        "items", RpcValue.array [] ]
+                        "sequence", integer 0L
+                        "items",
+                        RpcValue.array
+                            [ map
+                                  [ "package", text "Example.Package"
+                                    "version", text "2.0.0"
+                                    "tags", RpcValue.array [ text "example" ]
+                                    "authors", RpcValue.array [ text "ALSI" ]
+                                    "owners", RpcValue.array [ text "ALSI" ]
+                                    "source", text "nuget.org" ]
+                              map
+                                  [ "package", text "Example.Package"
+                                    "version", text "2.0.0"
+                                    "tags", RpcValue.array [ text "example" ]
+                                    "authors", RpcValue.array [ text "ALSI" ]
+                                    "owners", RpcValue.array [ text "ALSI" ]
+                                    "source", text "nuget.org" ] ]
+                        "sourceFailures", RpcValue.array [] ]
               )
-              "restore-completed.mpack",
+              "search-completed.mpack",
               Notification(
-                  "package/restore/completed",
-                  map [ "requestId", text requestId; "state", text "refreshed" ]
+                  "package/search/completed",
+                  map
+                      [ "requestId", text requestId
+                        "state", text "completed"
+                        "batchCount", integer 2L
+                        "itemCount", integer 2L
+                        "lastSequence", integer 1L
+                        "query",
+                        map [ "term", text "example"; "includePrerelease", RpcValue.Boolean false ]
+                        "continuation", text "opaque-next" ]
               )
               "operation-completed.mpack",
               Notification(
@@ -418,21 +484,56 @@ type PackageRpcGoldenFrameTests() =
                         Message = "The response exceeds the negotiated outbound frame limit."
                         Data = None }
               )
-              "source-authentication-error.mpack",
+              "search-source-failure-batch.mpack",
               Notification(
-                  "package/search/completed",
+                  "package/search/batch",
                   map
                       [ "requestId", text requestId
-                        "result",
+                        "sequence", integer 1L
+                        "items", RpcValue.array []
+                        "sourceFailures",
+                        RpcValue.array
+                            [ map
+                                  [ "source", text "private"
+                                    "code", text "DWE-PACKAGE-SOURCE-AUTHENTICATION-REQUIRED"
+                                    "message", text sourceAuthenticationMessage ] ] ]
+              )
+              "updates-cancelled.mpack",
+              Notification(
+                  "package/updates/completed",
+                  map
+                      [ "requestId", text requestId
+                        "state", text "cancelled"
+                        "batchCount", integer 1L
+                        "itemCount", integer 1L
+                        "lastSequence", integer 0L
+                        "error",
                         map
-                            [ "requestId", text requestId
-                              "items", RpcValue.array []
-                              "sourceFailures",
-                              RpcValue.array
-                                  [ map
-                                        [ "source", text "private"
-                                          "code", text "DWE-PACKAGE-SOURCE-AUTHENTICATION-REQUIRED"
-                                          "message", text sourceAuthenticationMessage ] ] ] ]
+                            [ "code", text "DWE-PACKAGE-CANCELLED"
+                              "message", text "The package work was cancelled."
+                              "data", cancelledData ] ]
+              )
+              "consolidation-failed.mpack",
+              Notification(
+                  "package/consolidation/completed",
+                  map
+                      [ "requestId", text requestId
+                        "state", text "failed"
+                        "batchCount", integer 0L
+                        "itemCount", integer 0L
+                        "error",
+                        map
+                            [ "code", text "response_too_large"
+                              "message",
+                              text "The response exceeds the negotiated outbound frame limit." ] ]
+              )
+              "discovery-in-progress-response.mpack",
+              Response(
+                  16u,
+                  Error
+                      { Code = "discovery_in_progress"
+                        Message = "A package discovery stream of this kind is already active."
+                        Data = Some(map [ "retry", text "transient" ]) }
               ) ]
 
         let recoverableErrorCases =
@@ -498,7 +599,9 @@ type PackageRpcGoldenFrameTests() =
 
         for name, frame in allCases do
             let encoded = MessagePackRpcCodec.encodeFrame frame
+
             let golden = Test.packageGolden name
+
             encoded |> should equal golden
 
             match MessagePackRpcCodec.decodeFrame MessagePackRpcCodec.secureLimits golden with

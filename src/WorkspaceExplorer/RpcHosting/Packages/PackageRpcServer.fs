@@ -51,7 +51,6 @@ module internal PackageRpcServer =
                 | _ ->
                     let requiredCompanion =
                         match methodName with
-                        | "package/installed" -> Some "packages.restore.v1"
                         | "package/execute/start"
                         | "package/executeBatch/start" -> Some "packages.partial-recovery.v1"
                         | _ -> None
@@ -66,20 +65,14 @@ module internal PackageRpcServer =
                     | _ ->
                         match PackageRpc.parseRequest methodName parameters with
                         | Error rpcError -> return Error rpcError
-                        | Ok request when
-                            request
-                            |> PackageRpc.requestedPageSize
-                            |> Option.exists (fun pageSize ->
-                                pageSize > negotiation.MaximumPageSize)
-                            ->
-                            return
-                                Error(
-                                    RpcErrors.invalidParams
-                                        "pageSize exceeds the negotiated package page limit."
-                                )
                         | Ok request ->
                             return!
-                                PackageRpcDispatch.dispatch state request requestCancellationToken
+                                PackageRpcDispatch.dispatch
+                                    state
+                                    negotiation.MaximumFrameBytes
+                                    negotiation.MaximumPageSize
+                                    request
+                                    requestCancellationToken
             }
 
         let configuration =

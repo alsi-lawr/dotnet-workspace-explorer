@@ -2,6 +2,7 @@ namespace Dotnet.WorkspaceExplorer
 
 #nowarn "3511"
 
+open System
 open System.Threading
 open Dotnet.WorkspaceExplorer.PackageExplorer
 open Dotnet.WorkspaceExplorer.Packages
@@ -57,146 +58,358 @@ module internal PackageRpcDispatch =
                     |> sink.WriteAsync
         }
 
+    type private DiscoveryProgress() =
+        member val BatchCount = 0 with get, set
+        member val ItemCount = 0 with get, set
+
+    let private cancelledFailure =
+        PackageFailure.create
+            PackageFailureKind.Cancelled
+            "The package work was cancelled."
+            PackageFailureRetry.Never
+        |> Result.defaultWith (failwithf "%A")
+
+    let rec private containsFrameLimitFailure (error: exn) =
+        match error with
+        | :? RpcFrameLimitExceededException -> true
+        | :? AggregateException as aggregate ->
+            aggregate.Flatten().InnerExceptions |> Seq.exists containsFrameLimitFailure
+        | _ -> false
+
+    let private writeBatches
+        maximumFrameBytes
+        maximumItems
+        (progress: DiscoveryProgress)
+        countItems
+        notification
+        values
+        (sink: RpcNotificationSink)
+        (cancellation: CancellationToken)
+        =
+        task {
+            let values = values |> List.toArray
+            let mutable offset = 0
+
+            while offset < values.Length do
+                cancellation.ThrowIfCancellationRequested()
+                let remaining = values.Length - offset
+                let maximumCount = min maximumItems remaining
+
+                let encode count =
+                    values[offset .. offset + count - 1]
+                    |> Array.toList
+                    |> notification progress.BatchCount
+                    |> EncodedRpcNotification.Create
+
+                let whole = encode maximumCount
+
+                let count, encoded =
+                    if whole.Length <= maximumFrameBytes then
+                        maximumCount, whole
+                    else
+                        let first = encode 1
+
+                        if first.Length > maximumFrameBytes then
+                            raise (RpcFrameLimitExceededException(maximumFrameBytes, first.Length))
+
+                        let mutable accepted = 1
+                        let mutable selected = first
+                        let mutable low = 2
+                        let mutable high = maximumCount - 1
+
+                        while low <= high do
+                            let middle = low + (high - low) / 2
+                            let candidate = encode middle
+
+                            if candidate.Length <= maximumFrameBytes then
+                                accepted <- middle
+                                selected <- candidate
+                                low <- middle + 1
+                            else
+                                high <- middle - 1
+
+                        accepted, selected
+
+                cancellation.ThrowIfCancellationRequested()
+                do! sink.WriteEncodedAsync encoded
+                progress.BatchCount <- progress.BatchCount + 1
+
+                if countItems then
+                    progress.ItemCount <- progress.ItemCount + count
+
+                offset <- offset + count
+        }
+
+    let private producerSink maximumFrameBytes maximumItems progress notification sink =
+        fun (cancellation: CancellationToken) batch ->
+            async {
+                do!
+                    writeBatches
+                        maximumFrameBytes
+                        maximumItems
+                        progress
+                        true
+                        notification
+                        (NonEmptyList.toList batch)
+                        sink
+                        cancellation
+                    |> Async.AwaitTask
+            }
+
+    let private discoveryWork
+        (state: PackageRpcState)
+        kind
+        requestId
+        terminalMethod
+        operation
+        beforeCompleted
+        completedNotification
+        =
+        let work (sink: RpcNotificationSink) backgroundCancellation =
+            task {
+                let progress = DiscoveryProgress()
+
+                let writeTerminal notification =
+                    state.Release(kind, requestId)
+                    sink.WriteAsync notification
+
+                try
+                    try
+                        let! outcome = operation progress sink backgroundCancellation
+
+                        match outcome with
+                        | Ok completion ->
+                            do! beforeCompleted progress sink backgroundCancellation completion
+
+                            do! completedNotification progress completion |> writeTerminal
+                        | Error failure ->
+                            do!
+                                PackageRpcResponses.discoveryFailed
+                                    terminalMethod
+                                    requestId
+                                    progress.BatchCount
+                                    progress.ItemCount
+                                    failure
+                                |> writeTerminal
+                    with
+                    | error when containsFrameLimitFailure error ->
+                        do!
+                            PackageRpcResponses.discoveryFailedWithRpcError
+                                terminalMethod
+                                requestId
+                                progress.BatchCount
+                                progress.ItemCount
+                                RpcErrors.responseTooLarge
+                            |> writeTerminal
+                    | :? OperationCanceledException ->
+                        do!
+                            PackageRpcResponses.discoveryFailed
+                                terminalMethod
+                                requestId
+                                progress.BatchCount
+                                progress.ItemCount
+                                cancelledFailure
+                            |> writeTerminal
+                    | _ ->
+                        do!
+                            PackageRpcResponses.discoveryFailedWithRpcError
+                                terminalMethod
+                                requestId
+                                progress.BatchCount
+                                progress.ItemCount
+                                RpcErrors.internalError
+                            |> writeTerminal
+                finally
+                    state.Release(kind, requestId)
+            }
+
+        continueWithBackground (PackageRpcResponses.accepted requestId) work
+
+    let private startDiscovery
+        (state: PackageRpcState)
+        (kind: PackageDiscoveryKind)
+        (requestId: PackageRequestId)
+        create
+        =
+        if state.TryAdmit(kind, requestId) then
+            create () |> Ok
+        else
+            Error PackageRpcResponses.discoveryInProgress
+
+    let private noCompletionData _ _ _ _ = task { return () }
+
     let private invalidPreview =
         RpcErrors.invalidParams
             "The confirmation token does not identify a current preview of this operation kind."
-
-    let private restoreProgress (requestId: PackageRequestId) state =
-        Notification(
-            "package/restore/progress",
-            RpcValue.map
-                [ "requestId", RpcValue.String(requestId.Value.ToString "D")
-                  "state", RpcValue.String state ]
-        )
-
-    let private restoreFailure (sink: RpcNotificationSink) (requestId: PackageRequestId) =
-        PackageRpcResponses.restoreTransportFailureNotification requestId RpcErrors.responseTooLarge
-        |> sink.WriteAsync
 
     let private startSearch
         (state: PackageRpcState)
         (requestId: PackageRequestId)
         search
-        pageSize
         continuation
+        maximumFrameBytes
+        maximumItems
         =
         let pageSize =
-            PackagePageSize.create pageSize
+            PackagePageSize.create maximumItems
             |> Result.defaultWith (fun _ -> invalidOp "page size")
 
-        let work (sink: RpcNotificationSink) cancellationToken =
-            task {
-                let! outcome =
-                    PackageProducer.collect
-                        state.Ports.Search
-                        (request
-                            state
-                            requestId
-                            { Search = search
-                              PageSize = pageSize
-                              Continuation = continuation })
-                    |> fromAsync cancellationToken
+        startDiscovery state PackageDiscoveryKind.Search requestId (fun () ->
+            let operation progress sink cancellation =
+                state.Ports.Search
+                    (request
+                        state
+                        requestId
+                        { Search = search
+                          PageSize = pageSize
+                          Continuation = continuation })
+                    (producerSink
+                        maximumFrameBytes
+                        maximumItems
+                        progress
+                        (fun sequence items ->
+                            PackageRpcResponses.searchBatch requestId sequence items [])
+                        sink)
+                |> fromAsync cancellation
 
-                let projected =
-                    outcome
-                    |> Result.map (fun (items, completion) ->
-                        PackageRpcResponses.searchResult
-                            requestId
-                            { Items = items
-                              Continuation = completion.Continuation
-                              SourceFailures = completion.SourceFailures })
+            let beforeCompleted progress sink cancellation (completion: PackageSearchCompletion) =
+                match completion.SourceFailures with
+                | [] -> task { return () }
+                | failures ->
+                    writeBatches
+                        maximumFrameBytes
+                        maximumItems
+                        progress
+                        false
+                        (fun sequence values ->
+                            PackageRpcResponses.searchBatch requestId sequence [] values)
+                        failures
+                        sink
+                        cancellation
 
-                do! completed sink "package/search/completed" requestId projected
-            }
+            discoveryWork
+                state
+                PackageDiscoveryKind.Search
+                requestId
+                "package/search/completed"
+                operation
+                beforeCompleted
+                (fun progress completion ->
+                    PackageRpcResponses.searchCompleted
+                        requestId
+                        progress.BatchCount
+                        progress.ItemCount
+                        completion.Query
+                        completion.Continuation))
 
-        PackageRpcResponses.accepted requestId
-        |> fun accepted -> continueWithBackground accepted work |> Ok
-
-    let private installed
+    let private startInstalled
         (state: PackageRpcState)
         (requestId: PackageRequestId)
-        pageSize
-        offset
-        cancellationToken
+        restore
+        maximumFrameBytes
+        maximumItems
         =
-        task {
-            let request = request state requestId ()
+        startDiscovery state PackageDiscoveryKind.Installed requestId (fun () ->
+            let batchMethod, terminalMethod, producer =
+                if restore then
+                    "package/installed/restore/batch",
+                    "package/installed/restore/completed",
+                    state.Ports.RefreshInstalled
+                else
+                    "package/installed/batch", "package/installed/completed", state.Ports.Installed
 
-            let! immediate =
-                PackageProducer.collect state.Ports.Installed request
-                |> fromAsync cancellationToken
+            let operation progress sink cancellation =
+                producer
+                    (request state requestId ())
+                    (producerSink
+                        maximumFrameBytes
+                        maximumItems
+                        progress
+                        (PackageRpcResponses.installedBatch batchMethod requestId)
+                        sink)
+                |> fromAsync cancellation
 
-            match immediate with
-            | Error failure -> return Error(PackageRpcResponses.failureError failure)
-            | Ok(entries, ()) ->
-                let work (sink: RpcNotificationSink) backgroundCancellation =
-                    task {
-                        try
-                            do! sink.WriteAsync(restoreProgress requestId "inProgress")
+            discoveryWork
+                state
+                PackageDiscoveryKind.Installed
+                requestId
+                terminalMethod
+                operation
+                noCompletionData
+                (fun progress _ ->
+                    PackageRpcResponses.discoveryCompleted
+                        terminalMethod
+                        requestId
+                        progress.BatchCount
+                        progress.ItemCount
+                        []))
 
-                            let! refreshed =
-                                PackageProducer.collect state.Ports.RefreshInstalled request
-                                |> fromAsync backgroundCancellation
+    let private startUpdates
+        (state: PackageRpcState)
+        (requestId: PackageRequestId)
+        prerelease
+        maximumFrameBytes
+        maximumItems
+        =
+        startDiscovery state PackageDiscoveryKind.Updates requestId (fun () ->
+            let operation progress sink cancellation =
+                state.Ports.Updates
+                    (request state requestId prerelease)
+                    (producerSink
+                        maximumFrameBytes
+                        maximumItems
+                        progress
+                        (PackageRpcResponses.updatesBatch requestId)
+                        sink)
+                |> fromAsync cancellation
 
-                            match refreshed with
-                            | Ok(value, ()) ->
-                                do!
-                                    sink.WriteAsync(
-                                        Notification(
-                                            "package/installed/refreshed",
-                                            PackageRpcResponses.installedResult
-                                                requestId
-                                                "refreshed"
-                                                pageSize
-                                                offset
-                                                value
-                                        )
-                                    )
+            discoveryWork
+                state
+                PackageDiscoveryKind.Updates
+                requestId
+                "package/updates/completed"
+                operation
+                noCompletionData
+                (fun progress _ ->
+                    PackageRpcResponses.discoveryCompleted
+                        "package/updates/completed"
+                        requestId
+                        progress.BatchCount
+                        progress.ItemCount
+                        []))
 
-                                do!
-                                    sink.WriteAsync(
-                                        PackageRpcResponses.restoreCompletedNotification
-                                            requestId
-                                            (Ok())
-                                    )
-                            | Error failure ->
-                                do!
-                                    sink.WriteAsync(
-                                        PackageRpcResponses.restoreCompletedNotification
-                                            requestId
-                                            (Error failure)
-                                    )
-                        with :? RpcFrameLimitExceededException ->
-                            do! restoreFailure sink requestId
-                    }
+    let private startConsolidation
+        (state: PackageRpcState)
+        (requestId: PackageRequestId)
+        maximumFrameBytes
+        maximumItems
+        =
+        startDiscovery state PackageDiscoveryKind.Consolidation requestId (fun () ->
+            let operation progress sink cancellation =
+                state.Ports.Consolidation
+                    (request state requestId ())
+                    (producerSink
+                        maximumFrameBytes
+                        maximumItems
+                        progress
+                        (PackageRpcResponses.consolidationBatch requestId)
+                        sink)
+                |> fromAsync cancellation
 
-                return
-                    Ok(
-                        continueWithBackground
-                            (PackageRpcResponses.installedResult
-                                requestId
-                                "inProgress"
-                                pageSize
-                                offset
-                                entries)
-                            work
-                    )
-        }
-
-    let private inventory (requestId: PackageRequestId) methodName operation projection =
-        let work sink cancellationToken =
-            task {
-                let! outcome =
-                    operation ()
-                    |> fun (producer, request) -> PackageProducer.collect producer request
-                    |> fromAsync cancellationToken
-
-                let projected = outcome |> Result.map (fst >> projection)
-                do! completed sink methodName requestId projected
-            }
-
-        PackageRpcResponses.accepted requestId
-        |> fun accepted -> continueWithBackground accepted work |> Ok
+            discoveryWork
+                state
+                PackageDiscoveryKind.Consolidation
+                requestId
+                "package/consolidation/completed"
+                operation
+                noCompletionData
+                (fun progress _ ->
+                    PackageRpcResponses.discoveryCompleted
+                        "package/consolidation/completed"
+                        requestId
+                        progress.BatchCount
+                        progress.ItemCount
+                        []))
 
     let private preview
         (state: PackageRpcState)
@@ -385,6 +598,8 @@ module internal PackageRpcDispatch =
 
     let dispatch
         (state: PackageRpcState)
+        maximumFrameBytes
+        maximumItems
         (rpcRequest: PackageRpcRequest)
         (cancellationToken: CancellationToken)
         =
@@ -417,8 +632,9 @@ module internal PackageRpcDispatch =
                     |> mapFailure
                     |> Result.map PackageRpcResponses.sourceMappingResult
                     |> Result.bind result
-            | PackageRpcRequest.Search(requestId, search, pageSize, continuation) ->
-                return startSearch state requestId search pageSize continuation
+            | PackageRpcRequest.Search(requestId, search, continuation) ->
+                return
+                    startSearch state requestId search continuation maximumFrameBytes maximumItems
             | PackageRpcRequest.Details(requestId, package, version, source) ->
                 let! outcome =
                     state.Ports.Details(
@@ -436,22 +652,14 @@ module internal PackageRpcDispatch =
                     |> mapFailure
                     |> Result.map (PackageRpcResponses.detailsResult state.ReadmeEnabled)
                     |> Result.bind result
-            | PackageRpcRequest.Installed(requestId, pageSize, offset) ->
-                return! installed state requestId pageSize offset cancellationToken
-            | PackageRpcRequest.Updates(requestId, prerelease, pageSize, offset) ->
-                return
-                    inventory
-                        requestId
-                        "package/updates/completed"
-                        (fun () -> state.Ports.Updates, request state requestId prerelease)
-                        (PackageRpcResponses.updatesResult pageSize offset)
-            | PackageRpcRequest.Consolidation(requestId, pageSize, offset) ->
-                return
-                    inventory
-                        requestId
-                        "package/consolidation/completed"
-                        (fun () -> state.Ports.Consolidation, request state requestId ())
-                        (PackageRpcResponses.consolidationResult pageSize offset)
+            | PackageRpcRequest.Installed requestId ->
+                return startInstalled state requestId false maximumFrameBytes maximumItems
+            | PackageRpcRequest.RestoreInstalled requestId ->
+                return startInstalled state requestId true maximumFrameBytes maximumItems
+            | PackageRpcRequest.Updates(requestId, prerelease) ->
+                return startUpdates state requestId prerelease maximumFrameBytes maximumItems
+            | PackageRpcRequest.Consolidation requestId ->
+                return startConsolidation state requestId maximumFrameBytes maximumItems
             | PackageRpcRequest.Preview(requestId, operation, targets, source) ->
                 return! preview state requestId operation targets source cancellationToken
             | PackageRpcRequest.PreviewBatch(requestId, updates, source) ->
