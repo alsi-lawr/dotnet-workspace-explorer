@@ -341,6 +341,136 @@ type PackageProducerTests() =
             Directory.Delete(directory, true)
 
     [<Fact>]
+    member _.``updates cancellation awaits nested details cleanup without emitting another batch``
+        ()
+        =
+        let directory =
+            Path.Combine(Path.GetTempPath(), $"dotnet-we-updates-cancellation-{Guid.NewGuid():N}")
+
+        Directory.CreateDirectory directory |> ignore
+
+        try
+            let project = Path.Combine(directory, "Example.fsproj")
+            let first = PackageProducerScenario.installed project "First.Package" "1.0.0"
+            let second = PackageProducerScenario.installed project "Second.Package" "1.0.0"
+
+            let graphs =
+                [ PackageProducerScenario.graph
+                      project
+                      InstalledPackageGraphState.Current
+                      [ first; second ] ]
+
+            let sourceId = PackageProducerScenario.source "feed"
+
+            let source =
+                { Id = sourceId
+                  Name = "feed"
+                  Location = Uri "https://example.test/v3/index.json"
+                  Availability = PackageSourceAvailability.Available }
+
+            let requests = ConcurrentDictionary<PackageRequestId, CancellationTokenSource>()
+
+            let request =
+                PackageProducerScenario.request directory PrereleaseSelection.StableOnly
+
+            let firstBatch =
+                TaskCompletionSource TaskCreationOptions.RunContinuationsAsynchronously
+
+            let secondDetailsStarted =
+                TaskCompletionSource TaskCreationOptions.RunContinuationsAsynchronously
+
+            let cancellationObserved =
+                TaskCompletionSource TaskCreationOptions.RunContinuationsAsynchronously
+
+            let releaseCleanup =
+                TaskCompletionSource TaskCreationOptions.RunContinuationsAsynchronously
+
+            let cleanupFinished =
+                TaskCompletionSource TaskCreationOptions.RunContinuationsAsynchronously
+
+            let observed = ResizeArray<string>()
+            let installed _ = async.Return(Ok graphs)
+            let configured _ = async.Return(Ok [ source ])
+
+            let mapping _ =
+                async.Return(Ok(PackageSourceMappingPolicy.Allowed [ sourceId ]))
+
+            let details (detailsRequest: PackageRequest<PackageDetailsRequest>) =
+                async {
+                    let identity = detailsRequest.Value.Package.Value
+
+                    if identity = "First.Package" then
+                        return
+                            Ok(
+                                PackageProducerScenario.details
+                                    sourceId
+                                    identity
+                                    [ PackageProducerScenario.version "2.0.0" ]
+                            )
+                    else
+                        let! cancellation = Async.CancellationToken
+                        secondDetailsStarted.TrySetResult() |> ignore
+
+                        try
+                            do! Task.Delay(Timeout.Infinite, cancellation) |> Async.AwaitTask
+
+                            return
+                                Ok(
+                                    PackageProducerScenario.details
+                                        sourceId
+                                        identity
+                                        [ PackageProducerScenario.version "2.0.0" ]
+                                )
+                        finally
+                            if cancellation.IsCancellationRequested then
+                                cancellationObserved.TrySetResult() |> ignore
+                                releaseCleanup.Task.GetAwaiter().GetResult()
+                                cleanupFinished.TrySetResult() |> ignore
+                }
+
+            let sink _ batch =
+                async {
+                    observed.AddRange(
+                        batch
+                        |> NonEmptyList.toList
+                        |> List.map (fun update -> update.Installed.Identity.Value)
+                    )
+
+                    firstBatch.TrySetResult() |> ignore
+                }
+
+            let running =
+                PackageInventories.updates
+                    requests
+                    installed
+                    configured
+                    mapping
+                    details
+                    request
+                    sink
+                |> Async.StartAsTask
+
+            firstBatch.Task.Wait(TimeSpan.FromSeconds 5.0) |> should equal true
+            secondDetailsStarted.Task.Wait(TimeSpan.FromSeconds 5.0) |> should equal true
+            requests[request.Id].Cancel()
+            cancellationObserved.Task.Wait(TimeSpan.FromSeconds 5.0) |> should equal true
+
+            observed |> Seq.toList |> should equal [ "First.Package" ]
+            running.IsCompleted |> should equal false
+            requests.ContainsKey request.Id |> should equal true
+            releaseCleanup.TrySetResult() |> ignore
+
+            match running.GetAwaiter().GetResult() with
+            | Ok() -> failwith "The cancelled updates producer unexpectedly completed."
+            | Error error -> PackageFailure.kind error |> should equal PackageFailureKind.Cancelled
+
+            cleanupFinished.Task.IsCompleted |> should equal true
+            requests.ContainsKey request.Id |> should equal false
+            observed |> Seq.toList |> should equal [ "First.Package" ]
+        finally
+            Directory.Delete(directory, true)
+
+    [<Fact>]
     member _.``consolidation emits completed identity groups in deterministic local order``() =
         let directory =
             Path.Combine(Path.GetTempPath(), $"dotnet-we-consolidation-producer-{Guid.NewGuid():N}")

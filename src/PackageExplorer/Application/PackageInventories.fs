@@ -67,13 +67,14 @@ module internal PackageInventories =
         (request: PackageRequest<unit>)
         (sources: PackageSource list)
         (package: PackageId)
+        (cancellation: CancellationToken)
         =
         let rec trySources =
             function
             | [] -> async.Return None
             | source: PackageSource :: remaining ->
                 async {
-                    let! result =
+                    let operation =
                         details
                             { Id = PackageRequestId.newId ()
                               Target = request.Target
@@ -81,6 +82,12 @@ module internal PackageInventories =
                                 { Package = package
                                   Version = PackageVersionSelection.Latest
                                   Source = source.Id } }
+
+                    let! result =
+                        Async.StartAsTask(operation, cancellationToken = cancellation)
+                        |> Async.AwaitTask
+
+                    cancellation.ThrowIfCancellationRequested()
 
                     match result with
                     | Ok value -> return Some value
@@ -107,10 +114,14 @@ module internal PackageInventories =
 
             let! installedResult = installed unitRequest
 
+            cancellation.ThrowIfCancellationRequested()
+
             match installedResult with
             | Error failure -> return Error failure
             | Ok graphs ->
                 let! sourceResult = configuredSources unitRequest
+
+                cancellation.ThrowIfCancellationRequested()
 
                 match sourceResult with
                 | Error failure -> return Error failure
@@ -139,6 +150,8 @@ module internal PackageInventories =
                                                           CandidateSource = None
                                                           RestoredTransitives = Some [] } }
 
+                                            cancellation.ThrowIfCancellationRequested()
+
                                             let allowed =
                                                 match mapping with
                                                 | Ok policy ->
@@ -160,6 +173,9 @@ module internal PackageInventories =
                                                         unitRequest
                                                         selected
                                                         package.Identity
+                                                        cancellation
+
+                                            cancellation.ThrowIfCancellationRequested()
 
                                             return value, metadataByPackage |> Map.add key value
                                         }
@@ -171,6 +187,8 @@ module internal PackageInventories =
                                     |> Option.bind NonEmptyList.tryCreate
                                 with
                                 | Some available ->
+                                    cancellation.ThrowIfCancellationRequested()
+
                                     do!
                                         sink
                                             cancellation
