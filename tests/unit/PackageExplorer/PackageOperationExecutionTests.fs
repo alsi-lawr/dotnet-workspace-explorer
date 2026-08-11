@@ -174,7 +174,7 @@ module private PackageExecutionScenario =
         | Some index -> arguments[index + 1]
         | None -> arguments[1]
 
-    let successfulRefresh (_: PackageRequest<unit>) = async { return Ok [] }
+    let successfulRefresh (_: PackageRequest<unit>) _ = async { return Ok() }
 
     let requireFailure =
         function
@@ -214,10 +214,10 @@ type PackageOperationExecutionTests() =
                     return Ok()
                 }
 
-            let refresh request =
+            let refresh request sink =
                 async {
                     refreshes <- refreshes + 1
-                    return! PackageExecutionScenario.successfulRefresh request
+                    return! PackageExecutionScenario.successfulRefresh request sink
                 }
 
             let progress = ResizeArray<PackageOperationStage>()
@@ -550,10 +550,10 @@ type PackageOperationExecutionTests() =
                     return Ok()
                 }
 
-            let refresh _ =
+            let refresh _ _ =
                 async {
                     refreshes <- refreshes + 1
-                    return Ok []
+                    return Ok()
                 }
 
             let failure =
@@ -714,7 +714,7 @@ type PackageOperationExecutionTests() =
                     PackageFailureRetry.Transient
                 |> Result.defaultWith (failwithf "%A")
 
-            let refresh _ = async { return Error refreshFailure }
+            let refresh _ _ = async { return Error refreshFailure }
 
             let failure =
                 PackageExecutionScenario.ports "revision-1" [ project ] runner refresh
@@ -1068,10 +1068,10 @@ type PackageOperationExecutionTests() =
                         return Error DotnetPackageCommandFailure.Cancelled
                 }
 
-            let refresh _ =
+            let refresh _ _ =
                 async {
                     refreshes <- refreshes + 1
-                    return Ok []
+                    return Ok()
                 }
 
             let ports = PackageExecutionScenario.ports "revision-1" [ project ] runner refresh

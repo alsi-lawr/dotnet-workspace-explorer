@@ -7,7 +7,6 @@ open System
 open System.Diagnostics
 open System.IO
 open System.Text.Json
-open System.Threading
 open Dotnet.WorkspaceExplorer.PackageExplorer
 open Dotnet.WorkspaceExplorer.Packages
 open Dotnet.WorkspaceExplorer.ProjectEvaluation
@@ -147,21 +146,23 @@ module private InstalledPortScenario =
         let catalog =
             NuGetPackageCatalog.createWith evaluatorFactory DotnetInstalledRestore.run
 
-        catalog.Installed(request target) |> Async.RunSynchronously
+        PackageProducer.collect catalog.Installed (request target)
+        |> Async.RunSynchronously
+        |> Result.map fst
 
-    let requireGraphs =
+    let requireEntries =
         function
         | Error error ->
             failwithf "%s: %s" (PackageFailure.code error) (PackageFailure.message error)
         | Ok graphs -> graphs
 
-    let assertImmediateGraph graphs =
+    let assertImmediateEntries graphs =
         graphs
-        |> List.map _.State
+        |> List.map _.GraphState
         |> List.distinct
         |> should equal [ InstalledPackageGraphState.UnverifiablyFreshRestoreGraph ]
 
-        graphs |> List.collect _.Packages |> should not' (be Empty)
+        graphs |> List.choose _.Package |> should not' (be Empty)
 
     let copyScriptedDotnet directory =
         let sourceDirectory = Path.GetDirectoryName scripted
@@ -231,8 +232,8 @@ type InstalledPackagePortTests() =
             workspace.Project
             |> InstalledPortScenario.fileTarget
             |> InstalledPortScenario.installed
-            |> InstalledPortScenario.requireGraphs
-            |> InstalledPortScenario.assertImmediateGraph
+            |> InstalledPortScenario.requireEntries
+            |> InstalledPortScenario.assertImmediateEntries
         finally
             InstalledPortScenario.delete workspace
 
@@ -246,8 +247,8 @@ type InstalledPackagePortTests() =
             workspace.Directory
             |> InstalledPortScenario.directoryTarget
             |> InstalledPortScenario.installed
-            |> InstalledPortScenario.requireGraphs
-            |> InstalledPortScenario.assertImmediateGraph
+            |> InstalledPortScenario.requireEntries
+            |> InstalledPortScenario.assertImmediateEntries
         finally
             InstalledPortScenario.delete workspace
 
@@ -261,8 +262,8 @@ type InstalledPackagePortTests() =
             workspace.Solution
             |> InstalledPortScenario.fileTarget
             |> InstalledPortScenario.installed
-            |> InstalledPortScenario.requireGraphs
-            |> InstalledPortScenario.assertImmediateGraph
+            |> InstalledPortScenario.requireEntries
+            |> InstalledPortScenario.assertImmediateEntries
         finally
             InstalledPortScenario.delete workspace
 
@@ -295,20 +296,21 @@ type InstalledPackagePortTests() =
                     DotnetInstalledRestore.run
 
             let result =
-                catalog.RefreshInstalled(
-                    InstalledPortScenario.request (
+                PackageProducer.collect
+                    catalog.RefreshInstalled
+                    (InstalledPortScenario.request (
                         InstalledPortScenario.fileTarget workspace.Project
-                    )
-                )
+                    ))
                 |> Async.RunSynchronously
-                |> InstalledPortScenario.requireGraphs
+                |> Result.map fst
+                |> InstalledPortScenario.requireEntries
 
             result
-            |> List.map _.State
+            |> List.map _.GraphState
             |> List.distinct
             |> should equal [ InstalledPackageGraphState.Current ]
 
-            result |> List.collect _.Packages |> should not' (be Empty)
+            result |> List.choose _.Package |> should not' (be Empty)
 
             InstalledPortScenario.capturedArguments capture
             |> should equal [ [ "restore"; workspace.Project; "--nologo" ] ]
@@ -340,7 +342,9 @@ type InstalledPackagePortTests() =
             let target = InstalledPortScenario.fileTarget workspace.Project
 
             match
-                catalog.RefreshInstalled(InstalledPortScenario.request target)
+                PackageProducer.collect
+                    catalog.RefreshInstalled
+                    (InstalledPortScenario.request target)
                 |> Async.RunSynchronously
             with
             | Ok _ -> failwith "The scripted restore failure unexpectedly succeeded."
@@ -349,10 +353,11 @@ type InstalledPackagePortTests() =
 
                 PackageFailure.code error |> should equal "DWE-PACKAGE-EXTERNAL-TOOL-FAILED"
 
-            catalog.Installed(InstalledPortScenario.request target)
+            PackageProducer.collect catalog.Installed (InstalledPortScenario.request target)
             |> Async.RunSynchronously
-            |> InstalledPortScenario.requireGraphs
-            |> InstalledPortScenario.assertImmediateGraph
+            |> Result.map fst
+            |> InstalledPortScenario.requireEntries
+            |> InstalledPortScenario.assertImmediateEntries
         finally
             InstalledPortScenario.delete workspace
 
@@ -383,8 +388,11 @@ type InstalledPackagePortTests() =
             let request =
                 InstalledPortScenario.request (InstalledPortScenario.fileTarget workspace.Project)
 
-            let refresh = catalog.RefreshInstalled request |> Async.StartAsTask
+            let refresh =
+                PackageProducer.collect catalog.RefreshInstalled request |> Async.StartAsTask
+
             InstalledPortScenario.waitForFile started
+            let restoreProcess = Int32.Parse(File.ReadAllText started)
 
             catalog.Cancel(PackageCancellation.Request request.Id) |> Async.RunSynchronously
 
@@ -393,6 +401,15 @@ type InstalledPackagePortTests() =
             | Error error ->
                 PackageFailure.kind error |> should equal PackageFailureKind.Cancelled
                 PackageFailure.code error |> should equal "DWE-PACKAGE-CANCELLED"
+
+            let restoreStillRunning =
+                try
+                    use restoreChild = Process.GetProcessById restoreProcess
+                    not restoreChild.HasExited
+                with :? ArgumentException ->
+                    false
+
+            restoreStillRunning |> should equal false
         finally
             InstalledPortScenario.delete workspace
 

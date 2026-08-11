@@ -222,7 +222,7 @@ module private InstalledPackageGraphScenario =
           SourceMappingEnabled = mapping
           RestoreVerified = false }
 
-    let targetFramework graph =
+    let targetFramework (graph: InstalledPackageGraph) =
         match graph.Target with
         | PackageTargetScope.Framework(_, framework) -> framework.Value, None
         | PackageTargetScope.Runtime(_, framework, runtime) -> framework.Value, Some runtime.Value
@@ -318,7 +318,7 @@ type InstalledPackageGraphTests() =
             | state -> failwithf "Unexpected net9 central package state: %A" state
 
             graphs[2].Packages
-            |> List.map (_.Identity.Value)
+            |> List.map _.Identity.Value
             |> should equal [ "Runtime.Package" ]
         finally
             Directory.Delete(directory, true)

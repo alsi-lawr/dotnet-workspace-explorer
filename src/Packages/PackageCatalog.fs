@@ -170,6 +170,11 @@ type InstalledPackageGraph =
       State: InstalledPackageGraphState
       Packages: InstalledPackage list }
 
+type InstalledPackageEntry =
+    { Target: PackageTargetScope
+      GraphState: InstalledPackageGraphState
+      Package: InstalledPackage option }
+
 type PackageUpdate =
     { Installed: InstalledPackage
       Available: NonEmptyList<NuGetVersion> }

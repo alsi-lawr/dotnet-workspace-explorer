@@ -34,7 +34,7 @@ module internal NuGetInstalledPackages =
                     if isProject file then
                         yield Path.GetFullPath file
 
-                for child in Directory.EnumerateDirectories(directory) do
+                for child in Directory.EnumerateDirectories directory do
                     let name = Path.GetFileName child
 
                     if
@@ -73,10 +73,10 @@ module internal NuGetInstalledPackages =
             | PackageWorkspaceTargetKind.Solution
             | PackageWorkspaceTargetKind.SolutionXml
             | PackageWorkspaceTargetKind.SolutionFilter ->
-                let! opened = SolutionWorkspaceReader.OpenAsync(path) |> Async.AwaitTask
+                let! opened = SolutionWorkspaceReader.OpenAsync path |> Async.AwaitTask
 
                 match opened with
-                | WorkspaceOutcome.Success workspace ->
+                | Success workspace ->
                     return
                         workspace.Contents.Projects
                         |> Seq.filter (fun project -> not project.IsFilteredOut)
@@ -87,7 +87,7 @@ module internal NuGetInstalledPackages =
                             StringComparer.Ordinal.Compare(left, right))
                         |> Seq.toList
                         |> Ok
-                | WorkspaceOutcome.Failure error ->
+                | Failure error ->
                     return
                         Error(
                             failure
@@ -143,7 +143,7 @@ module internal NuGetInstalledPackages =
                 |> Async.AwaitTask
 
             match evaluated with
-            | WorkspaceOutcome.Failure error ->
+            | Failure error ->
                 return
                     Error(
                         failure
@@ -151,7 +151,7 @@ module internal NuGetInstalledPackages =
                             error.Diagnostic.Message
                             PackageFailureRetry.Transient
                     )
-            | WorkspaceOutcome.Success snapshot ->
+            | Success snapshot ->
                 match PackageWorkspaceTarget.file projectPath with
                 | Error _ ->
                     return
@@ -243,27 +243,66 @@ module internal NuGetInstalledPackages =
     let read (request: PackageRequest<unit>) =
         readWithFactory (fun () -> new ProjectEvaluator()) request
 
-    let refreshWith
-        (evaluatorFactory: unit -> ProjectEvaluator)
-        (runRestore: RunInstalledRestore)
+    let private duplicateRequestFailure () =
+        failure
+            PackageFailureKind.InvalidRequest
+            "The package request identifier is already active."
+            PackageFailureRetry.Never
+
+    let private cancelledFailure () =
+        failure
+            PackageFailureKind.Cancelled
+            "The package work was cancelled."
+            PackageFailureRetry.Never
+
+    let private emitGraph
+        (cancellation: CancellationToken)
+        (sink: PackageBatchSink<InstalledPackageEntry>)
+        (graph: InstalledPackageGraph)
+        =
+        let entries =
+            match graph.Packages with
+            | [] ->
+                [ { Target = graph.Target
+                    GraphState = graph.State
+                    Package = None } ]
+            | packages ->
+                packages
+                |> List.map (fun package ->
+                    { Target = graph.Target
+                      GraphState = graph.State
+                      Package = Some package })
+
+        let rec emit =
+            function
+            | [] -> async.Return()
+            | entry :: remaining ->
+                async {
+                    cancellation.ThrowIfCancellationRequested()
+                    do! sink cancellation (NonEmptyList.singleton entry)
+                    cancellation.ThrowIfCancellationRequested()
+                    return! emit remaining
+                }
+
+        emit entries
+
+    let internal streamWithFunctions
+        resolveProjects
+        (restore: RunInstalledRestore option)
+        evaluate
         (requests: ConcurrentDictionary<PackageRequestId, CancellationTokenSource>)
         (request: PackageRequest<unit>)
+        sink
         =
-        async {
-            let! ambient = Async.CancellationToken
-            use cancellation = CancellationTokenSource.CreateLinkedTokenSource ambient
-
-            if not (requests.TryAdd(request.Id, cancellation)) then
-                return
-                    Error(
-                        failure
-                            PackageFailureKind.InvalidRequest
-                            "The package request identifier is already active."
-                            PackageFailureRetry.Never
-                    )
-            else
-                try
-                    let! projects = projectPaths request.Target
+        PackageProducer.cancellable
+            requests
+            request.Id
+            (duplicateRequestFailure ())
+            (cancelledFailure ())
+            (fun cancellation ->
+                async {
+                    cancellation.ThrowIfCancellationRequested()
+                    let! projects = resolveProjects request.Target
 
                     match projects with
                     | Error error -> return Error error
@@ -286,33 +325,74 @@ module internal NuGetInstalledPackages =
                                 |> Option.ofObj
                                 |> Option.defaultValue (Directory.GetCurrentDirectory())
 
-                        let rec restoreAll =
+                        let rec produce =
                             function
                             | [] -> async.Return(Ok())
                             | project :: remaining ->
                                 async {
+                                    cancellation.ThrowIfCancellationRequested()
+
                                     let! restored =
-                                        runRestore workingDirectory project cancellation.Token
+                                        match restore with
+                                        | None -> async.Return(Ok())
+                                        | Some run -> run workingDirectory project cancellation
 
                                     match restored with
                                     | Error error -> return Error error
-                                    | Ok() -> return! restoreAll remaining
+                                    | Ok() ->
+                                        cancellation.ThrowIfCancellationRequested()
+
+                                        let! evaluated =
+                                            evaluate workspacePath project restore.IsSome
+
+                                        match evaluated with
+                                        | Error error -> return Error error
+                                        | Ok graphs ->
+                                            for graph in graphs do
+                                                do! emitGraph cancellation sink graph
+
+                                            return! produce remaining
                                 }
 
-                        let! restored = restoreAll resolved
+                        return! produce resolved
+                })
 
-                        match restored with
-                        | Error error -> return Error error
-                        | Ok() ->
-                            let evaluator = evaluatorFactory ()
+    let private streamWith
+        (evaluatorFactory: unit -> ProjectEvaluator)
+        (restore: RunInstalledRestore option)
+        (requests: ConcurrentDictionary<PackageRequestId, CancellationTokenSource>)
+        (request: PackageRequest<unit>)
+        sink
+        =
+        async {
+            let evaluator = lazy (evaluatorFactory ())
 
-                            try
-                                let! evaluated =
-                                    readEvaluationResolved evaluator true request resolved
+            let evaluate workspacePath project restoreVerified =
+                async {
+                    let! result =
+                        evaluateProject evaluator.Value workspacePath project restoreVerified
 
-                                return evaluated |> Result.map (List.collect _.Graphs)
-                            finally
-                                evaluator.DisposeAsync().AsTask().GetAwaiter().GetResult()
-                finally
-                    requests.TryRemove request.Id |> ignore
+                    return result |> Result.map _.Graphs
+                }
+
+            try
+                return! streamWithFunctions projectPaths restore evaluate requests request sink
+            finally
+                if evaluator.IsValueCreated then
+                    evaluator.Value.DisposeAsync().AsTask().GetAwaiter().GetResult()
         }
+
+    let readStreamWithFactory
+        (evaluatorFactory: unit -> ProjectEvaluator)
+        (requests: ConcurrentDictionary<PackageRequestId, CancellationTokenSource>)
+        =
+        streamWith evaluatorFactory None requests
+
+    let refreshWith
+        (evaluatorFactory: unit -> ProjectEvaluator)
+        (runRestore: RunInstalledRestore)
+        (requests: ConcurrentDictionary<PackageRequestId, CancellationTokenSource>)
+        (request: PackageRequest<unit>)
+        sink
+        =
+        streamWith evaluatorFactory (Some runRestore) requests request sink

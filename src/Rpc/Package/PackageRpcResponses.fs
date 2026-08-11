@@ -146,15 +146,8 @@ module PackageRpcResponses =
         restoreState
         pageSize
         offset
-        (graphs: InstalledPackageGraph list)
+        (entries: InstalledPackageEntry list)
         =
-        let entries =
-            graphs
-            |> List.collect (fun graph ->
-                match graph.Packages with
-                | [] -> [ graph, None ]
-                | packages -> packages |> List.map (fun package -> graph, Some package))
-
         let entries, continuation = page pageSize offset entries
 
         map (
@@ -162,11 +155,11 @@ module PackageRpcResponses =
               "restore", text restoreState
               "items",
               entries
-              |> array (fun (graph, package) ->
+              |> array (fun entry ->
                   map (
-                      [ "target", target graph.Target
-                        "graphState", text (graphState graph.State) ]
-                      @ optional "package" installed package
+                      [ "target", target entry.Target
+                        "graphState", text (graphState entry.GraphState) ]
+                      @ optional "package" installed entry.Package
                   )) ]
             @ optional "continuation" text continuation
         )

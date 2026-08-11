@@ -732,7 +732,9 @@ module internal PackageOperationExecution =
 
                                             let refresh =
                                                 Async.StartAsTask(
-                                                    ports.RefreshInstalled refreshRequest,
+                                                    ports.RefreshInstalled
+                                                        refreshRequest
+                                                        (fun _ _ -> async.Return()),
                                                     cancellationToken = cancellation.Token
                                                 )
 

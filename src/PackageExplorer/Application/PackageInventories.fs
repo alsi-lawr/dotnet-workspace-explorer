@@ -1,6 +1,5 @@
 namespace Dotnet.WorkspaceExplorer.PackageExplorer
 
-open System
 open System.Collections.Concurrent
 open System.Threading
 open Dotnet.WorkspaceExplorer.Packages
@@ -12,43 +11,17 @@ module internal PackageInventories =
     let private failure kind message retry =
         PackageFailure.create kind message retry |> Result.defaultWith (failwithf "%A")
 
-    let private cancellable
-        (requests: ConcurrentDictionary<PackageRequestId, CancellationTokenSource>)
-        requestId
-        operation
-        =
-        async {
-            let! ambient = Async.CancellationToken
-            use cancellation = CancellationTokenSource.CreateLinkedTokenSource ambient
+    let private duplicateRequestFailure () =
+        failure
+            PackageFailureKind.InvalidRequest
+            "The package request identifier is already active."
+            PackageFailureRetry.Never
 
-            if not (requests.TryAdd(requestId, cancellation)) then
-                return
-                    Error(
-                        failure
-                            PackageFailureKind.InvalidRequest
-                            "The package request identifier is already active."
-                            PackageFailureRetry.Never
-                    )
-            else
-                try
-                    try
-                        return!
-                            Async.StartAsTask(
-                                operation cancellation.Token,
-                                cancellationToken = cancellation.Token
-                            )
-                            |> Async.AwaitTask
-                    with :? OperationCanceledException when cancellation.IsCancellationRequested ->
-                        return
-                            Error(
-                                failure
-                                    PackageFailureKind.Cancelled
-                                    "The package work was cancelled."
-                                    PackageFailureRetry.Never
-                            )
-                finally
-                    requests.TryRemove requestId |> ignore
-        }
+    let private cancelledFailure () =
+        failure
+            PackageFailureKind.Cancelled
+            "The package work was cancelled."
+            PackageFailureRetry.Never
 
     let private resolvedVersion (installed: InstalledPackage) =
         match installed.State with
@@ -117,11 +90,14 @@ module internal PackageInventories =
         trySources sources
 
     let private updatesCore
-        (installed: ReadInstalledPackages)
+        (installed:
+            PackageRequest<unit> -> Async<Result<InstalledPackageGraph list, PackageFailure>>)
         (configuredSources: ConfiguredPackageSources)
         (sourceMapping: ReadPackageSourceMapping)
         (details: ReadPackageDetails)
         (request: PackageRequest<PrereleaseSelection>)
+        (cancellation: CancellationToken)
+        (sink: PackageBatchSink<PackageUpdate>)
         =
         async {
             let unitRequest =
@@ -141,140 +117,183 @@ module internal PackageInventories =
                 | Ok sources ->
                     let sources = availableSources sources
 
-                    let distinctPackages =
-                        directPackages graphs
-                        |> List.map (fun (installed, _) -> installed.Identity)
-                        |> List.distinctBy (fun package -> package.Value.ToUpperInvariant())
-
-                    let! metadata =
-                        distinctPackages
-                        |> List.map (fun (package: PackageId) ->
+                    let rec produce metadataByPackage =
+                        function
+                        | [] -> async.Return(Ok())
+                        | (package: InstalledPackage, current) :: remaining ->
                             async {
-                                let! mapping =
-                                    sourceMapping
-                                        { Id = request.Id
-                                          Target = request.Target
-                                          Value =
-                                            { Package = package
-                                              CandidateSource = None
-                                              RestoredTransitives = Some [] } }
+                                cancellation.ThrowIfCancellationRequested()
+                                let key = package.Identity.Value.ToUpperInvariant()
 
-                                let allowed =
-                                    match mapping with
-                                    | Ok policy ->
-                                        match policy with
-                                        | Mapping.Allowed values -> values |> Set.ofList
-                                        | Mapping.InsufficientRestoredTransitiveEvidence values ->
-                                            values |> Set.ofList
-                                        | Mapping.KnownConflict(_, values) -> values |> Set.ofList
-                                    | Error _ -> Set.empty
+                                let! metadata, updatedMetadata =
+                                    match metadataByPackage |> Map.tryFind key with
+                                    | Some value -> async.Return(value, metadataByPackage)
+                                    | None ->
+                                        async {
+                                            let! mapping =
+                                                sourceMapping
+                                                    { Id = request.Id
+                                                      Target = request.Target
+                                                      Value =
+                                                        { Package = package.Identity
+                                                          CandidateSource = None
+                                                          RestoredTransitives = Some [] } }
 
-                                let! value =
-                                    sources
-                                    |> List.filter (fun source -> allowed.Contains source.Id)
-                                    |> fun selected ->
-                                        detailsForPackage details unitRequest selected package
+                                            let allowed =
+                                                match mapping with
+                                                | Ok policy ->
+                                                    match policy with
+                                                    | Mapping.Allowed values -> values |> Set.ofList
+                                                    | Mapping.InsufficientRestoredTransitiveEvidence values ->
+                                                        values |> Set.ofList
+                                                    | Mapping.KnownConflict(_, values) ->
+                                                        values |> Set.ofList
+                                                | Error _ -> Set.empty
 
-                                return package.Value.ToUpperInvariant(), value
-                            })
-                        |> Async.Sequential
+                                            let! value =
+                                                sources
+                                                |> List.filter (fun source ->
+                                                    allowed.Contains source.Id)
+                                                |> fun selected ->
+                                                    detailsForPackage
+                                                        details
+                                                        unitRequest
+                                                        selected
+                                                        package.Identity
 
-                    let metadataByPackage = metadata |> Map.ofArray
+                                            return value, metadataByPackage |> Map.add key value
+                                        }
 
-                    return
-                        directPackages graphs
-                        |> List.choose (fun (package, current) ->
-                            metadataByPackage
-                            |> Map.tryFind (package.Identity.Value.ToUpperInvariant())
-                            |> Option.flatten
-                            |> Option.map (fun (value: PackageDetails) ->
-                                newerVersions request.Value current value.Versions)
-                            |> Option.bind NonEmptyList.tryCreate
-                            |> Option.map (fun available ->
-                                { Installed = package
-                                  Available = available }))
-                        |> Ok
+                                match
+                                    metadata
+                                    |> Option.map (fun value ->
+                                        newerVersions request.Value current value.Versions)
+                                    |> Option.bind NonEmptyList.tryCreate
+                                with
+                                | Some available ->
+                                    do!
+                                        sink
+                                            cancellation
+                                            (NonEmptyList.singleton
+                                                { Installed = package
+                                                  Available = available })
+
+                                    cancellation.ThrowIfCancellationRequested()
+                                | None -> ()
+
+                                return! produce updatedMetadata remaining
+                            }
+
+                    return! produce Map.empty (directPackages graphs)
         }
 
     let updates
         (requests: ConcurrentDictionary<PackageRequestId, CancellationTokenSource>)
-        (installed: ReadInstalledPackages)
+        (installed:
+            PackageRequest<unit> -> Async<Result<InstalledPackageGraph list, PackageFailure>>)
         (configuredSources: ConfiguredPackageSources)
         (sourceMapping: ReadPackageSourceMapping)
         (details: ReadPackageDetails)
         (request: PackageRequest<PrereleaseSelection>)
+        sink
         =
-        cancellable requests request.Id (fun cancellation ->
-            async {
-                cancellation.ThrowIfCancellationRequested()
+        PackageProducer.cancellable
+            requests
+            request.Id
+            (duplicateRequestFailure ())
+            (cancelledFailure ())
+            (fun cancellation ->
+                updatesCore
+                    installed
+                    configuredSources
+                    sourceMapping
+                    details
+                    request
+                    cancellation
+                    sink)
 
-                let! result = updatesCore installed configuredSources sourceMapping details request
+    let private consolidationForEntries entries =
+        let byVersion =
+            entries
+            |> List.groupBy (fun (_, version: NuGetVersion) -> version.Value)
+            |> List.sortBy (fst >> NuGet.Versioning.NuGetVersion.Parse)
 
-                cancellation.ThrowIfCancellationRequested()
-                return result
-            })
+        if byVersion.Length < 2 then
+            None
+        else
+            let currentVersions =
+                byVersion
+                |> List.choose (fun (version, packages) ->
+                    match
+                        NuGetVersion.create version,
+                        packages
+                        |> List.map (fun (package: InstalledPackage, _) -> package.Target)
+                        |> NonEmptyList.tryCreate
+                    with
+                    | Ok parsed, Some targets -> Some(parsed, targets)
+                    | _ -> None)
+
+            match
+                currentVersions |> NonEmptyList.tryCreate,
+                currentVersions |> List.map fst |> List.rev |> NonEmptyList.tryCreate
+            with
+            | Some versions, Some candidates ->
+                let package = entries.Head |> fst
+
+                Some
+                    { Identity = package.Identity
+                      CurrentVersions = versions
+                      CandidateVersions = candidates }
+            | _ -> None
 
     let private consolidationCore
-        (installed: ReadInstalledPackages)
+        (installed:
+            PackageRequest<unit> -> Async<Result<InstalledPackageGraph list, PackageFailure>>)
         (request: PackageRequest<unit>)
+        (cancellation: CancellationToken)
+        (sink: PackageBatchSink<PackageConsolidation>)
         =
         async {
             let! result = installed request
 
-            return
-                result
-                |> Result.map (fun graphs ->
+            match result with
+            | Error failure -> return Error failure
+            | Ok graphs ->
+                let groups =
                     directPackages graphs
                     |> List.groupBy (fun (package: InstalledPackage, _) ->
                         package.Identity.Value.ToUpperInvariant())
-                    |> List.choose (fun (_, entries) ->
-                        let byVersion =
-                            entries
-                            |> List.groupBy (fun (_, version: NuGetVersion) -> version.Value)
-                            |> List.sortBy (fst >> NuGet.Versioning.NuGetVersion.Parse)
 
-                        if byVersion.Length < 2 then
-                            None
-                        else
-                            let currentVersions =
-                                byVersion
-                                |> List.choose (fun (version, packages) ->
-                                    match
-                                        NuGetVersion.create version,
-                                        packages
-                                        |> List.map (fun (package: InstalledPackage, _) ->
-                                            package.Target)
-                                        |> NonEmptyList.tryCreate
-                                    with
-                                    | Ok parsed, Some targets -> Some(parsed, targets)
-                                    | _ -> None)
+                let rec produce =
+                    function
+                    | [] -> async.Return(Ok())
+                    | (_, entries) :: remaining ->
+                        async {
+                            cancellation.ThrowIfCancellationRequested()
 
-                            match
-                                currentVersions |> NonEmptyList.tryCreate,
-                                currentVersions
-                                |> List.map fst
-                                |> List.rev
-                                |> NonEmptyList.tryCreate
-                            with
-                            | Some versions, Some candidates ->
-                                let package = entries.Head |> fst
+                            match consolidationForEntries entries with
+                            | Some consolidation ->
+                                do! sink cancellation (NonEmptyList.singleton consolidation)
 
-                                Some
-                                    { Identity = package.Identity
-                                      CurrentVersions = versions
-                                      CandidateVersions = candidates }
-                            | _ -> None))
+                                cancellation.ThrowIfCancellationRequested()
+                            | None -> ()
+
+                            return! produce remaining
+                        }
+
+                return! produce groups
         }
 
     let consolidation
         (requests: ConcurrentDictionary<PackageRequestId, CancellationTokenSource>)
-        (installed: ReadInstalledPackages)
+        (installed:
+            PackageRequest<unit> -> Async<Result<InstalledPackageGraph list, PackageFailure>>)
         (request: PackageRequest<unit>)
+        sink
         =
-        cancellable requests request.Id (fun cancellation ->
-            async {
-                cancellation.ThrowIfCancellationRequested()
-                let! result = consolidationCore installed request
-                cancellation.ThrowIfCancellationRequested()
-                return result
-            })
+        PackageProducer.cancellable
+            requests
+            request.Id
+            (duplicateRequestFailure ())
+            (cancelledFailure ())
+            (fun cancellation -> consolidationCore installed request cancellation sink)

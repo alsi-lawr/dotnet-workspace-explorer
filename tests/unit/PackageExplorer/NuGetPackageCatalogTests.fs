@@ -371,6 +371,18 @@ module private NuGetCatalogScenario =
               PageSize = pageSize size
               Continuation = continuation }
 
+    let search (catalog: PackageCatalogPorts) request =
+        async {
+            let! outcome = PackageProducer.collect catalog.Search request
+
+            return
+                outcome
+                |> Result.map (fun (items, completion) ->
+                    { Items = items
+                      Continuation = completion.Continuation
+                      SourceFailures = completion.SourceFailures })
+        }
+
     let detailsRequest project source =
         request
             project
@@ -468,7 +480,9 @@ type NuGetPackageCatalogTests() =
             source.Location.Query |> should equal ""
 
             let page =
-                catalog.Search(NuGetCatalogScenario.searchRequest project (Some source.Id) None 1)
+                NuGetCatalogScenario.search
+                    catalog
+                    (NuGetCatalogScenario.searchRequest project (Some source.Id) None 1)
                 |> NuGetCatalogScenario.run
                 |> NuGetCatalogScenario.value
 
@@ -591,7 +605,9 @@ type NuGetPackageCatalogTests() =
             let catalog = NuGetPackageCatalog.create ()
 
             let page =
-                catalog.Search(NuGetCatalogScenario.searchRequest project None None 1)
+                NuGetCatalogScenario.search
+                    catalog
+                    (NuGetCatalogScenario.searchRequest project None None 1)
                 |> NuGetCatalogScenario.run
                 |> NuGetCatalogScenario.value
 
@@ -638,7 +654,9 @@ type NuGetPackageCatalogTests() =
             let catalog = NuGetPackageCatalog.create ()
 
             let page continuation =
-                catalog.Search(NuGetCatalogScenario.searchRequest project None continuation 1)
+                NuGetCatalogScenario.search
+                    catalog
+                    (NuGetCatalogScenario.searchRequest project None continuation 1)
                 |> NuGetCatalogScenario.run
                 |> NuGetCatalogScenario.value
 
@@ -657,6 +675,73 @@ type NuGetPackageCatalogTests() =
 
             finalPage.Items |> should be Empty
             finalPage.Continuation |> should equal None
+        finally
+            NuGetCatalogScenario.delete directory
+
+    [<Fact>]
+    member _.``search exposes the first source batch before terminal metadata and preserves duplicates``
+        ()
+        =
+        let sourceFeed () =
+            new LocalFeed(fun root path rawUrl ->
+                match path with
+                | "/index.json" ->
+                    NuGetCatalogScenario.response (NuGetCatalogScenario.serviceIndex root false)
+                | "/query" when rawUrl.Contains("skip=0", StringComparison.Ordinal) ->
+                    NuGetCatalogScenario.response (
+                        NuGetCatalogScenario.searchResults [ "Shared.Package", "result" ]
+                    )
+                | "/query" -> NuGetCatalogScenario.response (NuGetCatalogScenario.searchResults [])
+                | _ -> NuGetCatalogScenario.status 404)
+
+        use first = sourceFeed ()
+        use second = sourceFeed ()
+        let directory, project = NuGetCatalogScenario.temporaryWorkspace ()
+
+        try
+            NuGetCatalogScenario.writeConfiguration
+                directory
+                [ "First", $"{first.Root}index.json"; "Second", $"{second.Root}index.json" ]
+                []
+                []
+
+            let catalog = NuGetPackageCatalog.create ()
+            let request = NuGetCatalogScenario.searchRequest project None None 2
+            let batches = ResizeArray<PackageSummary list>()
+
+            let firstBatch =
+                TaskCompletionSource TaskCreationOptions.RunContinuationsAsynchronously
+
+            let release =
+                TaskCompletionSource TaskCreationOptions.RunContinuationsAsynchronously
+
+            let sink _ batch =
+                async {
+                    batches.Add(NonEmptyList.toList batch)
+
+                    if batches.Count = 1 then
+                        firstBatch.TrySetResult() |> ignore
+                        do! release.Task |> Async.AwaitTask
+                }
+
+            let running = catalog.Search request sink |> Async.StartAsTask
+            firstBatch.Task.Wait(TimeSpan.FromSeconds 5.0) |> should equal true
+            running.IsCompleted |> should equal false
+            release.TrySetResult() |> ignore
+
+            let completion = running.GetAwaiter().GetResult() |> NuGetCatalogScenario.value
+
+            batches |> Seq.toList |> should haveLength 2
+
+            batches
+            |> Seq.collect id
+            |> Seq.map _.Identity.Value
+            |> Seq.toList
+            |> should equal [ "Shared.Package"; "Shared.Package" ]
+
+            completion.Query |> should equal request.Value.Search
+            completion.Continuation.IsSome |> should equal true
+            completion.SourceFailures |> should be Empty
         finally
             NuGetCatalogScenario.delete directory
 
@@ -698,7 +783,9 @@ type NuGetPackageCatalogTests() =
             let catalog = NuGetPackageCatalog.create ()
 
             let page continuation =
-                catalog.Search(NuGetCatalogScenario.searchRequest project None continuation 1)
+                NuGetCatalogScenario.search
+                    catalog
+                    (NuGetCatalogScenario.searchRequest project None continuation 1)
                 |> NuGetCatalogScenario.run
                 |> NuGetCatalogScenario.value
 
@@ -761,7 +848,9 @@ type NuGetPackageCatalogTests() =
             let catalog = NuGetPackageCatalog.create ()
 
             let page continuation =
-                catalog.Search(NuGetCatalogScenario.searchRequest project None continuation 1)
+                NuGetCatalogScenario.search
+                    catalog
+                    (NuGetCatalogScenario.searchRequest project None continuation 1)
                 |> NuGetCatalogScenario.run
                 |> NuGetCatalogScenario.value
 
@@ -812,7 +901,9 @@ type NuGetPackageCatalogTests() =
             let catalog = NuGetPackageCatalog.create ()
 
             let page =
-                catalog.Search(NuGetCatalogScenario.searchRequest project None None 20)
+                NuGetCatalogScenario.search
+                    catalog
+                    (NuGetCatalogScenario.searchRequest project None None 20)
                 |> NuGetCatalogScenario.run
                 |> NuGetCatalogScenario.value
 
@@ -1226,7 +1317,9 @@ Use `Example.Package` as-is.
             let catalog = NuGetPackageCatalog.create ()
 
             let page =
-                catalog.Search(NuGetCatalogScenario.searchRequest project None None 20)
+                NuGetCatalogScenario.search
+                    catalog
+                    (NuGetCatalogScenario.searchRequest project None None 20)
                 |> NuGetCatalogScenario.run
                 |> NuGetCatalogScenario.value
 
@@ -1343,7 +1436,7 @@ Use `Example.Package` as-is.
 
             let request = NuGetCatalogScenario.searchRequest project None None 20
 
-            let running = Async.StartAsTask(catalog.Search request)
+            let running = Async.StartAsTask(NuGetCatalogScenario.search catalog request)
             Thread.Sleep 200
 
             catalog.Cancel(PackageCancellation.Request request.Id)

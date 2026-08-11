@@ -1,5 +1,6 @@
 namespace Dotnet.WorkspaceExplorer.PackageExplorer
 
+open System.Threading
 open Dotnet.WorkspaceExplorer.Packages
 
 [<Struct>]
@@ -39,12 +40,22 @@ type PackageSourceMappingRequest =
       CandidateSource: PackageSourceId option
       RestoredTransitives: PackageId list option }
 
+type PackageBatchSink<'item> = CancellationToken -> NonEmptyList<'item> -> Async<unit>
+
+type PackageProducer<'request, 'item, 'completion> =
+    PackageRequest<'request>
+        -> PackageBatchSink<'item>
+        -> Async<Result<'completion, PackageFailure>>
+
+type PackageSearchCompletion =
+    { Query: PackageSearch
+      Continuation: string option
+      SourceFailures: PackageSourceFailure list }
+
 type ConfiguredPackageSources =
     PackageRequest<unit> -> Async<Result<PackageSource list, PackageFailure>>
 
-type SearchPackages =
-    PackageRequest<PackageSearchRequest>
-        -> Async<Result<PackagePage<PackageSummary>, PackageFailure>>
+type SearchPackages = PackageProducer<PackageSearchRequest, PackageSummary, PackageSearchCompletion>
 
 type ReadPackageDetails =
     PackageRequest<PackageDetailsRequest> -> Async<Result<PackageDetails, PackageFailure>>
@@ -53,17 +64,13 @@ type ReadPackageSourceMapping =
     PackageRequest<PackageSourceMappingRequest>
         -> Async<Result<PackageSourceMappingPolicy, PackageFailure>>
 
-type ReadInstalledPackages =
-    PackageRequest<unit> -> Async<Result<InstalledPackageGraph list, PackageFailure>>
+type ReadInstalledPackages = PackageProducer<unit, InstalledPackageEntry, unit>
 
-type RefreshInstalledPackages =
-    PackageRequest<unit> -> Async<Result<InstalledPackageGraph list, PackageFailure>>
+type RefreshInstalledPackages = PackageProducer<unit, InstalledPackageEntry, unit>
 
-type ReadPackageUpdates =
-    PackageRequest<PrereleaseSelection> -> Async<Result<PackageUpdate list, PackageFailure>>
+type ReadPackageUpdates = PackageProducer<PrereleaseSelection, PackageUpdate, unit>
 
-type ReadPackageConsolidation =
-    PackageRequest<unit> -> Async<Result<PackageConsolidation list, PackageFailure>>
+type ReadPackageConsolidation = PackageProducer<unit, PackageConsolidation, unit>
 
 type ReadPackagePreviewPrecondition =
     PackageRequest<PackagePreviewPreconditionRequest>

@@ -22,7 +22,7 @@ module internal NuGetPackageSearch =
                 let bytes = Convert.FromBase64String token
                 let text = Encoding.ASCII.GetString bytes
 
-                match text.Split(':') with
+                match text.Split ':' with
                 | [| source; offset |] ->
                     match Int32.TryParse source, Int32.TryParse offset with
                     | (true, sourceIndex), (true, sourceOffset) when
@@ -48,9 +48,9 @@ module internal NuGetPackageSearch =
 
     let private encodeContinuation cursor =
         String.Concat(
-            cursor.SourceIndex.ToString(Globalization.CultureInfo.InvariantCulture),
+            cursor.SourceIndex.ToString Globalization.CultureInfo.InvariantCulture,
             ":",
-            cursor.SourceOffset.ToString(Globalization.CultureInfo.InvariantCulture)
+            cursor.SourceOffset.ToString Globalization.CultureInfo.InvariantCulture
         )
         |> Encoding.ASCII.GetBytes
         |> Convert.ToBase64String
@@ -72,7 +72,7 @@ module internal NuGetPackageSearch =
         async {
             try
                 let! resource =
-                    source.Repository.GetResourceAsync<PackageSearchResource>(token)
+                    source.Repository.GetResourceAsync<PackageSearchResource> token
                     |> Async.AwaitTask
 
                 if isNull resource then
@@ -136,20 +136,21 @@ module internal NuGetPackageSearch =
         }
 
     let rec private fillPage
-        request
-        token
+        (request: PackageSearchRequest)
+        (token: CancellationToken)
         (sources: ConfiguredSource list)
         cursor
         remaining
-        items
         failures
+        (sink: PackageBatchSink<PackageSummary>)
         =
         async {
             if remaining = 0 then
-                return items, failures, Some cursor
+                return failures, Some cursor
             elif cursor.SourceIndex >= sources.Length then
-                return items, failures, None
+                return failures, None
             else
+                token.ThrowIfCancellationRequested()
                 let source = sources[cursor.SourceIndex]
 
                 let! outcome = searchSource request cursor.SourceOffset remaining token source
@@ -164,12 +165,17 @@ module internal NuGetPackageSearch =
                             { SourceIndex = cursor.SourceIndex + 1
                               SourceOffset = 0 }
                             remaining
-                            items
                             (failures @ [ failure ])
+                            sink
                 | Ok available ->
                     let accepted = available |> List.truncate remaining
                     let consumed = accepted.Length
-                    let pageItems = items @ accepted
+
+                    match NonEmptyList.tryCreate accepted with
+                    | Some batch ->
+                        do! sink token batch
+                        token.ThrowIfCancellationRequested()
+                    | None -> ()
 
                     if consumed = 0 then
                         return!
@@ -180,11 +186,10 @@ module internal NuGetPackageSearch =
                                 { SourceIndex = cursor.SourceIndex + 1
                                   SourceOffset = 0 }
                                 remaining
-                                pageItems
                                 failures
+                                sink
                     elif consumed = remaining then
                         return
-                            pageItems,
                             failures,
                             Some
                                 { SourceIndex = cursor.SourceIndex
@@ -198,62 +203,53 @@ module internal NuGetPackageSearch =
                                 { SourceIndex = cursor.SourceIndex + 1
                                   SourceOffset = 0 }
                                 (remaining - consumed)
-                                pageItems
                                 failures
+                                sink
         }
 
     let search
         (requests: ConcurrentDictionary<PackageRequestId, CancellationTokenSource>)
         (request: PackageRequest<PackageSearchRequest>)
+        sink
         =
-        async {
-            let! ambient = Async.CancellationToken
-            use cancellation = CancellationTokenSource.CreateLinkedTokenSource ambient
+        PackageProducer.cancellable
+            requests
+            request.Id
+            (NuGetSourceFailures.invalidRequest "The package request identifier is already active.")
+            (NuGetSourceFailures.cancelled ())
+            (fun cancellation ->
+                async {
+                    cancellation.ThrowIfCancellationRequested()
 
-            if not (requests.TryAdd(request.Id, cancellation)) then
-                return
-                    Error(
-                        NuGetSourceFailures.invalidRequest
-                            "The package request identifier is already active."
-                    )
-            else
-                try
-                    try
-                        match
-                            NuGetSources.loadCatalog request.Target,
-                            decodeContinuation request.Value.Continuation
-                        with
-                        | Error failure, _ -> return Error failure
-                        | _, Error failure -> return Error failure
-                        | Ok catalog, Ok cursor ->
-                            match
-                                NuGetSources.sourceSelection catalog request.Value.Search.Source
-                            with
-                            | Error failure -> return Error failure
-                            | Ok sources when cursor.SourceIndex > sources.Length ->
-                                return
-                                    Error(
-                                        NuGetSourceFailures.invalidRequest
-                                            "The package search continuation is invalid."
-                                    )
-                            | Ok sources ->
-                                let! items, failures, next =
-                                    fillPage
-                                        request.Value
-                                        cancellation.Token
-                                        sources
-                                        cursor
-                                        request.Value.PageSize.Value
-                                        []
-                                        []
+                    match
+                        NuGetSources.loadCatalog request.Target,
+                        decodeContinuation request.Value.Continuation
+                    with
+                    | Error failure, _ -> return Error failure
+                    | _, Error failure -> return Error failure
+                    | Ok catalog, Ok cursor ->
+                        match NuGetSources.sourceSelection catalog request.Value.Search.Source with
+                        | Error failure -> return Error failure
+                        | Ok sources when cursor.SourceIndex > sources.Length ->
+                            return
+                                Error(
+                                    NuGetSourceFailures.invalidRequest
+                                        "The package search continuation is invalid."
+                                )
+                        | Ok sources ->
+                            let! failures, next =
+                                fillPage
+                                    request.Value
+                                    cancellation
+                                    sources
+                                    cursor
+                                    request.Value.PageSize.Value
+                                    []
+                                    sink
 
-                                return
-                                    Ok
-                                        { Items = items
-                                          Continuation = next |> Option.map encodeContinuation
-                                          SourceFailures = failures }
-                    with :? OperationCanceledException when cancellation.IsCancellationRequested ->
-                        return Error(NuGetSourceFailures.cancelled ())
-                finally
-                    requests.TryRemove request.Id |> ignore
-        }
+                            return
+                                Ok
+                                    { Query = request.Value.Search
+                                      Continuation = next |> Option.map encodeContinuation
+                                      SourceFailures = failures }
+                })

@@ -44,7 +44,11 @@ module NuGetPackageCatalog =
                   RefreshInstalled = refresh
                   RunCommand = DotnetPackageOperations.run }
 
-        let installed = NuGetInstalledPackages.readWithFactory evaluatorFactory
+        let installedGraphs = NuGetInstalledPackages.readWithFactory evaluatorFactory
+
+        let installed =
+            NuGetInstalledPackages.readStreamWithFactory evaluatorFactory requests
+
         let details = NuGetPackageDetails.details requests
 
         ({ ConfiguredSources = NuGetSources.configuredSources
@@ -56,11 +60,11 @@ module NuGetPackageCatalog =
            Updates =
              PackageInventories.updates
                  requests
-                 installed
+                 installedGraphs
                  NuGetSources.configuredSources
                  NuGetSources.sourceMapping
                  details
-           Consolidation = PackageInventories.consolidation requests installed
+           Consolidation = PackageInventories.consolidation requests installedGraphs
            PreviewPrecondition = previews.ReadPrecondition
            Preview = previews.Preview
            UpdateBatchPrecondition = previews.ReadUpdateBatchPrecondition

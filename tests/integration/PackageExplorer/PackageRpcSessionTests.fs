@@ -297,15 +297,17 @@ module private PackageRpcSessionScenario =
 
     let ports (refresh: RefreshInstalledPackages) : PackageCatalogPorts =
         let unsupported _ = async.Return(Error failure)
+        let unsupportedProducer _ _ = async.Return(Error failure)
+        let emptyProducer _ _ = async.Return(Ok())
 
         { ConfiguredSources = fun _ -> async.Return(Ok [])
           SourceMapping = unsupported
-          Search = unsupported
+          Search = unsupportedProducer
           Details = unsupported
-          Installed = fun _ -> async.Return(Ok [])
+          Installed = emptyProducer
           RefreshInstalled = refresh
-          Updates = fun _ -> async.Return(Ok [])
-          Consolidation = fun _ -> async.Return(Ok [])
+          Updates = emptyProducer
+          Consolidation = emptyProducer
           PreviewPrecondition = unsupported
           Preview = unsupported
           UpdateBatchPrecondition = unsupported
@@ -313,6 +315,46 @@ module private PackageRpcSessionScenario =
           ExecuteConfirmed = fun _ _ -> async.Return(Error failure)
           ExecuteConfirmedUpdateBatch = fun _ _ -> async.Return(Error failure)
           Cancel = fun _ -> async.Return() }
+
+    let producer values _ sink =
+        async {
+            let! cancellation = Async.CancellationToken
+
+            match NonEmptyList.tryCreate values with
+            | Some batch -> do! sink cancellation batch
+            | None -> ()
+
+            return Ok()
+        }
+
+    let installedEntries graphs =
+        graphs
+        |> List.collect (fun graph ->
+            match graph.Packages with
+            | [] ->
+                [ { Target = graph.Target
+                    GraphState = graph.State
+                    Package = None } ]
+            | packages ->
+                packages
+                |> List.map (fun package ->
+                    { Target = graph.Target
+                      GraphState = graph.State
+                      Package = Some package }))
+
+    let installedProducer graphs = producer (installedEntries graphs)
+
+    let searchProducer items continuation failures request sink =
+        async {
+            let! emitted = producer items request sink
+
+            return
+                emitted
+                |> Result.map (fun () ->
+                    { Query = request.Value.Search
+                      Continuation = continuation
+                      SourceFailures = failures })
+        }
 
     let runStream target ports (input: Stream) =
         task {
@@ -396,10 +438,10 @@ type PackageRpcSessionTests() =
                   )
                   Request(4u, "shutdown", RpcValue.emptyMap) ]
 
-            let refresh _ =
+            let refresh _ _ =
                 async {
                     do! Async.Sleep 60000
-                    return Ok []
+                    return Ok()
                 }
 
             let exitCode, output, errors =
@@ -480,10 +522,13 @@ type PackageRpcSessionTests() =
                     project
                     [ PackageRpcSessionScenario.installed project "Example.Package" "1.0.0" ]
 
-            runCase (fun _ -> async.Return(Ok [ restored ])) (fun _ -> async.Return()) "refreshed"
+            runCase
+                (PackageRpcSessionScenario.installedProducer [ restored ])
+                (fun _ -> async.Return())
+                "refreshed"
 
             runCase
-                (fun _ ->
+                (fun _ _ ->
                     async.Return(
                         Error(
                             PackageRpcSessionScenario.packageFailure
@@ -497,7 +542,7 @@ type PackageRpcSessionTests() =
                 TaskCompletionSource TaskCreationOptions.RunContinuationsAsynchronously
 
             runCase
-                (fun _ ->
+                (fun _ _ ->
                     async {
                         do! cancellation.Task |> Async.AwaitTask
 
@@ -532,7 +577,9 @@ type PackageRpcSessionTests() =
 
             let run details capabilities =
                 let ports =
-                    { PackageRpcSessionScenario.ports (fun _ -> async.Return(Ok [])) with
+                    { PackageRpcSessionScenario.ports (
+                          PackageRpcSessionScenario.installedProducer []
+                      ) with
                         Details = fun _ -> async.Return(Ok details) }
 
                 PackageRpcSessionScenario.run
@@ -591,7 +638,9 @@ type PackageRpcSessionTests() =
 
             let ports =
                 configure
-                    { PackageRpcSessionScenario.ports (fun _ -> async.Return(Ok [])) with
+                    { PackageRpcSessionScenario.ports (
+                          PackageRpcSessionScenario.installedProducer []
+                      ) with
                         Cancel = fun _ -> async { cancelled.TrySetResult() |> ignore } }
                     operation
 
@@ -633,14 +682,14 @@ type PackageRpcSessionTests() =
         try
             runCancellation "package/updates" "packages.updates.v1" (fun ports operation ->
                 { ports with
-                    Updates = fun _ -> operation })
+                    Updates = fun _ _ -> operation })
 
             runCancellation
                 "package/consolidation"
                 "packages.consolidation.v1"
                 (fun ports operation ->
                     { ports with
-                        Consolidation = fun _ -> operation })
+                        Consolidation = fun _ _ -> operation })
 
             let first = PackageRpcSessionScenario.installed project "First.Package" "1.0.0"
             let second = PackageRpcSessionScenario.installed project "Second.Package" "1.0.0"
@@ -653,8 +702,8 @@ type PackageRpcSessionTests() =
                     Available = NonEmptyList.singleton secondUpdate } ]
 
             let ports =
-                { PackageRpcSessionScenario.ports (fun _ -> async.Return(Ok [])) with
-                    Updates = fun _ -> async { return Ok updates } }
+                { PackageRpcSessionScenario.ports (PackageRpcSessionScenario.installedProducer []) with
+                    Updates = PackageRpcSessionScenario.producer updates }
 
             let _, output, _ =
                 PackageRpcSessionScenario.runObserved
@@ -721,7 +770,7 @@ type PackageRpcSessionTests() =
                 |> PackageFailure.withRecovery [ recovery ]
 
             let ports =
-                { PackageRpcSessionScenario.ports (fun _ -> async.Return(Ok [])) with
+                { PackageRpcSessionScenario.ports (PackageRpcSessionScenario.installedProducer []) with
                     PreviewPrecondition = fun _ -> async.Return(Ok precondition)
                     Preview = fun _ -> async.Return(Ok single)
                     UpdateBatchPrecondition = fun _ -> async.Return(Ok precondition)
@@ -1008,7 +1057,9 @@ type PackageRpcSessionTests() =
             let exitCode, output, errors =
                 PackageRpcSessionScenario.run
                     (PackageRpcSessionScenario.target project)
-                    (PackageRpcSessionScenario.ports (fun _ -> async.Return(Ok [])))
+                    (PackageRpcSessionScenario.ports (
+                        PackageRpcSessionScenario.installedProducer []
+                    ))
                     input
                 |> _.Result
 
@@ -1049,16 +1100,8 @@ type PackageRpcSessionTests() =
                   Source = PackageRpcSessionScenario.source "nuget.org" }
 
             let ports =
-                { PackageRpcSessionScenario.ports (fun _ -> async.Return(Ok [])) with
-                    Search =
-                        fun _ ->
-                            async {
-                                return
-                                    Ok
-                                        { Items = [ summary ]
-                                          Continuation = None
-                                          SourceFailures = [] }
-                            } }
+                { PackageRpcSessionScenario.ports (PackageRpcSessionScenario.installedProducer []) with
+                    Search = PackageRpcSessionScenario.searchProducer [ summary ] None [] }
 
             let malformed =
                 Request(
@@ -1186,21 +1229,13 @@ type PackageRpcSessionTests() =
                   Source = PackageRpcSessionScenario.source "nuget.org" }
 
             let refreshedGraph = PackageRpcSessionScenario.graph project installed
-            let refresh _ = async.Return(Ok [ refreshedGraph ])
+            let refresh = PackageRpcSessionScenario.installedProducer [ refreshedGraph ]
 
             let ports =
                 { PackageRpcSessionScenario.ports refresh with
-                    Search =
-                        fun _ ->
-                            async {
-                                return
-                                    Ok
-                                        { Items = [ largeSummary ]
-                                          Continuation = None
-                                          SourceFailures = [] }
-                            }
-                    Updates = fun _ -> async { return Ok updates }
-                    Consolidation = fun _ -> async { return Ok consolidations }
+                    Search = PackageRpcSessionScenario.searchProducer [ largeSummary ] None []
+                    Updates = PackageRpcSessionScenario.producer updates
+                    Consolidation = PackageRpcSessionScenario.producer consolidations
                     PreviewPrecondition = fun _ -> async.Return(Ok precondition)
                     Preview = fun _ -> async.Return(Ok single)
                     ExecuteConfirmed = fun _ _ -> async { return Ok execution } }
@@ -1327,7 +1362,9 @@ type PackageRpcSessionTests() =
         try
             let run kind =
                 let ports =
-                    { PackageRpcSessionScenario.ports (fun _ -> async.Return(Ok [])) with
+                    { PackageRpcSessionScenario.ports (
+                          PackageRpcSessionScenario.installedProducer []
+                      ) with
                         Details =
                             fun _ ->
                                 async.Return(Error(PackageRpcSessionScenario.packageFailure kind)) }

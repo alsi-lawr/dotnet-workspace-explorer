@@ -371,7 +371,7 @@ type PackageCommandProcessTests() =
                     operations
                     { ReadPrecondition = fun _ -> async { return Ok currentPrecondition }
                       ReadUpdateBatchPrecondition = fun _ -> async { return Ok currentPrecondition }
-                      RefreshInstalled = fun _ -> async { return Ok [] }
+                      RefreshInstalled = fun _ _ -> async { return Ok() }
                       RunCommand = DotnetPackageOperations.run }
 
             let result =

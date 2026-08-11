@@ -87,17 +87,25 @@ module internal PackageRpcDispatch =
         let work (sink: RpcNotificationSink) cancellationToken =
             task {
                 let! outcome =
-                    state.Ports.Search(
-                        request
+                    PackageProducer.collect
+                        state.Ports.Search
+                        (request
                             state
                             requestId
                             { Search = search
                               PageSize = pageSize
-                              Continuation = continuation }
-                    )
+                              Continuation = continuation })
                     |> fromAsync cancellationToken
 
-                let projected = outcome |> Result.map (PackageRpcResponses.searchResult requestId)
+                let projected =
+                    outcome
+                    |> Result.map (fun (items, completion) ->
+                        PackageRpcResponses.searchResult
+                            requestId
+                            { Items = items
+                              Continuation = completion.Continuation
+                              SourceFailures = completion.SourceFailures })
+
                 do! completed sink "package/search/completed" requestId projected
             }
 
@@ -113,22 +121,25 @@ module internal PackageRpcDispatch =
         =
         task {
             let request = request state requestId ()
-            let! immediate = state.Ports.Installed request |> fromAsync cancellationToken
+
+            let! immediate =
+                PackageProducer.collect state.Ports.Installed request
+                |> fromAsync cancellationToken
 
             match immediate with
             | Error failure -> return Error(PackageRpcResponses.failureError failure)
-            | Ok graphs ->
+            | Ok(entries, ()) ->
                 let work (sink: RpcNotificationSink) backgroundCancellation =
                     task {
                         try
                             do! sink.WriteAsync(restoreProgress requestId "inProgress")
 
                             let! refreshed =
-                                state.Ports.RefreshInstalled request
+                                PackageProducer.collect state.Ports.RefreshInstalled request
                                 |> fromAsync backgroundCancellation
 
                             match refreshed with
-                            | Ok value ->
+                            | Ok(value, ()) ->
                                 do!
                                     sink.WriteAsync(
                                         Notification(
@@ -167,7 +178,7 @@ module internal PackageRpcDispatch =
                                 "inProgress"
                                 pageSize
                                 offset
-                                graphs)
+                                entries)
                             work
                     )
         }
@@ -175,9 +186,12 @@ module internal PackageRpcDispatch =
     let private inventory (requestId: PackageRequestId) methodName operation projection =
         let work sink cancellationToken =
             task {
-                let! outcome = operation () |> fromAsync cancellationToken
+                let! outcome =
+                    operation ()
+                    |> fun (producer, request) -> PackageProducer.collect producer request
+                    |> fromAsync cancellationToken
 
-                let projected = outcome |> Result.map projection
+                let projected = outcome |> Result.map (fst >> projection)
                 do! completed sink methodName requestId projected
             }
 
@@ -429,14 +443,14 @@ module internal PackageRpcDispatch =
                     inventory
                         requestId
                         "package/updates/completed"
-                        (fun () -> state.Ports.Updates(request state requestId prerelease))
+                        (fun () -> state.Ports.Updates, request state requestId prerelease)
                         (PackageRpcResponses.updatesResult pageSize offset)
             | PackageRpcRequest.Consolidation(requestId, pageSize, offset) ->
                 return
                     inventory
                         requestId
                         "package/consolidation/completed"
-                        (fun () -> state.Ports.Consolidation(request state requestId ()))
+                        (fun () -> state.Ports.Consolidation, request state requestId ())
                         (PackageRpcResponses.consolidationResult pageSize offset)
             | PackageRpcRequest.Preview(requestId, operation, targets, source) ->
                 return! preview state requestId operation targets source cancellationToken

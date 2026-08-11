@@ -21,6 +21,7 @@
     <ItemGroup>
         <Compile Include="AssemblyInfo.fs" />
         <Compile Include="Application/PackagePorts.fs" />
+        <Compile Include="Application/PackageProducers.fs" />
         <Compile Include="Sources/PackageMetadata.fs" />
         <Compile Include="Sources/NuGetSourceFailures.fs" />
         <Compile Include="Sources/NuGetSources.fs" />
