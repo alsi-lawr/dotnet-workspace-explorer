@@ -367,7 +367,8 @@ module private NuGetCatalogScenario =
             { Search =
                 { Term = PackageSearchTerm.Matching "Example"
                   Prerelease = PrereleaseSelection.IncludePrerelease
-                  Source = source }
+                  Source = source
+                  Order = PackageSearchOrder.Relevance }
               PageSize = pageSize size
               Continuation = continuation }
 

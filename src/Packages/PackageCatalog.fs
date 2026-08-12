@@ -76,10 +76,16 @@ type PackageSearchTerm =
     | AllPackages
     | Matching of string
 
+[<RequireQualifiedAccess>]
+type PackageSearchOrder =
+    | Relevance
+    | Id
+
 type PackageSearch =
     { Term: PackageSearchTerm
       Prerelease: PrereleaseSelection
-      Source: PackageSourceId option }
+      Source: PackageSourceId option
+      Order: PackageSearchOrder }
 
 [<RequireQualifiedAccess>]
 type PackageVersionSelection =

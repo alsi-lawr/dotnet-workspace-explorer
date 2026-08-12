@@ -89,6 +89,10 @@ module internal NuGetPackageSearch =
                     let filter = SearchFilter includePrerelease
                     filter.IncludeDelisted <- false
 
+                    match request.Search.Order with
+                    | PackageSearchOrder.Id -> filter.OrderBy <- SearchOrderBy.Id
+                    | PackageSearchOrder.Relevance -> ()
+
                     let! metadata =
                         resource.SearchAsync(
                             searchTerm request.Search,

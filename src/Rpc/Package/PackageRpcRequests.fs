@@ -260,7 +260,12 @@ module PackageRpc =
                 | "package/search/start" ->
                     let fields =
                         requestFields
-                            [ "requestId"; "term"; "includePrerelease"; "source"; "continuation" ]
+                            [ "requestId"
+                              "term"
+                              "includePrerelease"
+                              "source"
+                              "continuation"
+                              "order" ]
                             parameters
 
                     let term =
@@ -278,11 +283,19 @@ module PackageRpc =
 
                     let source = optionalString "source" fields |> Option.map (sourceId "source")
 
+                    let order =
+                        match optionalString "order" fields with
+                        | None
+                        | Some "relevance" -> PackageSearchOrder.Relevance
+                        | Some "id" -> PackageSearchOrder.Id
+                        | Some _ -> invalidArg "order" "order must be relevance or id."
+
                     PackageRpcRequest.Search(
                         requestId fields,
                         { Term = term
                           Prerelease = prerelease
-                          Source = source },
+                          Source = source
+                          Order = order },
                         optionalString "continuation" fields
                     )
                 | "package/details" ->
