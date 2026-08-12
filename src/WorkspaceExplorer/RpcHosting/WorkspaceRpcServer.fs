@@ -49,7 +49,6 @@ module internal WorkspaceRpcServer =
                 let mutable maximumFrameBytes = MessagePackRpcCodec.secureLimits.MaximumValueBytes
                 let mutable maximumPageSize = 256
                 let mutable gitStatusNegotiated = false
-                let mutable gitStatusV2Negotiated = false
                 let mutable addExistingNegotiated = false
                 let mutable addExistingPresentationV2Negotiated = false
                 let mutable addExistingDirectoriesV1Negotiated = false
@@ -103,11 +102,7 @@ module internal WorkspaceRpcServer =
                 let workspaceRequestContext =
                     { State = state
                       GitStatus = gitStatus
-                      GitStatusResponseVersion =
-                        fun () ->
-                            if gitStatusV2Negotiated then Some Version2
-                            elif gitStatusNegotiated then Some Legacy
-                            else None
+                      GitStatusNegotiated = fun () -> gitStatusNegotiated
                       Watcher = watcher
                       ActiveOperations = activeOperations
                       MaximumFrameBytes = fun () -> maximumFrameBytes
@@ -138,9 +133,6 @@ module internal WorkspaceRpcServer =
 
                             gitStatusNegotiated <-
                                 request.Capabilities.Contains "workspace.git.status"
-
-                            gitStatusV2Negotiated <-
-                                request.Capabilities.Contains "workspace.git.status.v2"
 
                             addExistingNegotiated <-
                                 request.Capabilities.Contains "workspace.addExisting.selector"

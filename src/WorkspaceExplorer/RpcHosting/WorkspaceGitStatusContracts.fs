@@ -2,10 +2,6 @@ namespace Dotnet.WorkspaceExplorer
 
 open System.IO
 
-type internal GitDecorationState =
-    | Changed
-    | Added
-
 type internal GitStatusState =
     | Staged
     | Unstaged
@@ -41,8 +37,7 @@ module internal WorkspaceGitPaths =
 
 type internal WorkspaceGitPathStatus =
     { Path: string
-      States: GitStatusState array
-      LegacyState: GitDecorationState option }
+      States: GitStatusState array }
 
 type internal WorkspaceGitPathSnapshot =
     { RepositoryRoot: string
@@ -50,9 +45,4 @@ type internal WorkspaceGitPathSnapshot =
 
 type internal GitStatusSnapshot =
     { Available: bool
-      LegacyDecorations: (string * GitDecorationState) array
       Decorations: (string * GitStatusState array) array }
-
-type internal GitStatusResponseVersion =
-    | Legacy
-    | Version2

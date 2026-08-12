@@ -14,7 +14,7 @@ open System.Threading.Tasks
 type internal WorkspaceRpcContext =
     { State: WorkspaceIndex
       GitStatus: WorkspaceGitStatus
-      GitStatusResponseVersion: unit -> GitStatusResponseVersion option
+      GitStatusNegotiated: unit -> bool
       Watcher: WorkspaceIndexWatcher
       ActiveOperations: ConcurrentDictionary<string, WorkspaceExportOperation>
       MaximumFrameBytes: unit -> int

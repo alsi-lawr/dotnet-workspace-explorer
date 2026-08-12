@@ -41,7 +41,7 @@
         in
         pkgs.buildDotnetModule {
           pname = "dotnet-workspace-explorer";
-          version = "0.4.1";
+          version = "0.5.0";
 
           src = lib.fileset.toSource {
             root = ./.;

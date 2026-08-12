@@ -17,7 +17,6 @@ module WorkspaceRpcResponses =
               "workspace.children"
               "workspace.file.resolve"
               "workspace.git.status"
-              "workspace.git.status.v2"
               "workspace.export.start"
               "workspace.refresh"
               "workspace.delta"
@@ -147,16 +146,6 @@ module WorkspaceRpcResponses =
               "path", text path ]
 
     let gitStatusResult available workspaceRevision statusRevision decorations =
-        map
-            [ "available", boolean available
-              "workspaceRevision", integer workspaceRevision
-              "statusRevision", integer statusRevision
-              "decorations",
-              decorations
-              |> Seq.map (fun (nodeId, state) -> map [ "nodeId", text nodeId; "state", text state ])
-              |> RpcValue.array ]
-
-    let gitStatusV2Result available workspaceRevision statusRevision decorations =
         map
             [ "available", boolean available
               "workspaceRevision", integer workspaceRevision

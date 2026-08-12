@@ -390,23 +390,18 @@ type WorkspaceAddExistingPresentationTests() =
                                          States =
                                            [| GitStatusState.Untracked
                                               GitStatusState.Staged
-                                              GitStatusState.Staged |]
-                                         LegacyState = Some GitDecorationState.Added }
+                                              GitStatusState.Staged |] }
                                        { Path = existing
-                                         States = [| GitStatusState.Renamed |]
-                                         LegacyState = Some GitDecorationState.Changed }
+                                         States = [| GitStatusState.Renamed |] }
                                        { Path = nested
-                                         States = [| GitStatusState.Ignored |]
-                                         LegacyState = None }
+                                         States = [| GitStatusState.Ignored |] }
                                        { Path = lastDirectory + string Path.DirectorySeparatorChar
-                                         States = [| GitStatusState.Ignored |]
-                                         LegacyState = None }
+                                         States = [| GitStatusState.Ignored |] }
                                        { Path = deleted
                                          States =
                                            [| GitStatusState.Deleted
                                               GitStatusState.Unstaged
-                                              GitStatusState.Unmerged |]
-                                         LegacyState = Some GitDecorationState.Changed } |] }
+                                              GitStatusState.Unmerged |] } |] }
                         )
                     )
 

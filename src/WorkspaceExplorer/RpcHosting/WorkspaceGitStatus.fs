@@ -90,12 +90,8 @@ type internal WorkspaceGitStatus(workspacePath: string) =
         withGate readPathSnapshotAsync cancellationToken
 
     member _.ReadAsync
-        (
-            state: WorkspaceIndex,
-            expectedRevision: int64,
-            responseVersion: GitStatusResponseVersion,
-            cancellationToken: CancellationToken
-        ) =
+        (state: WorkspaceIndex, expectedRevision: int64, cancellationToken: CancellationToken)
+        =
         withGate
             (fun cancellationToken ->
                 task {
@@ -112,7 +108,6 @@ type internal WorkspaceGitStatus(workspacePath: string) =
                                 | None ->
                                     Ok
                                         { Available = false
-                                          LegacyDecorations = [||]
                                           Decorations = [||] }
                                 | Some pathSnapshot ->
                                     WorkspaceGitStatusMapping.mapDecorations
@@ -126,13 +121,7 @@ type internal WorkspaceGitStatus(workspacePath: string) =
                             let changed =
                                 match previous with
                                 | None -> true
-                                | Some previousSnapshot ->
-                                    match responseVersion with
-                                    | Legacy ->
-                                        previousSnapshot.Available <> snapshot.Available
-                                        || previousSnapshot.LegacyDecorations
-                                           <> snapshot.LegacyDecorations
-                                    | Version2 -> previousSnapshot <> snapshot
+                                | Some previousSnapshot -> previousSnapshot <> snapshot
 
                             if changed then
                                 revision <- revision + 1L
@@ -141,35 +130,22 @@ type internal WorkspaceGitStatus(workspacePath: string) =
 
                             return
                                 Ok(
-                                    match responseVersion with
-                                    | Legacy ->
-                                        WorkspaceRpcResponses.gitStatusResult
-                                            snapshot.Available
-                                            workspaceRevision
-                                            revision
-                                            (snapshot.LegacyDecorations
-                                             |> Seq.map (fun (nodeId, state) ->
-                                                 nodeId,
-                                                 match state with
-                                                 | Added -> "added"
-                                                 | Changed -> "changed"))
-                                    | Version2 ->
-                                        WorkspaceRpcResponses.gitStatusV2Result
-                                            snapshot.Available
-                                            workspaceRevision
-                                            revision
-                                            (snapshot.Decorations
-                                             |> Seq.map (fun (nodeId, states) ->
-                                                 nodeId,
-                                                 states
-                                                 |> Seq.map (function
-                                                     | Staged -> "staged"
-                                                     | Unstaged -> "unstaged"
-                                                     | Renamed -> "renamed"
-                                                     | Deleted -> "deleted"
-                                                     | Unmerged -> "unmerged"
-                                                     | Untracked -> "untracked"
-                                                     | Ignored -> "ignored")))
+                                    WorkspaceRpcResponses.gitStatusResult
+                                        snapshot.Available
+                                        workspaceRevision
+                                        revision
+                                        (snapshot.Decorations
+                                         |> Seq.map (fun (nodeId, states) ->
+                                             nodeId,
+                                             states
+                                             |> Seq.map (function
+                                                 | Staged -> "staged"
+                                                 | Unstaged -> "unstaged"
+                                                 | Renamed -> "renamed"
+                                                 | Deleted -> "deleted"
+                                                 | Unmerged -> "unmerged"
+                                                 | Untracked -> "untracked"
+                                                 | Ignored -> "ignored")))
                                 )
                 })
             cancellationToken

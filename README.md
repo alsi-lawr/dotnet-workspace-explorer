@@ -30,6 +30,10 @@ Basic projects. It provides the workspace tree, contextual edits, dependency det
 profiles, and change notifications used by editor integrations. Solution filters (`.slnf`) are
 available as read-only views.
 
+Editor clients receive complete Git decorations through one canonical status contract. Each
+workspace node can report staged, unstaged, renamed, deleted, unmerged, untracked, and ignored
+states in deterministic order.
+
 ## Install
 
 ```console

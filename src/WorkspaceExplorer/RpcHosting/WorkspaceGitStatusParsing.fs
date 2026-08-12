@@ -67,11 +67,6 @@ module internal WorkspaceGitStatusParsing =
         | "!!" -> Ok [| Ignored |]
         | _ -> fallbackStates status
 
-    let private legacyState status =
-        if status = "!!" then None
-        elif status = "??" || status.Contains 'A' then Some Added
-        else Some Changed
-
     let parsePorcelain root (value: string) =
         try
             let normalizedRoot = Path.GetFullPath root
@@ -81,33 +76,19 @@ module internal WorkspaceGitStatusParsing =
             else
                 let records = value.Split('\000', StringSplitOptions.None)
 
-                let entries =
-                    Dictionary<string, GitDecorationState option * HashSet<GitStatusState>>(
-                        StringComparer.Ordinal
-                    )
+                let entries = Dictionary<string, HashSet<GitStatusState>>(StringComparer.Ordinal)
 
                 let add status path (states: GitStatusState array) =
                     if String.IsNullOrEmpty path then
                         invalidArg (nameof value) "Git returned an empty porcelain path."
 
                     let path = Path.GetFullPath(path, normalizedRoot)
-                    let legacy = legacyState status
 
                     match entries.TryGetValue path with
-                    | true, (existingLegacy, existingStates) ->
+                    | true, existingStates ->
                         for state in states do
                             existingStates.Add state |> ignore
-
-                        match existingLegacy, legacy with
-                        | Some Changed, Some Added
-                        | None, Some Added
-                        | None, Some Changed -> entries[path] <- legacy, existingStates
-                        | _ -> ()
-                    | _ ->
-                        entries.Add(
-                            path,
-                            (legacy, HashSet<GitStatusState>(states :> seq<GitStatusState>))
-                        )
+                    | _ -> entries.Add(path, HashSet<GitStatusState>(states :> seq<GitStatusState>))
 
                 let mutable index = 0
                 let mutable error = None
@@ -142,10 +123,9 @@ module internal WorkspaceGitStatusParsing =
                 | Some error -> error
                 | None ->
                     entries
-                    |> Seq.map (fun (KeyValue(path, (legacy, states))) ->
+                    |> Seq.map (fun (KeyValue(path, states)) ->
                         { Path = path
-                          States = GitStatusStates.normalize states
-                          LegacyState = legacy })
+                          States = GitStatusStates.normalize states })
                     |> Seq.sortBy _.Path
                     |> Seq.toArray
                     |> fun entries ->

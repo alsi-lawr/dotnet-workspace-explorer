@@ -285,21 +285,15 @@ module internal WorkspaceNavigationRequests =
         cancellationToken
         =
         task {
-            match context.GitStatusResponseVersion() with
-            | None ->
+            if not (context.GitStatusNegotiated()) then
                 return
                     Error(
                         RpcErrors.unsupported
                             "workspace.git.status was not negotiated for this session."
                     )
-            | Some responseVersion ->
+            else
                 let! result =
-                    context.GitStatus.ReadAsync(
-                        context.State,
-                        expectedRevision,
-                        responseVersion,
-                        cancellationToken
-                    )
+                    context.GitStatus.ReadAsync(context.State, expectedRevision, cancellationToken)
 
                 return
                     result

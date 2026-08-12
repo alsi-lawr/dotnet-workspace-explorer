@@ -8,12 +8,6 @@ open Dotnet.WorkspaceExplorer.WorkspaceIndex
 
 [<RequireQualifiedAccess>]
 module internal WorkspaceGitStatusMapping =
-    let private strongerLegacy left right =
-        match left, right with
-        | Added, _
-        | _, Added -> Added
-        | _ -> Changed
-
     let mapDecorations
         workspacePath
         (nodes: WorkspaceGitNode array)
@@ -60,9 +54,6 @@ module internal WorkspaceGitStatusMapping =
                 |> Seq.map (fun node -> node.NodeId.Value, node.ParentNodeId |> Option.map _.Value)
                 |> dict
 
-            let legacyDecorations =
-                Dictionary<string, GitDecorationState>(StringComparer.Ordinal)
-
             let decorations =
                 Dictionary<string, HashSet<GitStatusState>>(StringComparer.Ordinal)
 
@@ -77,11 +68,6 @@ module internal WorkspaceGitStatusMapping =
                             created
 
                     target.Add state |> ignore
-
-            let addLegacy nodeId legacy =
-                match legacyDecorations.TryGetValue nodeId with
-                | true, existing -> legacyDecorations[nodeId] <- strongerLegacy existing legacy
-                | _ -> legacyDecorations[nodeId] <- legacy
 
             for entry in snapshot.Entries do
                 for node in nodes do
@@ -101,8 +87,6 @@ module internal WorkspaceGitStatusMapping =
                         entry.States
                         |> Seq.filter ((<>) GitStatusState.Ignored)
                         |> addStates node.NodeId.Value
-
-                        entry.LegacyState |> Option.iter (addLegacy node.NodeId.Value)
 
                     if
                         (direct || exactContainer)
@@ -124,27 +108,8 @@ module internal WorkspaceGitStatusMapping =
                         | true, value -> value
                         | _ -> None
 
-            for KeyValue(nodeId, legacy) in legacyDecorations |> Seq.toArray do
-                let mutable parent =
-                    match parents.TryGetValue nodeId with
-                    | true, value -> value
-                    | _ -> None
-
-                while parent.IsSome do
-                    addLegacy parent.Value legacy
-
-                    parent <-
-                        match parents.TryGetValue parent.Value with
-                        | true, value -> value
-                        | _ -> None
-
             Ok
                 { Available = true
-                  LegacyDecorations =
-                    legacyDecorations
-                    |> Seq.map (fun (KeyValue(nodeId, state)) -> nodeId, state)
-                    |> Seq.sortBy fst
-                    |> Seq.toArray
                   Decorations =
                     decorations
                     |> Seq.map (fun (KeyValue(nodeId, states)) ->

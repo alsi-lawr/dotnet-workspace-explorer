@@ -163,24 +163,14 @@ type WorkspaceGitStatusTests() =
                     { RepositoryRoot = root
                       Entries =
                         [| { Path = changedFile
-                             States = [| Unstaged; Renamed |]
-                             LegacyState = Some GitDecorationState.Changed }
+                             States = [| Unstaged; Renamed |] }
                            { Path = addedFile
-                             States = [| Staged; Untracked |]
-                             LegacyState = Some GitDecorationState.Added }
+                             States = [| Staged; Untracked |] }
                            { Path = Path.Combine(folderDirectory, "Deleted.cs")
-                             States = [| Deleted; Unmerged |]
-                             LegacyState = Some GitDecorationState.Changed } |] }
+                             States = [| Deleted; Unmerged |] } |] }
             with
             | Error error -> failwithf "Valid Git paths did not map: %s" error.Code
             | Ok snapshot ->
-                snapshot.LegacyDecorations
-                |> should
-                    equal
-                    [| "file", GitDecorationState.Changed
-                       "folder", GitDecorationState.Added
-                       "project", GitDecorationState.Added
-                       "workspace", GitDecorationState.Added |]
 
                 snapshot.Decorations
                 |> should
@@ -215,18 +205,14 @@ type WorkspaceGitStatusTests() =
                     { RepositoryRoot = root
                       Entries =
                         [| { Path = ignoredDirectory
-                             States = [| Ignored |]
-                             LegacyState = None }
+                             States = [| Ignored |] }
                            { Path = ignoredFile
-                             States = [| Ignored |]
-                             LegacyState = None }
+                             States = [| Ignored |] }
                            { Path = ignoredDescendant
-                             States = [| Ignored |]
-                             LegacyState = None } |] }
+                             States = [| Ignored |] } |] }
             with
             | Error error -> failwithf "Valid ignored Git paths did not map: %s" error.Code
             | Ok snapshot ->
-                snapshot.LegacyDecorations |> should equal [||]
 
                 snapshot.Decorations
                 |> should
@@ -241,8 +227,7 @@ type WorkspaceGitStatusTests() =
                     { RepositoryRoot = root
                       Entries =
                         [| { Path = String [| '\u0000' |]
-                             States = [| Unstaged |]
-                             LegacyState = Some GitDecorationState.Changed } |] }
+                             States = [| Unstaged |] } |] }
             with
             | Error error -> error.Code |> should equal "git_mapping_failed"
             | Ok snapshot -> failwithf "An invalid Git path unexpectedly mapped: %A" snapshot
@@ -409,8 +394,7 @@ type WorkspaceGitStatusTests() =
                 { RepositoryRoot = root
                   Entries =
                     [| { Path = differentlyCasedPath
-                         States = [| GitStatusState.Unstaged |]
-                         LegacyState = Some GitDecorationState.Changed } |] }
+                         States = [| GitStatusState.Unstaged |] } |] }
 
             match WorkspaceGitStatusMapping.mapDecorations root nodes snapshot with
             | Error error -> failwithf "Case-aware Git mapping failed: %s" error.Code
@@ -532,9 +516,7 @@ type WorkspaceGitStatusTests() =
             | Ok snapshot -> failwithf "Malformed porcelain unexpectedly parsed: %A" snapshot)
 
     [<Fact>]
-    member _.``Duplicate porcelain paths produce one stable ordered union and legacy added precedence``
-        ()
-        =
+    member _.``Duplicate porcelain paths produce one stable ordered union``() =
         let root = Path.GetFullPath(Path.GetTempPath())
 
         match
@@ -545,7 +527,6 @@ type WorkspaceGitStatusTests() =
         | Error error -> failwithf "Expected duplicate paths to union, got %s" error.Code
         | Ok snapshot ->
             snapshot.Entries.Length |> should equal 1
-            snapshot.Entries[0].LegacyState |> should equal (Some GitDecorationState.Added)
 
             snapshot.Entries[0].States
             |> should
@@ -594,87 +575,8 @@ type WorkspaceGitStatusTests() =
                 |> should
                     equal
                     [| untracked, [| GitStatusState.Untracked |]
-                       ignored, [| GitStatusState.Ignored |] |]
+                       ignored, [| GitStatusState.Ignored |] |])
 
-                snapshot.Entries
-                |> Array.find (fun entry -> entry.Path = untracked)
-                |> _.LegacyState
-                |> should equal (Some GitDecorationState.Added)
-
-                snapshot.Entries
-                |> Array.find (fun entry -> entry.Path = ignored)
-                |> _.LegacyState
-                |> should equal None)
-
-    [<Fact>]
-    member _.``Legacy-only Git status excludes ignored-only paths from its exact compatibility projection``
-        ()
-        =
-        WorkspaceGitStatusScenario.withRepository (fun directory solution _ ->
-            File.WriteAllText(Path.Combine(directory, ".gitignore"), "*.ignored\n")
-            WorkspaceGitStatusScenario.runGit directory [ "add"; ".gitignore" ]
-
-            WorkspaceGitStatusScenario.runGit
-                directory
-                [ "commit"; "--quiet"; "-m"; "ignore legacy fixture" ]
-
-            let ignored = Path.Combine(directory, "private.ignored")
-            File.WriteAllText(ignored, "ignored")
-
-            use child =
-                WorkspaceRpcScenario.startWorkspaceRpc "git-status-legacy-ignored" solution
-
-            try
-                WorkspaceRpcScenario.send
-                    child
-                    false
-                    (WorkspaceRpcScenario.request
-                        1u
-                        "initialize"
-                        (WorkspaceGitStatusScenario.initialize [ "workspace.git.status" ]))
-
-                WorkspaceRpcScenario.readFrame child
-                |> WorkspaceRpcScenario.response 1u
-                |> fst
-                |> should equal None
-
-                let error, result = WorkspaceGitStatusScenario.request child 2u 0L
-                error |> should equal None
-
-                RpcValue.requireMap "legacy.git.status" result
-                |> _.Keys
-                |> Seq.sort
-                |> Seq.toList
-                |> should
-                    equal
-                    [ "available"; "decorations"; "statusRevision"; "workspaceRevision" ]
-
-                WorkspaceRpcScenario.field "available" result
-                |> should equal (RpcValue.Boolean true)
-
-                WorkspaceRpcScenario.field "decorations" result
-                |> RpcValue.requireArray "legacy.git.decorations"
-                |> should be Empty
-
-                WorkspaceRpcScenario.field "statusRevision" result
-                |> RpcValue.requireInteger "legacy.git.statusRevision"
-                |> should equal 1L
-
-                File.Delete ignored
-                let repeatedError, repeated = WorkspaceGitStatusScenario.request child 3u 0L
-                repeatedError |> should equal None
-
-                WorkspaceRpcScenario.field "decorations" repeated
-                |> RpcValue.requireArray "legacy.git.decorations"
-                |> should be Empty
-
-                WorkspaceRpcScenario.field "statusRevision" repeated
-                |> RpcValue.requireInteger "legacy.git.statusRevision"
-                |> should equal 1L
-
-                WorkspaceRpcScenario.shutdown child 99u
-            finally
-                WorkspaceRpcScenario.disposeProcess child)
 
     [<Fact>]
     member _.``Git process cancellation propagates without translating the caller cancellation``() =
@@ -704,7 +606,7 @@ type WorkspaceGitStatusTests() =
         | Ok _ -> failwith "Expected the incomplete rename record to be rejected."
 
     [<Fact>]
-    member _.``V2 Git status outside a worktree returns one stable unavailable snapshot``() =
+    member _.``Git status outside a worktree returns one stable unavailable snapshot``() =
         let directory =
             Path.Combine(
                 Path.GetTempPath(),
@@ -729,7 +631,7 @@ type WorkspaceGitStatusTests() =
                     (WorkspaceRpcScenario.request
                         1u
                         "initialize"
-                        (WorkspaceGitStatusScenario.initialize [ "workspace.git.status.v2" ]))
+                        (WorkspaceGitStatusScenario.initialize [ "workspace.git.status" ]))
 
                 WorkspaceRpcScenario.readFrame child
                 |> WorkspaceRpcScenario.response 1u
@@ -842,9 +744,7 @@ type WorkspaceGitStatusTests() =
                 WorkspaceRpcScenario.disposeProcess child)
 
     [<Fact>]
-    member _.``V2-only and dual-capability clients receive ordered non-ignored ancestor states with V2 precedence``
-        ()
-        =
+    member _.``Git status returns ordered non-ignored ancestor states``() =
         WorkspaceGitStatusScenario.withRepository (fun directory solution project ->
             let ignored = Path.Combine(directory, "private.ignored")
             let untracked = Path.Combine(directory, "Untracked.cs")
@@ -862,9 +762,7 @@ type WorkspaceGitStatusTests() =
                   RpcValue.String "unstaged"
                   RpcValue.String "untracked" ]
 
-            for name, capabilities in
-                [ "git-status-v2-only", [ "workspace.git.status.v2" ]
-                  "git-status-v2-precedence", [ "workspace.git.status"; "workspace.git.status.v2" ] ] do
+            for name, capabilities in [ "git-status", [ "workspace.git.status" ] ] do
                 use child = WorkspaceRpcScenario.startWorkspaceRpc name solution
 
                 try
@@ -884,13 +782,13 @@ type WorkspaceGitStatusTests() =
                     initialized
                     |> WorkspaceRpcScenario.field "capabilities"
                     |> RpcValue.requireArray "capabilities"
-                    |> Seq.contains (RpcValue.String "workspace.git.status.v2")
+                    |> Seq.contains (RpcValue.String "workspace.git.status")
                     |> should equal true
 
                     let firstError, first = WorkspaceGitStatusScenario.request child 2u 0L
                     firstError |> should equal None
 
-                    RpcValue.requireMap "git.status.v2" first
+                    RpcValue.requireMap "git.status" first
                     |> _.Keys
                     |> Seq.sort
                     |> Seq.toList
@@ -904,7 +802,7 @@ type WorkspaceGitStatusTests() =
 
                     decorations
                     |> Seq.iter (fun decoration ->
-                        RpcValue.requireMap "git.status.v2.decoration" decoration
+                        RpcValue.requireMap "git.status.decoration" decoration
                         |> _.Keys
                         |> Seq.sort
                         |> Seq.toList
@@ -943,7 +841,7 @@ type WorkspaceGitStatusTests() =
                     WorkspaceRpcScenario.disposeProcess child)
 
     [<Fact>]
-    member _.``Git status is deterministic revisioned and gives added state precedence``() =
+    member _.``Git status is deterministic revisioned and preserves complete states``() =
         WorkspaceGitStatusScenario.withRepository (fun directory solution project ->
             File.AppendAllText(project, "\n<!-- changed -->\n")
             let added = Path.Combine(directory, "New.cs")
@@ -1025,14 +923,16 @@ type WorkspaceGitStatusTests() =
                         (WorkspaceRpcScenario.field "nodeId" decoration) = RpcValue.String
                             projectId)
 
-                RpcValue.requireMap "legacy.git.decoration" projectDecoration
+                RpcValue.requireMap "git.decoration" projectDecoration
                 |> _.Keys
                 |> Seq.sort
                 |> Seq.toList
-                |> should equal [ "nodeId"; "state" ]
+                |> should equal [ "nodeId"; "states" ]
 
-                WorkspaceRpcScenario.field "state" projectDecoration
-                |> should equal (RpcValue.String "added")
+                WorkspaceRpcScenario.field "states" projectDecoration
+                |> RpcValue.requireArray "states"
+                |> Seq.toList
+                |> should equal [ RpcValue.String "unstaged"; RpcValue.String "untracked" ]
 
                 let repeatedError, repeated = WorkspaceGitStatusScenario.request child 5u 0L
                 repeatedError |> should equal None
@@ -1057,8 +957,10 @@ type WorkspaceGitStatusTests() =
                         (WorkspaceRpcScenario.field "nodeId" decoration) = RpcValue.String
                             projectId)
 
-                WorkspaceRpcScenario.field "state" changedProject
-                |> should equal (RpcValue.String "changed")
+                WorkspaceRpcScenario.field "states" changedProject
+                |> RpcValue.requireArray "states"
+                |> Seq.toList
+                |> should equal [ RpcValue.String "unstaged" ]
 
                 WorkspaceRpcScenario.send
                     child
