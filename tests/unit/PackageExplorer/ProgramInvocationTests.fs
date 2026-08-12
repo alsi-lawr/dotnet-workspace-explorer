@@ -19,6 +19,20 @@ module private ProgramInvocationScenario =
 
 [<Sealed>]
 type ProgramInvocationTests() =
+    [<Theory>]
+    [<InlineData("-h")>]
+    [<InlineData("--help")>]
+    member _.``program invocation recognizes top-level help aliases``(argument: string) =
+        ProgramInvocation.parse "/workspace" [| argument |]
+        |> should equal ProgramInvocation.Help
+
+    [<Theory>]
+    [<InlineData("-v")>]
+    [<InlineData("--version")>]
+    member _.``program invocation recognizes top-level version aliases``(argument: string) =
+        ProgramInvocation.parse "/workspace" [| argument |]
+        |> should equal ProgramInvocation.Version
+
     [<Fact>]
     member _.``program invocation gives the internal project evaluation host final precedence``() =
         let arguments = [| "internal"; "project-evaluation-host"; "--sdk"; "/sdk" |]

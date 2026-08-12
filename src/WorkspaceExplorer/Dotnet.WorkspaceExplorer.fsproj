@@ -7,6 +7,7 @@
         <ToolCommandName>dotnet-we</ToolCommandName>
         <PackageOutputPath>../../build</PackageOutputPath>
         <PackageId>ALSI.WorkspaceExplorer</PackageId>
+        <Version>0.4.0</Version>
         <Title>dotnet-workspace-explorer</Title>
         <Description>Power terminal and editor solution explorers for .NET workspaces.</Description>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>

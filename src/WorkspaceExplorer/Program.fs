@@ -46,6 +46,12 @@ module Program =
             cancellation.Cancel())
 
         match ProgramInvocation.parse Environment.CurrentDirectory arguments with
+        | ProgramInvocation.Help ->
+            Console.Out.WriteLine CommandLineInformation.help
+            0
+        | ProgramInvocation.Version ->
+            Console.Out.WriteLine $"dotnet-we {CommandLineInformation.version}"
+            0
         | ProgramInvocation.ProjectEvaluationHost sdkPath ->
             ProjectEvaluationHost.RunAsync(sdkPath, cancellation.Token).GetAwaiter().GetResult()
         | ProgramInvocation.PackagePipe target ->
